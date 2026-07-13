@@ -128,6 +128,24 @@
       "title": "Verbose deconfliction",
       "description": "When on, deconflicted results include the initial categorization and per-round detail by default.",
       "default": false
+    },
+    "claude_cli": {
+      "type": "boolean",
+      "title": "Claude subscription (CLI)",
+      "description": "Add subscription-backed Claude members via the local `claude` CLI (claude -p) instead of an API key. Requires the Claude Code CLI installed and logged in to a Pro/Max subscription. Members appear as claude-cli:<model>. Only works where the CLI runs (this machine).",
+      "default": false
+    },
+    "claude_cli_models": {
+      "type": "string",
+      "title": "Claude CLI models",
+      "description": "Comma-separated model aliases for the subscription CLI member, e.g. 'opus,sonnet'.",
+      "default": "opus,sonnet"
+    },
+    "claude_cli_path": {
+      "type": "string",
+      "title": "claude executable path",
+      "description": "Path to the claude binary if it is not on PATH.",
+      "default": "claude"
     }
   }
 }

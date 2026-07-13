@@ -7,7 +7,8 @@ export type ProviderType =
   | 'groq'
   | 'vllm'
   | 'trtllm'
-  | 'sglang';
+  | 'sglang'
+  | 'claude-cli';
 
 export type ResponseMode = 'individual' | 'categorized' | 'deconflicted';
 
@@ -169,4 +170,8 @@ export interface ServerConfig {
   baseUrl: string;
   apiKey?: string;
   label: string;
+  /** CLI-backed providers (claude-cli): path to the executable. */
+  command?: string;
+  /** CLI-backed providers (claude-cli): model aliases to expose. */
+  models?: string[];
 }

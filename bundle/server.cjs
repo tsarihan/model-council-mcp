@@ -24528,6 +24528,17 @@ function loadConfig() {
     ...parseOpenAICompatibleServers(envClean("TRTLLM_SERVERS"), "trtllm"),
     ...parseOpenAICompatibleServers(envClean("SGLANG_SERVERS"), "sglang")
   );
+  if (envBool("CLAUDE_CLI", false)) {
+    const cliModels = (envClean("CLAUDE_CLI_MODELS") ?? "opus,sonnet").split(",").map((s2) => s2.trim()).filter(Boolean);
+    servers.push({
+      id: "claude-cli",
+      type: "claude-cli",
+      baseUrl: "(subscription via claude CLI)",
+      label: "Claude (subscription CLI)",
+      command: envClean("CLAUDE_CLI_PATH") ?? "claude",
+      models: cliModels.length ? cliModels : ["opus", "sonnet"]
+    });
+  }
   const members = (envClean("COUNCIL_MODELS") ?? "").split(",").map((s2) => s2.trim()).filter(Boolean).flatMap((s2) => {
     const id = parseModelId(s2);
     return id ? [{ modelId: id }] : [];
@@ -34242,6 +34253,124 @@ Respond with valid JSON only.`.trim() : systemParts || void 0;
   }
 };
 
+// src/providers/claude-cli.ts
+var import_node_child_process = require("node:child_process");
+var DEFAULT_MODELS = ["opus", "sonnet"];
+var DEFAULT_TIMEOUT_MS = 3e5;
+var ClaudeCliProvider = class {
+  serverId;
+  config;
+  command;
+  models;
+  constructor(config2) {
+    this.config = config2;
+    this.serverId = config2.id;
+    this.command = config2.command?.trim() || "claude";
+    this.models = config2.models && config2.models.length ? config2.models : DEFAULT_MODELS;
+  }
+  async ping() {
+    try {
+      const { code } = await this.run(["--version"], void 0, 8e3);
+      return code === 0;
+    } catch {
+      return false;
+    }
+  }
+  async listModels() {
+    return this.models.map((m2) => ({
+      provider: "claude-cli",
+      model: m2,
+      label: `Claude ${m2} (subscription)`
+    }));
+  }
+  async complete(model, messages, opts = {}) {
+    const systemParts = messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n");
+    const prompt = messages.filter((m2) => m2.role !== "system").map((m2) => m2.role === "assistant" ? `Assistant: ${m2.content}` : m2.content).join("\n\n");
+    const base = "You are a member of a model council. Answer the question directly, neutrally, and concisely. Do not use tools or ask follow-up questions.";
+    const systemText = [
+      base,
+      systemParts,
+      opts.jsonMode ? "Respond with valid JSON only." : ""
+    ].filter(Boolean).join("\n\n");
+    const args = [
+      "-p",
+      "--model",
+      model,
+      "--output-format",
+      "json",
+      "--tools",
+      "",
+      // disable all built-in tools
+      "--strict-mcp-config",
+      // no MCP servers (no recursion into this plugin)
+      "--no-session-persistence",
+      "--system-prompt",
+      systemText
+      // replace the default coding-agent persona
+    ];
+    const { code, stdout, stderr } = await this.run(args, prompt, DEFAULT_TIMEOUT_MS);
+    if (code !== 0) {
+      throw new Error(
+        `claude CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || "(no stderr)"}`
+      );
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(stdout);
+    } catch {
+      throw new Error(
+        `claude CLI returned non-JSON output: ${stdout.trim().slice(0, 300)}`
+      );
+    }
+    const result = typeof parsed.result === "string" ? parsed.result : "";
+    if (parsed.is_error === true) {
+      throw new Error(
+        `claude CLI reported an error: ${result.slice(0, 300) || "(no detail)"}`
+      );
+    }
+    return result;
+  }
+  run(args, input, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const env = { ...process.env };
+      delete env.ANTHROPIC_API_KEY;
+      delete env.ANTHROPIC_AUTH_TOKEN;
+      const child = (0, import_node_child_process.spawn)(this.command, args, {
+        env,
+        stdio: ["pipe", "pipe", "pipe"]
+      });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const timer = setTimeout(() => {
+        settled = true;
+        child.kill("SIGKILL");
+        reject(new Error(`claude CLI timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (d2) => stdout += d2);
+      child.stderr.on("data", (d2) => stderr += d2);
+      child.stdin.on("error", () => {
+      });
+      child.on("error", (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      });
+      child.on("close", (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ code: code ?? 1, stdout, stderr });
+      });
+      if (input !== void 0) child.stdin.write(input);
+      child.stdin.end();
+    });
+  }
+};
+
 // src/providers/registry.ts
 var ProviderRegistry = class {
   providers = /* @__PURE__ */ new Map();
@@ -34254,6 +34383,9 @@ var ProviderRegistry = class {
           break;
         case "anthropic":
           provider = new AnthropicProvider(srv);
+          break;
+        case "claude-cli":
+          provider = new ClaudeCliProvider(srv);
           break;
         case "openai":
         case "groq":
@@ -34292,7 +34424,7 @@ var ProviderRegistry = class {
 // src/council/query.ts
 function isCloudMember(m2) {
   const type = m2.provider.config.type;
-  if (type === "openai" || type === "anthropic" || type === "groq") return true;
+  if (type === "openai" || type === "anthropic" || type === "groq" || type === "claude-cli") return true;
   const model = m2.modelId.model;
   return model.endsWith(":cloud") || model.endsWith("-cloud");
 }
@@ -35152,6 +35284,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                     JUDGE_MODEL: "Judge model (default: auto)",
                     RESPONSE_MODE: "individual | categorized | deconflicted",
                     MAX_DECONFLICT_ROUNDS: "Max deconfliction rounds (default: 3)",
+                    CLAUDE_CLI: "true \u2192 add a subscription-backed Claude member via the local `claude` CLI (no API key/billing)",
+                    CLAUDE_CLI_MODELS: "Comma-separated model aliases for the CLI member (default: opus,sonnet)",
+                    CLAUDE_CLI_PATH: "Path to the claude executable (default: claude)",
                     MAX_TOKENS: "Max tokens per completion (default: 16000)",
                     CLOUD_CONCURRENCY: "Max concurrent cloud requests (default: 3)",
                     LOCAL_CONCURRENCY: "Max concurrent local requests (default: 1; 0 = unlimited)",

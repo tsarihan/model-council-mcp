@@ -52,6 +52,7 @@ claude --plugin-dir /path/to/model-council-mcp
 | Cloud / local concurrency | Simultaneous requests (cloud pool / local pool) | `3` / `1` |
 | Completion retries | Retries on an empty/failed response | `3` |
 | Verbose deconfliction | Include per-round detail in deconflicted results | `false` |
+| Claude subscription (CLI) | Use your Claude Pro/Max subscription via `claude -p` (no API key) | `false` |
 
 ---
 
@@ -98,6 +99,23 @@ Or add to `~/.claude.json` → `mcpServers`:
 | `VLLM_SERVERS` | vLLM servers (see below) | — |
 | `TRTLLM_SERVERS` | TRT-LLM servers | — |
 | `SGLANG_SERVERS` | SGLang servers | — |
+| `CLAUDE_CLI` | `true` → add subscription-backed Claude members via the local `claude` CLI (no API key) | `false` |
+| `CLAUDE_CLI_MODELS` | Model aliases for the CLI member | `opus,sonnet` |
+| `CLAUDE_CLI_PATH` | Path to the `claude` binary | `claude` |
+
+### Claude via your subscription (first-party CLI)
+
+Set `CLAUDE_CLI=true` to add council members that run through the locally-installed **Claude Code CLI** (`claude -p`) instead of the Anthropic API. Inference runs under whatever your `claude` CLI is logged in with — typically your own **Claude Pro/Max subscription** — so these members don't consume API credits. They appear as `claude-cli:opus`, `claude-cli:sonnet`, etc.
+
+**Behavior & requirements**
+- The `claude` CLI must be installed and logged in (`claude` → `/login`, or `claude setup-token`). Set `CLAUDE_CLI_PATH` if it isn't on `PATH`.
+- Each call shells out to `claude -p` with all tools disabled (`--tools ""`), MCP disabled (`--strict-mcp-config`, so it can't recurse into this plugin), and sessions not persisted — a clean single text answer.
+- **`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` are stripped from the nested call**, because the CLI silently prefers an API key over the subscription. So these members stay subscription-billed even if you also set an API key for the regular `anthropic:` provider.
+- They are **not** auto-discovered — add them explicitly via `configure_council` or `COUNCIL_MODELS` (e.g. `claude-cli:opus`), so they don't quietly draw down your subscription.
+
+**Where it works:** anywhere the `claude` CLI actually executes — the Claude Code CLI, or the Claude Desktop app on a machine that also has the CLI. With `/remote-control` on your CLI, driving it from the Claude web/mobile *code* tab still runs `claude -p` on your machine, so it works there too. It does **not** work for a remotely-hosted copy of this server (no local CLI), and it can't borrow the Claude *app's* subscription directly (no client supports MCP sampling yet).
+
+> This uses the sanctioned first-party CLI under your own subscription, for your own use. High-volume automated fan-out can hit your subscription's rate limits — keep `CLOUD_CONCURRENCY` modest (these members use the cloud pool). Reusing a subscription *token* against the raw Anthropic API from a third-party app is a separate thing and is prohibited; this feature does not do that.
 
 ### OpenAI-compatible server format
 

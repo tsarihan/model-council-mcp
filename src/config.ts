@@ -193,6 +193,25 @@ export function loadConfig(): AppConfig {
     ...parseOpenAICompatibleServers(envClean('SGLANG_SERVERS'), 'sglang'),
   );
 
+  // ── Claude subscription via the first-party CLI (opt-in) ──────────────────
+  // Adds subscription-backed Claude members that shell out to the local
+  // `claude -p` binary instead of billing an API key. Requires the Claude Code
+  // CLI installed and logged in to a Pro/Max subscription.
+  if (envBool('CLAUDE_CLI', false)) {
+    const cliModels = (envClean('CLAUDE_CLI_MODELS') ?? 'opus,sonnet')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+    servers.push({
+      id: 'claude-cli',
+      type: 'claude-cli',
+      baseUrl: '(subscription via claude CLI)',
+      label: 'Claude (subscription CLI)',
+      command: envClean('CLAUDE_CLI_PATH') ?? 'claude',
+      models: cliModels.length ? cliModels : ['opus', 'sonnet'],
+    });
+  }
+
   // ── Council members ───────────────────────────────────────────────────────
   const members: CouncilMember[] = (envClean('COUNCIL_MODELS') ?? '')
     .split(',')

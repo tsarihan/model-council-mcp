@@ -3,6 +3,7 @@ import { Provider } from './base.js';
 import { OllamaProvider } from './ollama.js';
 import { OpenAICompatibleProvider } from './openai-compatible.js';
 import { AnthropicProvider } from './anthropic.js';
+import { ClaudeCliProvider } from './claude-cli.js';
 
 export class ProviderRegistry {
   private providers = new Map<string, Provider>();
@@ -16,6 +17,9 @@ export class ProviderRegistry {
           break;
         case 'anthropic':
           provider = new AnthropicProvider(srv);
+          break;
+        case 'claude-cli':
+          provider = new ClaudeCliProvider(srv);
           break;
         case 'openai':
         case 'groq':

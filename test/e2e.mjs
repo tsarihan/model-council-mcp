@@ -3,11 +3,14 @@
  * backend) and drive all 4 tools + 3 response modes via the MCP protocol.
  */
 import { spawn } from 'node:child_process';
+import { chmodSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const MOCK_PORT = 11499;
 const MOCK_URL = `http://localhost:${MOCK_PORT}`;
+const MOCK_CLAUDE = fileURLToPath(new URL('./mock-claude.mjs', import.meta.url));
 
 let passed = 0;
 let failed = 0;
@@ -292,6 +295,50 @@ async function main() {
   } finally {
     await client.close();
     mock.kill();
+  }
+
+  // ── Test: claude-cli subscription provider (isolated server instance) ──────
+  console.log('\n▶ claude-cli subscription provider (mocked claude binary)');
+  chmodSync(MOCK_CLAUDE, 0o755);
+  const cliTransport = new StdioClientTransport({
+    command: 'node',
+    args: [serverEntry],
+    env: {
+      ...process.env,
+      OLLAMA_ADDRESS: 'http://127.0.0.1:1',                 // unused; harmless
+      ANTHROPIC_API_KEY: 'sk-ant-test-should-be-stripped',  // must NOT reach the CLI
+      CLAUDE_CLI: 'true',
+      CLAUDE_CLI_PATH: MOCK_CLAUDE,
+      CLAUDE_CLI_MODELS: 'opus,sonnet',
+      COUNCIL_MODELS: 'claude-cli:opus,claude-cli:sonnet',
+      RESPONSE_MODE: 'individual',
+      CLOUD_CONCURRENCY: '2',
+    },
+  });
+  const cliClient = new Client({ name: 'cli-e2e', version: '1.0.0' }, { capabilities: {} });
+  await cliClient.connect(cliTransport);
+  try {
+    const cfg = parseToolResult(await cliClient.callTool({ name: 'get_council_config', arguments: {} }));
+    check('claude-cli: provider registered', (cfg.providers ?? []).some(p => p.type === 'claude-cli'), (cfg.providers ?? []).map(p => p.type).join(','));
+
+    const cli = parseToolResult(await cliClient.callTool({
+      name: 'ask_council', arguments: { question: 'hello world', mode: 'individual' },
+    }));
+    check('claude-cli: 2 members answered', cli.responses?.length === 2, `got ${cli.responses?.length}`);
+    check('claude-cli: opus member invoked the CLI', cli.responses?.some(r => r.label === 'claude-cli:opus' && /model=opus/.test(r.response)), cli.responses?.map(r => r.label).join(','));
+    check('claude-cli: sonnet member invoked the CLI', cli.responses?.some(r => r.label === 'claude-cli:sonnet' && /model=sonnet/.test(r.response)));
+    check('claude-cli: ANTHROPIC_API_KEY stripped (subscription auth)', cli.responses?.every(r => /key=nokey/.test(r.response ?? '')), cli.responses?.map(r => r.response).join(' | '));
+    check('claude-cli: tools disabled in nested call', cli.responses?.every(r => /tools=off/.test(r.response ?? '')));
+    check('claude-cli: strict MCP config (no recursion)', cli.responses?.every(r => /mcp=strict/.test(r.response ?? '')));
+    check('claude-cli: replaces Claude Code system prompt (neutral persona)', cli.responses?.every(r => /sys=replace/.test(r.response ?? '')));
+    check('claude-cli: prompt reached the CLI via stdin', cli.responses?.every(r => /hello world/.test(r.response ?? '')));
+
+    // is_error result (exit 0 + is_error:true) → surfaced as a member error
+    await cliClient.callTool({ name: 'configure_council', arguments: { models: ['claude-cli:erroring'], response_mode: 'individual' } });
+    const errRes = parseToolResult(await cliClient.callTool({ name: 'ask_council', arguments: { question: 'x', mode: 'individual' } }));
+    check('claude-cli: is_error surfaced as member error', !!errRes.responses?.[0]?.error && !errRes.responses?.[0]?.response, JSON.stringify(errRes.responses?.[0]));
+  } finally {
+    await cliClient.close();
   }
 
   // ── Summary ──────────────────────────────────────────────────────────────

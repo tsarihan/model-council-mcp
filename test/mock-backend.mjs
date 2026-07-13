@@ -13,6 +13,11 @@
 import http from 'node:http';
 
 let categorizeCalls = 0;
+let curConcurrent = 0;
+let maxConcurrent = 0;
+let lastNumPredict = null;
+let flakyCalls = 0;
+const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
 const MODELS = [
   { name: 'small-a',   details: { parameter_size: '7B',  family: 'llama' }, size: 4_000_000_000 },
@@ -80,6 +85,17 @@ function chatResponse(body) {
   const content = lastUser?.content ?? '';
   const model = body.model ?? 'unknown';
 
+  // Flaky model: empty on first call, content afterwards (exercises retry-on-empty)
+  if (model === 'flaky-empty') {
+    flakyCalls++;
+    return flakyCalls === 1 ? '' : 'Recovered after retry.';
+  }
+
+  // Always-empty model (exercises graceful degradation when the judge yields nothing)
+  if (model === 'empty-judge') {
+    return '';
+  }
+
   if (content.includes('Categorize these responses')) {
     categorizeCalls++;
     return JSON.stringify(categorizationFor(categorizeCalls));
@@ -113,20 +129,40 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/reset') {
     categorizeCalls = 0;
+    maxConcurrent = 0;
+    flakyCalls = 0;
+    lastNumPredict = null;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.method === 'GET' && req.url === '/debug') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ maxConcurrent, lastNumPredict }));
     return;
   }
 
   if (req.method === 'POST' && req.url === '/api/chat') {
     let raw = '';
     req.on('data', c => (raw += c));
-    req.on('end', () => {
+    req.on('end', async () => {
       let body = {};
       try { body = JSON.parse(raw); } catch { /* ignore */ }
-      const contentText = chatResponse(body);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ message: { role: 'assistant', content: contentText } }));
+      if (body?.options?.num_predict !== undefined) lastNumPredict = body.options.num_predict;
+      curConcurrent++;
+      if (curConcurrent > maxConcurrent) maxConcurrent = curConcurrent;
+      try {
+        // 'conc*' models add latency so concurrency limits are observable
+        if (typeof body.model === 'string' && body.model.startsWith('conc')) {
+          await delay(60);
+        }
+        const contentText = chatResponse(body);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ message: { role: 'assistant', content: contentText } }));
+      } finally {
+        curConcurrent--;
+      }
     });
     return;
   }

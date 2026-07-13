@@ -14,6 +14,13 @@ import {
 } from '../types.js';
 import { Provider } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
+import { completeWithRetry, EmptyCompletionError } from './query.js';
+
+/** Completion tuning passed down to judge calls. */
+export interface CompleteConfig {
+  maxTokens: number;
+  retries: number;
+}
 
 // ─── Judge prompt ─────────────────────────────────────────────────────────────
 
@@ -86,18 +93,33 @@ export async function categorize(
   responses: RawResponse[],
   judgeModelId: ModelId,
   judgeProvider: Provider,
+  cc: CompleteConfig,
   existingConflictIds: string[] = [],
 ): Promise<Omit<CategorizedResult, 'mode' | 'rawResponses'>> {
   const prompt = buildCategorizationPrompt(question, responses);
 
   let rawJson: string;
   try {
-    rawJson = await judgeProvider.complete(
+    rawJson = await completeWithRetry(
+      judgeProvider,
       judgeModelId.model,
       [{ role: 'user', content: prompt }],
-      { jsonMode: true, temperature: 0.2 },
+      { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens },
+      cc.retries,
     );
   } catch (err) {
+    // Judge produced no usable output after all retries → degrade gracefully to
+    // a no-conflict result (treat every response as individual), matching the
+    // JSON-parse fallback below. A genuine provider error still propagates.
+    if (err instanceof EmptyCompletionError) {
+      return {
+        question,
+        commonAgreement: null,
+        complementary: [],
+        conflicting: [],
+        judgeModel: modelIdLabel(judgeModelId),
+      };
+    }
     throw new Error(
       `Judge model (${modelIdLabel(judgeModelId)}) failed: ${String(err)}`,
     );

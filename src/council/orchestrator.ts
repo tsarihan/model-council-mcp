@@ -10,14 +10,14 @@ import {
   IndividualResult,
   ModelId,
   ModelInfo,
-  RawResponse,
   ResponseMode,
+  RuntimeConfig,
 } from '../types.js';
-import { Provider } from '../providers/base.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { modelIdLabel } from '../config.js';
 import { categorize } from './categorizer.js';
 import { deconflict } from './deconflict.js';
+import { queryMembers } from './query.js';
 
 // ─── Model classification ──────────────────────────────────────────────────────
 
@@ -65,45 +65,23 @@ function selectJudge(
   return best;
 }
 
-// ─── Parallel council query ───────────────────────────────────────────────────
-
-async function queryAll(
-  question: string,
-  members: Array<{ modelId: ModelId; provider: Provider }>,
-): Promise<RawResponse[]> {
-  return Promise.all(
-    members.map(async ({ modelId, provider }) => {
-      const label = modelIdLabel(modelId);
-      const t0 = Date.now();
-      try {
-        const response = await provider.complete(modelId.model, [
-          { role: 'user', content: question },
-        ]);
-        return { modelId, label, response, latencyMs: Date.now() - t0 };
-      } catch (err) {
-        return {
-          modelId,
-          label,
-          response: '',
-          error: String(err),
-          latencyMs: Date.now() - t0,
-        };
-      }
-    }),
-  );
-}
-
 // ─── Main orchestrator ────────────────────────────────────────────────────────
 
 export class CouncilOrchestrator {
   private registry: ProviderRegistry;
   private config: CouncilConfig;
+  private runtime: RuntimeConfig;
   /** Cached model list for judge auto-selection */
   private modelCache: ModelInfo[] = [];
 
-  constructor(registry: ProviderRegistry, config: CouncilConfig) {
+  constructor(
+    registry: ProviderRegistry,
+    config: CouncilConfig,
+    runtime: RuntimeConfig,
+  ) {
     this.registry = registry;
     this.config = config;
+    this.runtime = runtime;
   }
 
   /** Update config in-place (used by configure_council tool) */
@@ -113,6 +91,10 @@ export class CouncilOrchestrator {
 
   getConfig(): CouncilConfig {
     return { ...this.config };
+  }
+
+  getRuntime(): RuntimeConfig {
+    return { ...this.runtime };
   }
 
   /** List all reachable models across all providers */
@@ -148,9 +130,11 @@ export class CouncilOrchestrator {
     question: string,
     modeOverride?: ResponseMode,
     maxRoundsOverride?: number,
+    verboseOverride?: boolean,
   ): Promise<CouncilResult> {
     const mode = modeOverride ?? this.config.responseMode;
     const maxRounds = maxRoundsOverride ?? this.config.maxDeconflictRounds;
+    const verbose = verboseOverride ?? this.runtime.verbose;
 
     // ── Determine council membership ──────────────────────────────────────
     // If explicitly configured, use those. Otherwise (zero-config) auto-
@@ -176,8 +160,8 @@ export class CouncilOrchestrator {
       );
     }
 
-    // ── Query all members in parallel ─────────────────────────────────────
-    const responses = await queryAll(question, members);
+    // ── Query all members (bounded concurrency) ───────────────────────────
+    const responses = await queryMembers(question, members, this.runtime);
 
     // ── Individual mode — done ─────────────────────────────────────────────
     if (mode === 'individual') {
@@ -210,12 +194,15 @@ export class CouncilOrchestrator {
       );
     }
 
+    const cc = { maxTokens: this.runtime.maxTokens, retries: this.runtime.retries };
+
     // ── Categorize ────────────────────────────────────────────────────────
     const catResult = await categorize(
       question,
       responses,
       judgeModelId,
       judgeProvider,
+      cc,
     );
 
     if (mode === 'categorized') {
@@ -237,6 +224,8 @@ export class CouncilOrchestrator {
       members,
       judgeModelId,
       judgeProvider,
+      runtime: this.runtime,
+      verbose,
     }) as Promise<DeconflictedResult>;
   }
 }

@@ -48,6 +48,10 @@ claude --plugin-dir /path/to/model-council-mcp
 | Max deconfliction rounds | 1–10 | `3` |
 | OpenAI / Anthropic / Groq API key | Enable cloud models (stored in keychain) | — |
 | vLLM / TRT-LLM / SGLang servers | `name:host:port` entries | — |
+| Max response tokens | Tokens per completion | `16000` |
+| Cloud / local concurrency | Simultaneous requests (cloud pool / local pool) | `3` / `1` |
+| Completion retries | Retries on an empty/failed response | `3` |
+| Verbose deconfliction | Include per-round detail in deconflicted results | `false` |
 
 ---
 
@@ -119,6 +123,18 @@ Full URLs also work: `gpu3:http://10.0.0.5:9000`
 | `RESPONSE_MODE` | `individual` \| `categorized` \| `deconflicted` | `categorized` |
 | `MAX_DECONFLICT_ROUNDS` | Max deconfliction iterations | `3` |
 
+### Performance & output
+
+| Variable | Description | Default |
+|---|---|---|
+| `MAX_TOKENS` | Max tokens requested per model completion | `16000` |
+| `CLOUD_CONCURRENCY` | Max simultaneous requests to cloud members (Ollama cloud `:cloud`/`-cloud`, OpenAI, Anthropic, Groq). Ollama cloud needs Pro (3 concurrent) or Max (10) | `3` |
+| `LOCAL_CONCURRENCY` | Max simultaneous requests to local models; `1` runs them one at a time to avoid contention, `0` = unlimited | `1` |
+| `COMPLETION_RETRIES` | Attempts per completion before giving up on an empty/failed response | `3` |
+| `DECONFLICT_VERBOSE` | `true` → deconflicted results include per-round detail by default | `false` |
+
+The council queries members in parallel but respects these concurrency limits — cloud members share one pool and local members another, so a large council never exceeds your Ollama cloud plan's concurrent-request cap, and local models can be run sequentially to avoid GPU contention.
+
 ### Model ID format
 
 ```
@@ -184,7 +200,7 @@ Send a question to the full council.
 }
 ```
 
-`mode` and `max_deconflict_rounds` override the configured defaults for this call only.
+`mode` and `max_deconflict_rounds` override the configured defaults for this call only. In `deconflicted` mode, set `"verbose": true` to include the initial categorization, every member's per-round responses, and the round-by-round re-categorization alongside the final synthesis.
 
 #### Individual result
 

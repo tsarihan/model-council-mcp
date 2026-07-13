@@ -24474,6 +24474,17 @@ function envClean(name) {
   if (trimmed.includes("${")) return void 0;
   return trimmed;
 }
+function envInt(name, fallback) {
+  const v2 = envClean(name);
+  if (v2 === void 0) return fallback;
+  const n2 = parseInt(v2, 10);
+  return Number.isFinite(n2) ? n2 : fallback;
+}
+function envBool(name, fallback) {
+  const v2 = envClean(name);
+  if (v2 === void 0) return fallback;
+  return ["true", "1", "yes", "on"].includes(v2.toLowerCase());
+}
 function loadConfig() {
   const servers = [];
   servers.push({
@@ -24531,6 +24542,13 @@ function loadConfig() {
   );
   const autoRaw = (envClean("AUTO_COUNCIL") ?? "true").toLowerCase();
   const autoCouncil = !["false", "0", "no", "off"].includes(autoRaw);
+  const runtime = {
+    maxTokens: Math.max(1, envInt("MAX_TOKENS", 16e3)),
+    cloudConcurrency: Math.max(1, envInt("CLOUD_CONCURRENCY", 3)),
+    localConcurrency: envInt("LOCAL_CONCURRENCY", 1),
+    retries: Math.max(1, envInt("COMPLETION_RETRIES", 3)),
+    verbose: envBool("DECONFLICT_VERBOSE", false)
+  };
   return {
     servers,
     council: {
@@ -24539,7 +24557,8 @@ function loadConfig() {
       responseMode,
       maxDeconflictRounds,
       autoCouncil
-    }
+    },
+    runtime
   };
 }
 
@@ -24582,7 +24601,7 @@ var OllamaProvider = class {
       stream: false,
       options: {
         temperature: opts.temperature ?? 0.7,
-        num_predict: opts.maxTokens ?? 2048
+        num_predict: opts.maxTokens ?? 16e3
       },
       ...opts.jsonMode ? { format: "json" } : {}
     };
@@ -31256,7 +31275,7 @@ var OpenAICompatibleProvider = class {
       model,
       messages,
       temperature: opts.temperature ?? 0.7,
-      max_tokens: opts.maxTokens ?? 2048,
+      max_tokens: opts.maxTokens ?? 16e3,
       ...opts.jsonMode ? { response_format: { type: "json_object" } } : {}
     });
     return res.choices[0]?.message?.content ?? "";
@@ -34214,7 +34233,7 @@ var AnthropicProvider = class {
 Respond with valid JSON only.`.trim() : systemParts || void 0;
     const res = await this.client.messages.create({
       model,
-      max_tokens: opts.maxTokens ?? 2048,
+      max_tokens: opts.maxTokens ?? 16e3,
       ...systemText ? { system: systemText } : {},
       messages: userMessages
     });
@@ -34270,6 +34289,83 @@ var ProviderRegistry = class {
   }
 };
 
+// src/council/query.ts
+function isCloudMember(m2) {
+  const type = m2.provider.config.type;
+  if (type === "openai" || type === "anthropic" || type === "groq") return true;
+  const model = m2.modelId.model;
+  return model.endsWith(":cloud") || model.endsWith("-cloud");
+}
+var EmptyCompletionError = class extends Error {
+  constructor(message = "empty response after retries") {
+    super(message);
+    this.name = "EmptyCompletionError";
+  }
+};
+var sleep3 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function pooled(tasks, limit2) {
+  if (tasks.length === 0) return;
+  const width = limit2 && limit2 > 0 ? Math.min(limit2, tasks.length) : tasks.length;
+  let next = 0;
+  const workers = Array.from({ length: width }, async () => {
+    while (next < tasks.length) {
+      const i2 = next++;
+      await tasks[i2]();
+    }
+  });
+  await Promise.all(workers);
+}
+async function completeWithRetry(provider, model, messages, opts, retries) {
+  const attempts = Math.max(1, retries);
+  let lastErr = new Error("completion failed");
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const res = await provider.complete(model, messages, opts);
+      if (res && res.trim() !== "") return res;
+      lastErr = new EmptyCompletionError();
+    } catch (err) {
+      lastErr = err;
+    }
+    if (attempt < attempts) await sleep3(400 * attempt);
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+async function queryMembers(question, members, runtime, opts = {}) {
+  const results = new Array(members.length);
+  const cloudTasks = [];
+  const localTasks = [];
+  members.forEach((member, i2) => {
+    const task = async () => {
+      const label = modelIdLabel(member.modelId);
+      const t0 = Date.now();
+      try {
+        const response = await completeWithRetry(
+          member.provider,
+          member.modelId.model,
+          [{ role: "user", content: question }],
+          { maxTokens: runtime.maxTokens, ...opts },
+          runtime.retries
+        );
+        results[i2] = { modelId: member.modelId, label, response, latencyMs: Date.now() - t0 };
+      } catch (err) {
+        results[i2] = {
+          modelId: member.modelId,
+          label,
+          response: "",
+          error: String(err),
+          latencyMs: Date.now() - t0
+        };
+      }
+    };
+    (isCloudMember(member) ? cloudTasks : localTasks).push(task);
+  });
+  await Promise.all([
+    pooled(cloudTasks, runtime.cloudConcurrency),
+    pooled(localTasks, runtime.localConcurrency)
+  ]);
+  return results;
+}
+
 // src/council/categorizer.ts
 function buildCategorizationPrompt(question, responses) {
   const responseBlock = responses.filter((r2) => !r2.error).map((r2) => `### ${r2.label}
@@ -34310,16 +34406,27 @@ function parseCategorizationJSON(raw) {
   const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
   return JSON.parse(stripped);
 }
-async function categorize(question, responses, judgeModelId, judgeProvider, existingConflictIds = []) {
+async function categorize(question, responses, judgeModelId, judgeProvider, cc, existingConflictIds = []) {
   const prompt = buildCategorizationPrompt(question, responses);
   let rawJson;
   try {
-    rawJson = await judgeProvider.complete(
+    rawJson = await completeWithRetry(
+      judgeProvider,
       judgeModelId.model,
       [{ role: "user", content: prompt }],
-      { jsonMode: true, temperature: 0.2 }
+      { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens },
+      cc.retries
     );
   } catch (err) {
+    if (err instanceof EmptyCompletionError) {
+      return {
+        question,
+        commonAgreement: null,
+        complementary: [],
+        conflicting: [],
+        judgeModel: modelIdLabel(judgeModelId)
+      };
+    }
     throw new Error(
       `Judge model (${modelIdLabel(judgeModelId)}) failed: ${String(err)}`
     );
@@ -34451,6 +34558,19 @@ function detectResolutions(previous, newCateg) {
   }
   return { resolved, remaining };
 }
+async function synthesize(judgeProvider, model, prompt, runtime) {
+  try {
+    return await completeWithRetry(
+      judgeProvider,
+      model,
+      [{ role: "user", content: prompt }],
+      { temperature: 0.3, maxTokens: runtime.maxTokens },
+      runtime.retries
+    );
+  } catch {
+    return "(The judge model returned no final synthesis.)";
+  }
+}
 async function deconflict(input) {
   const {
     question,
@@ -34458,26 +34578,34 @@ async function deconflict(input) {
     maxRounds,
     members,
     judgeModelId,
-    judgeProvider
+    judgeProvider,
+    runtime,
+    verbose
   } = input;
+  const cc = { maxTokens: runtime.maxTokens, retries: runtime.retries };
   const judgeLabel = modelIdLabel(judgeModelId);
   const totalConflicts = initialConflicts.length;
+  const verboseFields = verbose ? {
+    initialResponses: input.initialResponses,
+    initialCategorization: {
+      commonAgreement: input.commonAgreement,
+      complementary: input.complementary,
+      conflicting: initialConflicts
+    },
+    rounds: []
+  } : {};
   if (totalConflicts === 0) {
-    const synthesis2 = await judgeProvider.complete(
+    const synthesis2 = await synthesize(
+      judgeProvider,
       judgeModelId.model,
-      [
-        {
-          role: "user",
-          content: buildSynthesisPrompt(
-            question,
-            input.commonAgreement,
-            input.complementary,
-            [],
-            []
-          )
-        }
-      ],
-      { temperature: 0.3 }
+      buildSynthesisPrompt(
+        question,
+        input.commonAgreement,
+        input.complementary,
+        [],
+        []
+      ),
+      runtime
     );
     return {
       mode: "deconflicted",
@@ -34490,35 +34618,18 @@ async function deconflict(input) {
       finalSynthesis: synthesis2,
       unresolvedConflicts: [],
       roundHistory: [],
-      judgeModel: judgeLabel
+      judgeModel: judgeLabel,
+      ...verboseFields
     };
   }
   let openConflicts = [...initialConflicts];
   const allResolved = [];
   const roundHistory = [];
+  const roundDetails = [];
   for (let round = 1; round <= maxRounds; round++) {
     const enteringCount = openConflicts.length;
     const roundPrompt = buildConflictRoundPrompt(question, openConflicts, round);
-    const roundResponses = await Promise.all(
-      members.map(async ({ modelId, provider }) => {
-        const label = modelIdLabel(modelId);
-        const t0 = Date.now();
-        try {
-          const response = await provider.complete(modelId.model, [
-            { role: "user", content: roundPrompt }
-          ]);
-          return { modelId, label, response, latencyMs: Date.now() - t0 };
-        } catch (err) {
-          return {
-            modelId,
-            label,
-            response: "",
-            error: String(err),
-            latencyMs: Date.now() - t0
-          };
-        }
-      })
-    );
+    const roundResponses = await queryMembers(roundPrompt, members, runtime);
     let newCateg;
     try {
       newCateg = await categorize(
@@ -34526,6 +34637,7 @@ async function deconflict(input) {
         roundResponses,
         judgeModelId,
         judgeProvider,
+        cc,
         openConflicts.map((c2) => c2.id)
       );
     } catch {
@@ -34535,34 +34647,54 @@ async function deconflict(input) {
         conflictsResolved: 0,
         conflictsRemaining: enteringCount
       });
+      if (verbose) {
+        roundDetails.push({
+          round,
+          conflictsEntering: enteringCount,
+          responses: roundResponses,
+          commonAgreement: null,
+          complementary: [],
+          conflicting: [],
+          resolved: [],
+          remaining: openConflicts
+        });
+      }
       break;
     }
     const { resolved, remaining } = detectResolutions(openConflicts, newCateg);
     allResolved.push(...resolved);
-    openConflicts = remaining;
     roundHistory.push({
       round,
       conflictsEntering: enteringCount,
       conflictsResolved: resolved.length,
       conflictsRemaining: remaining.length
     });
+    if (verbose) {
+      roundDetails.push({
+        round,
+        conflictsEntering: enteringCount,
+        responses: roundResponses,
+        commonAgreement: newCateg.commonAgreement,
+        complementary: newCateg.complementary,
+        conflicting: newCateg.conflicting,
+        resolved,
+        remaining
+      });
+    }
+    openConflicts = remaining;
     if (openConflicts.length === 0) break;
   }
-  const synthesis = await judgeProvider.complete(
+  const synthesis = await synthesize(
+    judgeProvider,
     judgeModelId.model,
-    [
-      {
-        role: "user",
-        content: buildSynthesisPrompt(
-          question,
-          input.commonAgreement,
-          input.complementary,
-          allResolved,
-          openConflicts
-        )
-      }
-    ],
-    { temperature: 0.3 }
+    buildSynthesisPrompt(
+      question,
+      input.commonAgreement,
+      input.complementary,
+      allResolved,
+      openConflicts
+    ),
+    runtime
   );
   const resolvedCount = allResolved.length;
   const score = totalConflicts > 0 ? Math.round(resolvedCount / totalConflicts * 100) : 100;
@@ -34577,7 +34709,16 @@ async function deconflict(input) {
     finalSynthesis: synthesis,
     unresolvedConflicts: openConflicts,
     roundHistory,
-    judgeModel: judgeLabel
+    judgeModel: judgeLabel,
+    ...verbose ? {
+      initialResponses: input.initialResponses,
+      initialCategorization: {
+        commonAgreement: input.commonAgreement,
+        complementary: input.complementary,
+        conflicting: initialConflicts
+      },
+      rounds: roundDetails
+    } : {}
   };
 }
 
@@ -34612,36 +34753,16 @@ function selectJudge(judgeModelId, memberIds, allModels) {
   }
   return best;
 }
-async function queryAll(question, members) {
-  return Promise.all(
-    members.map(async ({ modelId, provider }) => {
-      const label = modelIdLabel(modelId);
-      const t0 = Date.now();
-      try {
-        const response = await provider.complete(modelId.model, [
-          { role: "user", content: question }
-        ]);
-        return { modelId, label, response, latencyMs: Date.now() - t0 };
-      } catch (err) {
-        return {
-          modelId,
-          label,
-          response: "",
-          error: String(err),
-          latencyMs: Date.now() - t0
-        };
-      }
-    })
-  );
-}
 var CouncilOrchestrator = class {
   registry;
   config;
+  runtime;
   /** Cached model list for judge auto-selection */
   modelCache = [];
-  constructor(registry3, config2) {
+  constructor(registry3, config2, runtime) {
     this.registry = registry3;
     this.config = config2;
+    this.runtime = runtime;
   }
   /** Update config in-place (used by configure_council tool) */
   updateConfig(partial2) {
@@ -34649,6 +34770,9 @@ var CouncilOrchestrator = class {
   }
   getConfig() {
     return { ...this.config };
+  }
+  getRuntime() {
+    return { ...this.runtime };
   }
   /** List all reachable models across all providers */
   async listAllModels() {
@@ -34675,9 +34799,10 @@ var CouncilOrchestrator = class {
     return this.modelCache.filter((m2) => m2.provider === "ollama" && !isEmbeddingModel(m2)).map((m2) => ({ provider: "ollama", serverId: m2.serverId, model: m2.model }));
   }
   /** Ask the council and return a result in the configured (or overridden) mode */
-  async ask(question, modeOverride, maxRoundsOverride) {
+  async ask(question, modeOverride, maxRoundsOverride, verboseOverride) {
     const mode = modeOverride ?? this.config.responseMode;
     const maxRounds = maxRoundsOverride ?? this.config.maxDeconflictRounds;
+    const verbose = verboseOverride ?? this.runtime.verbose;
     let memberIds = this.config.members.map((m2) => m2.modelId);
     let autoUsed = false;
     if (memberIds.length === 0 && this.config.autoCouncil) {
@@ -34693,7 +34818,7 @@ var CouncilOrchestrator = class {
         autoUsed || this.config.autoCouncil ? "No Ollama chat models found to form a council. Pull a model (e.g. `ollama pull llama3`) or set council models via configure_council." : "Council has no reachable members. Use configure_council or set COUNCIL_MODELS."
       );
     }
-    const responses = await queryAll(question, members);
+    const responses = await queryMembers(question, members, this.runtime);
     if (mode === "individual") {
       return { mode: "individual", question, responses };
     }
@@ -34717,11 +34842,13 @@ var CouncilOrchestrator = class {
         `Judge model provider not found for ${modelIdLabel(judgeModelId)}`
       );
     }
+    const cc = { maxTokens: this.runtime.maxTokens, retries: this.runtime.retries };
     const catResult = await categorize(
       question,
       responses,
       judgeModelId,
-      judgeProvider
+      judgeProvider,
+      cc
     );
     if (mode === "categorized") {
       return {
@@ -34739,7 +34866,9 @@ var CouncilOrchestrator = class {
       maxRounds,
       members,
       judgeModelId,
-      judgeProvider
+      judgeProvider,
+      runtime: this.runtime,
+      verbose
     });
   }
 };
@@ -34747,7 +34876,7 @@ var CouncilOrchestrator = class {
 // src/index.ts
 var appConfig = loadConfig();
 var registry2 = new ProviderRegistry(appConfig.servers);
-var orchestrator = new CouncilOrchestrator(registry2, appConfig.council);
+var orchestrator = new CouncilOrchestrator(registry2, appConfig.council, appConfig.runtime);
 var ListModelsInput = external_exports.object({
   filter_provider: external_exports.string().optional().describe(
     "Optional provider to filter by (ollama, openai, anthropic, groq, vllm, trtllm, sglang)"
@@ -34771,7 +34900,10 @@ var ConfigureCouncilInput = external_exports.object({
 var AskCouncilInput = external_exports.object({
   question: external_exports.string().describe("The question or prompt to send to the council."),
   mode: external_exports.enum(["individual", "categorized", "deconflicted"]).optional().describe("Override the default response mode for this call only."),
-  max_deconflict_rounds: external_exports.number().int().min(1).max(10).optional().describe("Override max deconfliction rounds for this call only.")
+  max_deconflict_rounds: external_exports.number().int().min(1).max(10).optional().describe("Override max deconfliction rounds for this call only."),
+  verbose: external_exports.boolean().optional().describe(
+    "Deconflicted mode only: include the initial categorization and per-round detail in the result."
+  )
 });
 var GetCouncilConfigInput = external_exports.object({});
 var TOOLS = [
@@ -34838,6 +34970,10 @@ var TOOLS = [
         max_deconflict_rounds: {
           type: "number",
           description: "Max deconfliction rounds override for this call only."
+        },
+        verbose: {
+          type: "boolean",
+          description: "Deconflicted mode only: include the initial categorization and per-round detail."
         }
       }
     }
@@ -34946,7 +35082,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const result = await orchestrator.ask(
           input.question,
           input.mode,
-          input.max_deconflict_rounds
+          input.max_deconflict_rounds,
+          input.verbose
         );
         return {
           content: [
@@ -34960,6 +35097,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       // ── get_council_config ───────────────────────────────────────────────
       case "get_council_config": {
         const cfg = orchestrator.getConfig();
+        const runtime = orchestrator.getRuntime();
         const providers = appConfig.servers.map((s2) => ({
           id: s2.id,
           type: s2.type,
@@ -34994,6 +35132,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                     maxDeconflictRounds: cfg.maxDeconflictRounds
                   },
                   providers,
+                  runtime: {
+                    maxTokens: runtime.maxTokens,
+                    cloudConcurrency: runtime.cloudConcurrency,
+                    localConcurrency: runtime.localConcurrency,
+                    retries: runtime.retries,
+                    verbose: runtime.verbose
+                  },
                   env_reference: {
                     OLLAMA_ADDRESS: "Ollama server URL (default: http://localhost:11434)",
                     OPENAI_API_KEY: "Enables OpenAI models",
@@ -35006,7 +35151,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                     AUTO_COUNCIL: "true (default) auto-fills council from all Ollama chat models when COUNCIL_MODELS is empty",
                     JUDGE_MODEL: "Judge model (default: auto)",
                     RESPONSE_MODE: "individual | categorized | deconflicted",
-                    MAX_DECONFLICT_ROUNDS: "Max deconfliction rounds (default: 3)"
+                    MAX_DECONFLICT_ROUNDS: "Max deconfliction rounds (default: 3)",
+                    MAX_TOKENS: "Max tokens per completion (default: 16000)",
+                    CLOUD_CONCURRENCY: "Max concurrent cloud requests (default: 3)",
+                    LOCAL_CONCURRENCY: "Max concurrent local requests (default: 1; 0 = unlimited)",
+                    COMPLETION_RETRIES: "Attempts per completion before giving up on empty/error (default: 3)",
+                    DECONFLICT_VERBOSE: "true \u2192 deconflicted results include per-round detail by default"
                   }
                 },
                 null,

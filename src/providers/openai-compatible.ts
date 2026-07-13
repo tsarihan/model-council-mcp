@@ -82,7 +82,7 @@ export class OpenAICompatibleProvider implements Provider {
       model,
       messages,
       temperature: opts.temperature ?? 0.7,
-      max_tokens: opts.maxTokens ?? 2048,
+      max_tokens: opts.maxTokens ?? 16000,
       ...(opts.jsonMode ? { response_format: { type: 'json_object' } } : {}),
     });
 

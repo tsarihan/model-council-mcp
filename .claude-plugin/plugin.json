@@ -90,6 +90,44 @@
       "title": "SGLang servers",
       "description": "Optional. Comma-separated 'name:host:port' entries for OpenAI-compatible SGLang servers. Port defaults to 30000.",
       "default": ""
+    },
+    "max_tokens": {
+      "type": "number",
+      "title": "Max response tokens",
+      "description": "Maximum tokens requested per model completion.",
+      "default": 16000,
+      "min": 256,
+      "max": 200000
+    },
+    "cloud_concurrency": {
+      "type": "number",
+      "title": "Cloud concurrency",
+      "description": "Max simultaneous requests to cloud members (Ollama :cloud, OpenAI, Anthropic, Groq). Ollama cloud requires Pro (3 concurrent) or Max (10).",
+      "default": 3,
+      "min": 1,
+      "max": 100
+    },
+    "local_concurrency": {
+      "type": "number",
+      "title": "Local concurrency",
+      "description": "Max simultaneous requests to local models. Default 1 (sequential) to avoid resource contention; set 0 for unlimited.",
+      "default": 1,
+      "min": 0,
+      "max": 100
+    },
+    "completion_retries": {
+      "type": "number",
+      "title": "Completion retries",
+      "description": "Attempts per completion before giving up on an empty or failed response.",
+      "default": 3,
+      "min": 1,
+      "max": 10
+    },
+    "deconflict_verbose": {
+      "type": "boolean",
+      "title": "Verbose deconfliction",
+      "description": "When on, deconflicted results include the initial categorization and per-round detail by default.",
+      "default": false
     }
   }
 }

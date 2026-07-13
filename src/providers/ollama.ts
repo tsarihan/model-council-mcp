@@ -65,7 +65,7 @@ export class OllamaProvider implements Provider {
       stream: false,
       options: {
         temperature: opts.temperature ?? 0.7,
-        num_predict: opts.maxTokens ?? 2048,
+        num_predict: opts.maxTokens ?? 16000,
       },
       ...(opts.jsonMode ? { format: 'json' } : {}),
     };

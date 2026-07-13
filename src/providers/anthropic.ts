@@ -65,7 +65,7 @@ export class AnthropicProvider implements Provider {
 
     const res = await this.client.messages.create({
       model,
-      max_tokens: opts.maxTokens ?? 2048,
+      max_tokens: opts.maxTokens ?? 16000,
       ...(systemText ? { system: systemText } : {}),
       messages: userMessages,
     });

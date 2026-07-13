@@ -4,12 +4,14 @@ import {
   ModelId,
   ProviderType,
   ResponseMode,
+  RuntimeConfig,
   ServerConfig,
 } from './types.js';
 
 export interface AppConfig {
   servers: ServerConfig[];
   council: CouncilConfig;
+  runtime: RuntimeConfig;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -126,6 +128,19 @@ function envClean(name: string): string | undefined {
   return trimmed;
 }
 
+function envInt(name: string, fallback: number): number {
+  const v = envClean(name);
+  if (v === undefined) return fallback;
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function envBool(name: string, fallback: boolean): boolean {
+  const v = envClean(name);
+  if (v === undefined) return fallback;
+  return ['true', '1', 'yes', 'on'].includes(v.toLowerCase());
+}
+
 export function loadConfig(): AppConfig {
   const servers: ServerConfig[] = [];
 
@@ -210,6 +225,18 @@ export function loadConfig(): AppConfig {
   const autoRaw = (envClean('AUTO_COUNCIL') ?? 'true').toLowerCase();
   const autoCouncil = !['false', '0', 'no', 'off'].includes(autoRaw);
 
+  // ── Runtime tuning ────────────────────────────────────────────────────────
+  // Cloud concurrency defaults to 3 (Ollama cloud requires a Pro plan, which
+  // grants at least 3 concurrent requests). Local defaults to 1 (sequential)
+  // to avoid resource contention; set LOCAL_CONCURRENCY=0 for unlimited.
+  const runtime: RuntimeConfig = {
+    maxTokens: Math.max(1, envInt('MAX_TOKENS', 16000)),
+    cloudConcurrency: Math.max(1, envInt('CLOUD_CONCURRENCY', 3)),
+    localConcurrency: envInt('LOCAL_CONCURRENCY', 1),
+    retries: Math.max(1, envInt('COMPLETION_RETRIES', 3)),
+    verbose: envBool('DECONFLICT_VERBOSE', false),
+  };
+
   return {
     servers,
     council: {
@@ -219,5 +246,6 @@ export function loadConfig(): AppConfig {
       maxDeconflictRounds,
       autoCouncil,
     },
+    runtime,
   };
 }

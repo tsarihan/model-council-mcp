@@ -58,6 +58,8 @@ async function main() {
       COUNCIL_MODELS: 'ollama:small-a,ollama:small-b,ollama:big-judge',
       RESPONSE_MODE: 'categorized',
       MAX_DECONFLICT_ROUNDS: '3',
+      CLOUD_CONCURRENCY: '2',
+      LOCAL_CONCURRENCY: '1',
     },
   });
 
@@ -194,6 +196,98 @@ async function main() {
       name: 'ask_council', arguments: { question: 'test', mode: 'categorized' },
     }));
     check('explicit judge used', cat2.judgeModel === 'ollama:small-b', `got ${cat2.judgeModel}`);
+
+    // ── Test: max_tokens default (16k) reaches the backend ────────────────────
+    console.log('\n▶ max_tokens default');
+    await resetMock();
+    await client.callTool({
+      name: 'configure_council',
+      arguments: { models: ['ollama:small-a'], response_mode: 'individual' },
+    });
+    await client.callTool({ name: 'ask_council', arguments: { question: 'mt', mode: 'individual' } });
+    const dbgMt = await (await fetch(`${MOCK_URL}/debug`)).json();
+    check('max_tokens default is 16000', dbgMt.lastNumPredict === 16000, `got ${dbgMt.lastNumPredict}`);
+
+    // ── Test: empty-response retry ────────────────────────────────────────────
+    console.log('\n▶ empty-response retry');
+    await resetMock();
+    await client.callTool({
+      name: 'configure_council',
+      arguments: { models: ['ollama:flaky-empty'], response_mode: 'individual' },
+    });
+    const rr = parseToolResult(await client.callTool({
+      name: 'ask_council', arguments: { question: 'retry?', mode: 'individual' },
+    }));
+    check('retry recovers empty response', /Recovered/.test(rr.responses?.[0]?.response ?? ''), `got "${rr.responses?.[0]?.response}" err=${rr.responses?.[0]?.error}`);
+    check('recovered response has no error', !rr.responses?.[0]?.error);
+
+    // ── Test: cloud concurrency limit (CLOUD_CONCURRENCY=2) ────────────────────
+    console.log('\n▶ cloud concurrency limit');
+    await resetMock();
+    await client.callTool({
+      name: 'configure_council',
+      arguments: { models: ['ollama:conc1:cloud', 'ollama:conc2:120b-cloud', 'ollama:conc3:cloud', 'ollama:conc4:480b-cloud'], response_mode: 'individual' },
+    });
+    const ccRes = parseToolResult(await client.callTool({
+      name: 'ask_council', arguments: { question: 'cloud', mode: 'individual' },
+    }));
+    const dbgCloud = await (await fetch(`${MOCK_URL}/debug`)).json();
+    check('all 4 cloud members answered', ccRes.responses?.length === 4, `got ${ccRes.responses?.length}`);
+    check('cloud concurrency capped at 2', dbgCloud.maxConcurrent === 2, `maxConcurrent=${dbgCloud.maxConcurrent}`);
+
+    // ── Test: local concurrency limit (LOCAL_CONCURRENCY=1 → sequential) ───────
+    console.log('\n▶ local concurrency limit');
+    await resetMock();
+    await client.callTool({
+      name: 'configure_council',
+      arguments: { models: ['ollama:concL1', 'ollama:concL2', 'ollama:concL3'], response_mode: 'individual' },
+    });
+    const lcRes = parseToolResult(await client.callTool({
+      name: 'ask_council', arguments: { question: 'local', mode: 'individual' },
+    }));
+    const dbgLocal = await (await fetch(`${MOCK_URL}/debug`)).json();
+    check('all 3 local members answered', lcRes.responses?.length === 3, `got ${lcRes.responses?.length}`);
+    check('local concurrency is sequential (1)', dbgLocal.maxConcurrent === 1, `maxConcurrent=${dbgLocal.maxConcurrent}`);
+
+    // ── Test: deconflicted verbose ────────────────────────────────────────────
+    console.log('\n▶ deconflicted verbose');
+    await resetMock();
+    await client.callTool({
+      name: 'configure_council',
+      arguments: { models: ['ollama:small-a', 'ollama:small-b', 'ollama:big-judge'], judge_model: 'auto', response_mode: 'deconflicted' },
+    });
+    const dv = parseToolResult(await client.callTool({
+      name: 'ask_council', arguments: { question: 'How to handle errors?', mode: 'deconflicted', max_deconflict_rounds: 3, verbose: true },
+    }));
+    check('verbose: initialCategorization present', dv.initialCategorization && Array.isArray(dv.initialCategorization.conflicting), Object.keys(dv).join(','));
+    check('verbose: initial conflicts = 2', dv.initialCategorization?.conflicting?.length === 2, `got ${dv.initialCategorization?.conflicting?.length}`);
+    check('verbose: initialResponses = 3', Array.isArray(dv.initialResponses) && dv.initialResponses.length === 3, `got ${dv.initialResponses?.length}`);
+    check('verbose: rounds array present', Array.isArray(dv.rounds), `got ${typeof dv.rounds}`);
+    check('verbose: rounds match roundsTaken', dv.rounds?.length === dv.roundsTaken, `rounds=${dv.rounds?.length} taken=${dv.roundsTaken}`);
+    check('verbose: round detail has responses', dv.rounds?.[0]?.responses?.length === 3, `got ${dv.rounds?.[0]?.responses?.length}`);
+
+    // ── Test: non-verbose deconflicted omits verbose detail ───────────────────
+    console.log('\n▶ deconflicted non-verbose omits detail');
+    await resetMock();
+    const dnv = parseToolResult(await client.callTool({
+      name: 'ask_council', arguments: { question: 'How to handle errors?', mode: 'deconflicted', max_deconflict_rounds: 3 },
+    }));
+    check('non-verbose: no rounds field', dnv.rounds === undefined);
+    check('non-verbose: no initialCategorization field', dnv.initialCategorization === undefined);
+
+    // ── Test: empty judge degrades gracefully (retry, then no-conflict fallback) ─
+    console.log('\n▶ empty judge graceful degradation');
+    await resetMock();
+    await client.callTool({
+      name: 'configure_council',
+      arguments: { models: ['ollama:small-a', 'ollama:small-b'], judge_model: 'ollama:empty-judge', response_mode: 'categorized' },
+    });
+    const ej = parseToolResult(await client.callTool({
+      name: 'ask_council', arguments: { question: 'How to handle errors?', mode: 'categorized' },
+    }));
+    check('empty judge → still returns a categorized result', ej.mode === 'categorized', `got mode=${ej.mode}`);
+    check('empty judge → no-conflict fallback', Array.isArray(ej.conflicting) && ej.conflicting.length === 0, `conflicting=${JSON.stringify(ej.conflicting)}`);
+    check('empty judge → member answers preserved', ej.rawResponses?.length === 2, `got ${ej.rawResponses?.length}`);
 
   } finally {
     await client.close();

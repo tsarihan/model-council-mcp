@@ -51,6 +51,22 @@ export interface CouncilConfig {
   autoCouncil: boolean;
 }
 
+/**
+ * Runtime tuning knobs, set via environment / plugin userConfig.
+ */
+export interface RuntimeConfig {
+  /** Max tokens requested per completion (default 16000). */
+  maxTokens: number;
+  /** Max concurrent cloud requests (Ollama :cloud / OpenAI / Anthropic / Groq). Default 3. */
+  cloudConcurrency: number;
+  /** Max concurrent local requests. Default 1 (sequential) to avoid contention; <=0 = unlimited. */
+  localConcurrency: number;
+  /** Attempts per completion before giving up on an empty/failed response. Default 3. */
+  retries: number;
+  /** Default value of the verbose flag for deconflicted results. */
+  verbose: boolean;
+}
+
 // ─── Raw responses ────────────────────────────────────────────────────────────
 
 export interface RawResponse {
@@ -105,6 +121,18 @@ export interface RoundSummary {
   conflictsRemaining: number;
 }
 
+/** Full detail of a single deconfliction round (included only when verbose). */
+export interface DeconflictRoundDetail {
+  round: number;
+  conflictsEntering: number;
+  responses: RawResponse[];
+  commonAgreement: string | null;
+  complementary: ComplementaryItem[];
+  conflicting: ConflictItem[];
+  resolved: ConflictItem[];
+  remaining: ConflictItem[];
+}
+
 export interface DeconflictedResult {
   mode: 'deconflicted';
   question: string;
@@ -118,6 +146,17 @@ export interface DeconflictedResult {
   unresolvedConflicts: ConflictItem[];
   roundHistory: RoundSummary[];
   judgeModel: string;     // label
+  // ── Verbose-only fields (present when verbose is requested) ──
+  /** The initial fan-out responses from every council member. */
+  initialResponses?: RawResponse[];
+  /** The first-pass categorization before any deconfliction rounds. */
+  initialCategorization?: {
+    commonAgreement: string | null;
+    complementary: ComplementaryItem[];
+    conflicting: ConflictItem[];
+  };
+  /** Per-round detail: member responses and the judge's re-categorization. */
+  rounds?: DeconflictRoundDetail[];
 }
 
 export type CouncilResult = IndividualResult | CategorizedResult | DeconflictedResult;

@@ -27,7 +27,7 @@ import { CouncilConfig, ModelId, ResponseMode } from './types.js';
 
 const appConfig = loadConfig();
 const registry = new ProviderRegistry(appConfig.servers);
-const orchestrator = new CouncilOrchestrator(registry, appConfig.council);
+const orchestrator = new CouncilOrchestrator(registry, appConfig.council, appConfig.runtime);
 
 // ─── Tool schemas (zod) ───────────────────────────────────────────────────────
 
@@ -93,6 +93,12 @@ const AskCouncilInput = z.object({
     .max(10)
     .optional()
     .describe('Override max deconfliction rounds for this call only.'),
+  verbose: z
+    .boolean()
+    .optional()
+    .describe(
+      'Deconflicted mode only: include the initial categorization and per-round detail in the result.',
+    ),
 });
 
 const GetCouncilConfigInput = z.object({});
@@ -182,6 +188,11 @@ const TOOLS = [
         max_deconflict_rounds: {
           type: 'number',
           description: 'Max deconfliction rounds override for this call only.',
+        },
+        verbose: {
+          type: 'boolean',
+          description:
+            'Deconflicted mode only: include the initial categorization and per-round detail.',
         },
       },
     },
@@ -317,6 +328,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
           input.question,
           input.mode as ResponseMode | undefined,
           input.max_deconflict_rounds,
+          input.verbose,
         );
 
         return {
@@ -332,6 +344,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // ── get_council_config ───────────────────────────────────────────────
       case 'get_council_config': {
         const cfg = orchestrator.getConfig();
+        const runtime = orchestrator.getRuntime();
         const providers = appConfig.servers.map(s => ({
           id: s.id,
           type: s.type,
@@ -373,6 +386,13 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
                     maxDeconflictRounds: cfg.maxDeconflictRounds,
                   },
                   providers,
+                  runtime: {
+                    maxTokens: runtime.maxTokens,
+                    cloudConcurrency: runtime.cloudConcurrency,
+                    localConcurrency: runtime.localConcurrency,
+                    retries: runtime.retries,
+                    verbose: runtime.verbose,
+                  },
                   env_reference: {
                     OLLAMA_ADDRESS: 'Ollama server URL (default: http://localhost:11434)',
                     OPENAI_API_KEY: 'Enables OpenAI models',
@@ -386,6 +406,11 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
                     JUDGE_MODEL: 'Judge model (default: auto)',
                     RESPONSE_MODE: 'individual | categorized | deconflicted',
                     MAX_DECONFLICT_ROUNDS: 'Max deconfliction rounds (default: 3)',
+                    MAX_TOKENS: 'Max tokens per completion (default: 16000)',
+                    CLOUD_CONCURRENCY: 'Max concurrent cloud requests (default: 3)',
+                    LOCAL_CONCURRENCY: 'Max concurrent local requests (default: 1; 0 = unlimited)',
+                    COMPLETION_RETRIES: 'Attempts per completion before giving up on empty/error (default: 3)',
+                    DECONFLICT_VERBOSE: 'true → deconflicted results include per-round detail by default',
                   },
                 },
                 null,

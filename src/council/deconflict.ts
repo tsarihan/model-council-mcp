@@ -9,15 +9,19 @@
  *   5. Score = resolvedCount / totalConflicts × 100.
  */
 import {
+  ComplementaryItem,
   ConflictItem,
   DeconflictedResult,
+  DeconflictRoundDetail,
   ModelId,
   RawResponse,
   RoundSummary,
+  RuntimeConfig,
 } from '../types.js';
 import { Provider } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
 import { categorize, buildSynthesisPrompt } from './categorizer.js';
+import { completeWithRetry, Member, queryMembers } from './query.js';
 
 // ─── Round-query prompt ───────────────────────────────────────────────────────
 
@@ -97,6 +101,29 @@ function detectResolutions(
   return { resolved, remaining };
 }
 
+// ─── Synthesis (graceful on empty/failed judge) ───────────────────────────────
+
+async function synthesize(
+  judgeProvider: Provider,
+  model: string,
+  prompt: string,
+  runtime: RuntimeConfig,
+): Promise<string> {
+  try {
+    return await completeWithRetry(
+      judgeProvider,
+      model,
+      [{ role: 'user', content: prompt }],
+      { temperature: 0.3, maxTokens: runtime.maxTokens },
+      runtime.retries,
+    );
+  } catch {
+    // Judge could not synthesize (empty or error after retries) — return the
+    // fully computed deconfliction result rather than failing the whole request.
+    return '(The judge model returned no final synthesis.)';
+  }
+}
+
 // ─── Main deconfliction entry point ──────────────────────────────────────────
 
 export interface DeconflictInput {
@@ -104,11 +131,14 @@ export interface DeconflictInput {
   initialResponses: RawResponse[];
   initialConflicts: ConflictItem[];
   commonAgreement: string | null;
-  complementary: import('../types.js').ComplementaryItem[];
+  complementary: ComplementaryItem[];
   maxRounds: number;
-  members: Array<{ modelId: ModelId; provider: Provider }>;
+  members: Member[];
   judgeModelId: ModelId;
   judgeProvider: Provider;
+  runtime: RuntimeConfig;
+  /** When true, the result includes the initial categorization and per-round detail. */
+  verbose: boolean;
 }
 
 export async function deconflict(
@@ -121,28 +151,39 @@ export async function deconflict(
     members,
     judgeModelId,
     judgeProvider,
+    runtime,
+    verbose,
   } = input;
 
+  const cc = { maxTokens: runtime.maxTokens, retries: runtime.retries };
   const judgeLabel = modelIdLabel(judgeModelId);
   const totalConflicts = initialConflicts.length;
 
+  const verboseFields = verbose
+    ? {
+        initialResponses: input.initialResponses,
+        initialCategorization: {
+          commonAgreement: input.commonAgreement,
+          complementary: input.complementary,
+          conflicting: initialConflicts,
+        },
+        rounds: [] as DeconflictRoundDetail[],
+      }
+    : {};
+
   if (totalConflicts === 0) {
     // Nothing to deconflict — synthesize directly
-    const synthesis = await judgeProvider.complete(
+    const synthesis = await synthesize(
+      judgeProvider,
       judgeModelId.model,
-      [
-        {
-          role: 'user',
-          content: buildSynthesisPrompt(
-            question,
-            input.commonAgreement,
-            input.complementary,
-            [],
-            [],
-          ),
-        },
-      ],
-      { temperature: 0.3 },
+      buildSynthesisPrompt(
+        question,
+        input.commonAgreement,
+        input.complementary,
+        [],
+        [],
+      ),
+      runtime,
     );
     return {
       mode: 'deconflicted',
@@ -156,39 +197,21 @@ export async function deconflict(
       unresolvedConflicts: [],
       roundHistory: [],
       judgeModel: judgeLabel,
+      ...verboseFields,
     };
   }
 
   let openConflicts = [...initialConflicts];
   const allResolved: ConflictItem[] = [];
   const roundHistory: RoundSummary[] = [];
+  const roundDetails: DeconflictRoundDetail[] = [];
 
   for (let round = 1; round <= maxRounds; round++) {
     const enteringCount = openConflicts.length;
 
     // ── Ask each council member about the open conflicts ──────────────────
     const roundPrompt = buildConflictRoundPrompt(question, openConflicts, round);
-
-    const roundResponses = await Promise.all(
-      members.map(async ({ modelId, provider }) => {
-        const label = modelIdLabel(modelId);
-        const t0 = Date.now();
-        try {
-          const response = await provider.complete(modelId.model, [
-            { role: 'user', content: roundPrompt },
-          ]);
-          return { modelId, label, response, latencyMs: Date.now() - t0 } as RawResponse;
-        } catch (err) {
-          return {
-            modelId,
-            label,
-            response: '',
-            error: String(err),
-            latencyMs: Date.now() - t0,
-          } as RawResponse;
-        }
-      }),
-    );
+    const roundResponses = await queryMembers(roundPrompt, members, runtime);
 
     // ── Judge re-categorizes these round-specific responses ───────────────
     let newCateg: Awaited<ReturnType<typeof categorize>>;
@@ -198,6 +221,7 @@ export async function deconflict(
         roundResponses,
         judgeModelId,
         judgeProvider,
+        cc,
         openConflicts.map(c => c.id),
       );
     } catch {
@@ -208,13 +232,24 @@ export async function deconflict(
         conflictsResolved: 0,
         conflictsRemaining: enteringCount,
       });
+      if (verbose) {
+        roundDetails.push({
+          round,
+          conflictsEntering: enteringCount,
+          responses: roundResponses,
+          commonAgreement: null,
+          complementary: [],
+          conflicting: [],
+          resolved: [],
+          remaining: openConflicts,
+        });
+      }
       break;
     }
 
     // ── Detect resolved vs remaining conflicts ────────────────────────────
     const { resolved, remaining } = detectResolutions(openConflicts, newCateg);
     allResolved.push(...resolved);
-    openConflicts = remaining;
 
     roundHistory.push({
       round,
@@ -222,26 +257,35 @@ export async function deconflict(
       conflictsResolved: resolved.length,
       conflictsRemaining: remaining.length,
     });
+    if (verbose) {
+      roundDetails.push({
+        round,
+        conflictsEntering: enteringCount,
+        responses: roundResponses,
+        commonAgreement: newCateg.commonAgreement,
+        complementary: newCateg.complementary,
+        conflicting: newCateg.conflicting,
+        resolved,
+        remaining,
+      });
+    }
 
+    openConflicts = remaining;
     if (openConflicts.length === 0) break;
   }
 
   // ── Final synthesis ───────────────────────────────────────────────────────
-  const synthesis = await judgeProvider.complete(
+  const synthesis = await synthesize(
+    judgeProvider,
     judgeModelId.model,
-    [
-      {
-        role: 'user',
-        content: buildSynthesisPrompt(
-          question,
-          input.commonAgreement,
-          input.complementary,
-          allResolved,
-          openConflicts,
-        ),
-      },
-    ],
-    { temperature: 0.3 },
+    buildSynthesisPrompt(
+      question,
+      input.commonAgreement,
+      input.complementary,
+      allResolved,
+      openConflicts,
+    ),
+    runtime,
   );
 
   const resolvedCount = allResolved.length;
@@ -262,5 +306,16 @@ export async function deconflict(
     unresolvedConflicts: openConflicts,
     roundHistory,
     judgeModel: judgeLabel,
+    ...(verbose
+      ? {
+          initialResponses: input.initialResponses,
+          initialCategorization: {
+            commonAgreement: input.commonAgreement,
+            complementary: input.complementary,
+            conflicting: initialConflicts,
+          },
+          rounds: roundDetails,
+        }
+      : {}),
   };
 }

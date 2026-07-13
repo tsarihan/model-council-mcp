@@ -1,0 +1,62 @@
+{
+  "name": "model-council-mcp",
+  "version": "0.1.0",
+  "description": "MCP server: ask a council of local and cloud AI models, get individual, categorized, or fully deconflicted answers",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "model-council-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=cjs --outfile=bundle/server.cjs",
+    "dev": "tsx src/index.ts",
+    "test": "npm run build && node test/e2e.mjs",
+    "test:bundle": "npm run bundle && SERVER_ENTRY=bundle/server.cjs node test/e2e.mjs",
+    "validate": "node test/validate-plugin.mjs",
+    "verify": "npm run build && npm run bundle && SERVER_ENTRY=bundle/server.cjs node test/e2e.mjs && node test/validate-plugin.mjs",
+    "prepublishOnly": "npm run build && npm run bundle"
+  },
+  "keywords": [
+    "mcp",
+    "ollama",
+    "llm",
+    "council",
+    "multi-model",
+    "vllm",
+    "trtllm",
+    "sglang",
+    "openai",
+    "anthropic",
+    "groq",
+    "deconflict"
+  ],
+  "author": "Tom Sarihan",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "@modelcontextprotocol/sdk": "^1.10.0",
+    "openai": "^4.77.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.24.2",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist",
+    "bundle",
+    "README.md",
+    "NOTICE",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tsarihan/model-council-mcp.git"
+  }
+}

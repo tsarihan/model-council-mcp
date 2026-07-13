@@ -1,0 +1,95 @@
+{
+  "name": "model-council",
+  "description": "Ask a council of local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, Groq) AI models. Get individual, categorized (agreement / complementary / conflicting), or fully deconflicted answers with a resolution score.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Tom Sarihan"
+  },
+  "homepage": "https://github.com/tsarihan/model-council-mcp",
+  "repository": "https://github.com/tsarihan/model-council-mcp",
+  "license": "Apache-2.0",
+  "keywords": [
+    "ollama",
+    "llm",
+    "council",
+    "multi-model",
+    "vllm",
+    "deconflict"
+  ],
+  "userConfig": {
+    "ollama_address": {
+      "type": "string",
+      "title": "Ollama address",
+      "description": "Base URL of your Ollama server. Override host/port if Ollama runs remotely or on a non-default port.",
+      "default": "http://localhost:11434"
+    },
+    "council_models": {
+      "type": "string",
+      "title": "Council models (optional)",
+      "description": "Leave BLANK for zero-config: the council auto-uses every local Ollama model plus your Ollama :cloud models. Or pin specific ones, comma-separated: 'ollama:llama3,ollama:qwen3.6:27b-mlx,openai:gpt-4o'. Format: provider:model or provider/serverId:model.",
+      "default": ""
+    },
+    "auto_council": {
+      "type": "boolean",
+      "title": "Auto-discover council",
+      "description": "When ON (default) and no council models are pinned above, automatically use all available Ollama chat models (local + :cloud), excluding embedding models.",
+      "default": true
+    },
+    "judge_model": {
+      "type": "string",
+      "title": "Judge model",
+      "description": "Model that categorizes and deconflicts council responses. Use 'auto' to pick the largest council member.",
+      "default": "auto"
+    },
+    "response_mode": {
+      "type": "string",
+      "title": "Default response mode",
+      "description": "One of: individual | categorized | deconflicted. individual = raw answers; categorized = grouped into agreement/complementary/conflicting; deconflicted = iterative resolution loop with a score.",
+      "default": "categorized"
+    },
+    "max_deconflict_rounds": {
+      "type": "number",
+      "title": "Max deconfliction rounds",
+      "description": "Maximum rounds the judge re-questions the council to resolve conflicts (1-10).",
+      "default": 3,
+      "min": 1,
+      "max": 10
+    },
+    "openai_api_key": {
+      "type": "string",
+      "title": "OpenAI API key",
+      "description": "Optional. Enables OpenAI models (gpt-4o, o1, ...) in the council.",
+      "sensitive": true
+    },
+    "anthropic_api_key": {
+      "type": "string",
+      "title": "Anthropic API key",
+      "description": "Optional. Enables Anthropic Claude models in the council.",
+      "sensitive": true
+    },
+    "groq_api_key": {
+      "type": "string",
+      "title": "Groq API key",
+      "description": "Optional. Enables Groq-hosted models (fast inference) in the council.",
+      "sensitive": true
+    },
+    "vllm_servers": {
+      "type": "string",
+      "title": "vLLM servers",
+      "description": "Optional. Comma-separated 'name:host:port' entries for OpenAI-compatible vLLM servers. Port defaults to 8000. Example: 'gpu1:192.168.1.10:8000,gpu2:192.168.1.10:8001'.",
+      "default": ""
+    },
+    "trtllm_servers": {
+      "type": "string",
+      "title": "TensorRT-LLM servers",
+      "description": "Optional. Comma-separated 'name:host:port' entries for OpenAI-compatible TRT-LLM servers. Port defaults to 8000.",
+      "default": ""
+    },
+    "sglang_servers": {
+      "type": "string",
+      "title": "SGLang servers",
+      "description": "Optional. Comma-separated 'name:host:port' entries for OpenAI-compatible SGLang servers. Port defaults to 30000.",
+      "default": ""
+    }
+  }
+}

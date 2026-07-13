@@ -1,0 +1,17 @@
+{
+  "name": "model-council",
+  "owner": {
+    "name": "Tom Sarihan"
+  },
+  "metadata": {
+    "description": "A configurable multi-model council for local and cloud LLMs.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "model-council",
+      "source": "./",
+      "description": "Ask a council of local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, Groq) models. Individual, categorized, or deconflicted answers with a resolution score."
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "model-council": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bundle/server.cjs"],
+      "env": {
+        "OLLAMA_ADDRESS": "${user_config.ollama_address}",
+        "COUNCIL_MODELS": "${user_config.council_models}",
+        "AUTO_COUNCIL": "${user_config.auto_council}",
+        "JUDGE_MODEL": "${user_config.judge_model}",
+        "RESPONSE_MODE": "${user_config.response_mode}",
+        "MAX_DECONFLICT_ROUNDS": "${user_config.max_deconflict_rounds}",
+        "OPENAI_API_KEY": "${user_config.openai_api_key}",
+        "ANTHROPIC_API_KEY": "${user_config.anthropic_api_key}",
+        "GROQ_API_KEY": "${user_config.groq_api_key}",
+        "VLLM_SERVERS": "${user_config.vllm_servers}",
+        "TRTLLM_SERVERS": "${user_config.trtllm_servers}",
+        "SGLANG_SERVERS": "${user_config.sglang_servers}"
+      }
+    }
+  }
+}

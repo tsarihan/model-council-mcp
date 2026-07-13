@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.tgz
+*.log
+.DS_Store
+.npm/
+# Note: bundle/server.cjs IS committed (it is the plugin's runtime)

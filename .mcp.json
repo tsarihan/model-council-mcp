@@ -26,7 +26,10 @@
         "CLAUDE_CLI_PATH": "${user_config.claude_cli_path}",
         "CODEX_CLI": "${user_config.codex_cli}",
         "CODEX_CLI_MODELS": "${user_config.codex_cli_models}",
-        "CODEX_CLI_PATH": "${user_config.codex_cli_path}"
+        "CODEX_CLI_PATH": "${user_config.codex_cli_path}",
+        "CLAUDE_TIER": "${user_config.claude_tier}",
+        "CHATGPT_TIER": "${user_config.chatgpt_tier}",
+        "OLLAMA_TIER": "${user_config.ollama_tier}"
       }
     }
   }

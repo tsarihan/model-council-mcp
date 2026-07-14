@@ -52,6 +52,9 @@
     "dist",
     "bundle",
     "config",
+    "bin",
+    "hooks",
+    "commands",
     "README.md",
     "NOTICE",
     "LICENSE"

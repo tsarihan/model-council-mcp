@@ -36184,6 +36184,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                     JUDGE_MODEL: "Judge model (default: auto)",
                     RESPONSE_MODE: "individual | categorized | deconflicted | pooled | dialectic",
                     MAX_DECONFLICT_ROUNDS: "Max deconfliction rounds (default: 3)",
+                    CLAUDE_TIER: "Claude plan: free | pro | max5x | max20x (drives Claude concurrency + membership)",
+                    CHATGPT_TIER: "ChatGPT plan: free | plus | pro5x | pro20x (drives Codex concurrency + membership)",
+                    OLLAMA_TIER: "Ollama plan: free | pro | max (free = local only; pro/max = cloud + 3/10 concurrency)",
                     CLAUDE_CLI: "true \u2192 add a subscription-backed Claude member via the local `claude` CLI (no API key/billing)",
                     CLAUDE_CLI_MODELS: "Comma-separated model aliases for the CLI member (default: opus,sonnet)",
                     CLAUDE_CLI_PATH: "Path to the claude executable (default: claude)",
@@ -36191,7 +36194,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                     CODEX_CLI_MODELS: 'Comma-separated model names for the Codex member ("default" = codex default)',
                     CODEX_CLI_PATH: "Path to the codex executable (default: codex)",
                     MAX_TOKENS: "Max tokens per completion (default: 16000)",
-                    CLOUD_CONCURRENCY: "Max concurrent cloud requests (default: 3)",
+                    CLOUD_CONCURRENCY: "Optional override: caps ALL cloud pools (overrides per-tier limits). Unset = tiers drive it.",
                     LOCAL_CONCURRENCY: "Max concurrent local requests (default: 1; 0 = unlimited)",
                     COMPLETION_RETRIES: "Attempts per completion before giving up on empty/error (default: 3)",
                     DECONFLICT_VERBOSE: "true \u2192 deconflicted results include per-round detail by default"

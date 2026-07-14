@@ -16,6 +16,11 @@
     "vllm",
     "deconflict"
   ],
+  "hooks": "./hooks/hooks.json",
+  "commands": [
+    "./commands/setup.md",
+    "./commands/status.md"
+  ],
   "userConfig": {
     "ollama_address": {
       "type": "string",
@@ -34,6 +39,24 @@
       "title": "Auto-discover council",
       "description": "When ON (default) and no council models are pinned above, automatically use all available Ollama chat models (local + :cloud), excluding embedding models.",
       "default": true
+    },
+    "claude_tier": {
+      "type": "string",
+      "title": "Claude subscription tier",
+      "description": "Your Claude plan: free | pro | max5x | max20x. Sets Claude concurrency and whether subscription-backed Claude members are added (only if the claude CLI is installed AND logged in). free = no Claude members. Tip: run /model-council:setup to choose interactively.",
+      "default": "pro"
+    },
+    "chatgpt_tier": {
+      "type": "string",
+      "title": "ChatGPT subscription tier",
+      "description": "Your ChatGPT plan: free | plus | pro5x | pro20x. Adds ChatGPT/Codex members (only if the codex CLI is installed AND signed in). free = no ChatGPT members.",
+      "default": "plus"
+    },
+    "ollama_tier": {
+      "type": "string",
+      "title": "Ollama subscription tier",
+      "description": "Your Ollama plan: free | pro | max. free = local models only (no cloud). pro = cloud on, 3 concurrent; max = cloud on, 10 concurrent.",
+      "default": "pro"
     },
     "judge_model": {
       "type": "string",
@@ -101,9 +124,8 @@
     },
     "cloud_concurrency": {
       "type": "number",
-      "title": "Cloud concurrency",
-      "description": "Max simultaneous requests to cloud members (Ollama :cloud, OpenAI, Anthropic, Groq). Ollama cloud requires Pro (3 concurrent) or Max (10).",
-      "default": 3,
+      "title": "Cloud concurrency (override)",
+      "description": "Optional. Caps ALL cloud pools at this value, overriding the per-tier limits. Leave unset to let your subscription tiers set per-provider concurrency (e.g. ChatGPT 6, Claude 2, Ollama cloud 3/10).",
       "min": 1,
       "max": 100
     },

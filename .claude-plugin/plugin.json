@@ -1,7 +1,7 @@
 {
   "name": "model-council",
   "description": "Ask a council of local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, Groq) AI models. Get individual, categorized (agreement / complementary / conflicting), or fully deconflicted answers with a resolution score.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "author": {
     "name": "Tom Sarihan"
   },
@@ -15,11 +15,6 @@
     "multi-model",
     "vllm",
     "deconflict"
-  ],
-  "hooks": "./hooks/hooks.json",
-  "commands": [
-    "./commands/setup.md",
-    "./commands/status.md"
   ],
   "userConfig": {
     "ollama_address": {

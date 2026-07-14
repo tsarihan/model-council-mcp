@@ -24,7 +24,7 @@ import { queryMembers } from './query.js';
 // ─── Model classification ──────────────────────────────────────────────────────
 
 /** Embedding-only models can't participate in a chat council. */
-function isEmbeddingModel(m: ModelInfo): boolean {
+export function isEmbeddingModel(m: ModelInfo): boolean {
   if (m.family && /^(bert|nomic-bert)$/i.test(m.family)) return true;
   return /(^|[-_/])(embed|embedding|bge|nomic-embed|gte|e5|arctic-embed|mxbai-embed)([-_:/]|$)/i.test(
     m.model,

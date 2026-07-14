@@ -14,6 +14,12 @@ if (args.includes('--version')) {
   process.exit(0);
 }
 
+// `codex login status` — detection uses this to check ChatGPT sign-in.
+if (args.includes('login') && args.includes('status')) {
+  process.stdout.write(process.env.CODEX_MOCK_LOGGED_OUT ? 'Not logged in\n' : 'Logged in using ChatGPT\n');
+  process.exit(0);
+}
+
 const flag = (...names) => {
   for (const n of names) {
     const i = args.indexOf(n);

@@ -21,13 +21,50 @@ import { z } from 'zod';
 import { loadConfig, modelIdLabel, parseModelId } from './config.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { CouncilOrchestrator } from './council/orchestrator.js';
-import { CouncilConfig, ModelId, ResponseMode } from './types.js';
+import { CouncilConfig, CouncilMember, ModelId, ResponseMode } from './types.js';
+import { loadState, saveState } from './state.js';
+import { loadSubscriptions, validTiers, SubProvider } from './subscriptions.js';
+import { detectEnvironment, autoPopulatedMembers, quotaWarning } from './detect.js';
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
 const appConfig = loadConfig();
 const registry = new ProviderRegistry(appConfig.servers);
 const orchestrator = new CouncilOrchestrator(registry, appConfig.council, appConfig.runtime);
+
+const labelsToMembers = (labels: string[]): CouncilMember[] =>
+  labels.flatMap(s => {
+    const id = parseModelId(s);
+    return id ? [{ modelId: id }] : [];
+  });
+
+/**
+ * On boot: honour a persisted council (survives reloads), or — on a fresh
+ * install — detect the environment and auto-populate the council with
+ * everything usable ("everything on"). Runs in the background; never blocks the
+ * server, and falls back to zero-config Ollama auto-discovery on any failure.
+ */
+async function initCouncil(): Promise<void> {
+  // Explicit COUNCIL_MODELS (or a prior configure_council in this process) wins —
+  // don't override an already-configured council with persisted/auto state.
+  if (orchestrator.getConfig().members.length > 0) return;
+  const persisted = loadState();
+  if (Array.isArray(persisted.members)) {
+    orchestrator.updateConfig({ members: labelsToMembers(persisted.members) });
+    return;
+  }
+  try {
+    const subs = loadSubscriptions();
+    const report = await detectEnvironment(registry, appConfig.tiers, subs);
+    const labels = autoPopulatedMembers(report, appConfig.tiers, subs);
+    if (labels.length) {
+      orchestrator.updateConfig({ members: labelsToMembers(labels) });
+      saveState({ members: labels, tiers: appConfig.tiers, welcomedVersion: subs.version });
+    }
+  } catch {
+    /* detection failed → keep zero-config Ollama auto-discovery */
+  }
+}
 
 // ─── Tool schemas (zod) ───────────────────────────────────────────────────────
 
@@ -106,11 +143,18 @@ const AskCouncilInput = z.object({
 
 const GetCouncilConfigInput = z.object({});
 
+const SetupCouncilInput = z.object({
+  chatgpt: z.string().optional().describe('ChatGPT tier: free | plus | pro5x | pro20x'),
+  claude: z.string().optional().describe('Claude tier: free | pro | max5x | max20x'),
+  ollama: z.string().optional().describe('Ollama tier: free | pro | max'),
+});
+
 // ─── Tool definitions ─────────────────────────────────────────────────────────
 
 const TOOLS = [
   {
     name: 'list_models',
+    annotations: { title: 'List models', readOnlyHint: true },
     description:
       'List all AI models available across every configured provider ' +
       '(Ollama, OpenAI, Anthropic, Groq, vLLM, TRT-LLM, SGLang). ' +
@@ -128,6 +172,7 @@ const TOOLS = [
   },
   {
     name: 'configure_council',
+    annotations: { title: 'Configure council', readOnlyHint: false },
     description:
       'Update the council configuration: select which models form the council, ' +
       'choose a judge model, set the response mode (individual / categorized / deconflicted), ' +
@@ -171,6 +216,7 @@ const TOOLS = [
   },
   {
     name: 'ask_council',
+    annotations: { title: 'Ask the council', readOnlyHint: false },
     description:
       'Send a question to the model council and get a structured response. ' +
       'Mode: individual (each model answers separately), ' +
@@ -209,10 +255,40 @@ const TOOLS = [
   },
   {
     name: 'get_council_config',
+    annotations: { title: 'Get council config', readOnlyHint: true },
     description:
       'Return the current council configuration: member models, judge model, ' +
       'response mode, and max deconfliction rounds.',
     inputSchema: { type: 'object' as const, properties: {} },
+  },
+  {
+    name: 'council_status',
+    annotations: { title: 'Council status', readOnlyHint: true },
+    description:
+      'Report the detected environment and current setup: local Ollama models, ' +
+      'whether Ollama cloud is reachable on this plan, whether the Claude and Codex ' +
+      'CLIs are installed AND logged in, the current council members, resolved ' +
+      'subscription tiers, per-provider concurrency, and a quota warning. Use this ' +
+      'as the welcome/status readout — it works in every client and install method.',
+    inputSchema: { type: 'object' as const, properties: {} },
+  },
+  {
+    name: 'setup_council',
+    annotations: { title: 'Set up council (tiers + auto-populate)', readOnlyHint: false },
+    description:
+      'Set subscription tiers, then re-detect and auto-populate the council with ' +
+      'everything usable. Tiers gate cloud availability and per-provider concurrency: ' +
+      'chatgpt (free|plus|pro5x|pro20x), claude (free|pro|max5x|max20x), ollama ' +
+      '(free|pro|max). Choices persist across reloads. Note: registering a NEW ' +
+      'subscription provider or changing concurrency takes full effect after a reload.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        chatgpt: { type: 'string', enum: ['free', 'plus', 'pro5x', 'pro20x'], description: 'ChatGPT subscription tier.' },
+        claude: { type: 'string', enum: ['free', 'pro', 'max5x', 'max20x'], description: 'Claude subscription tier.' },
+        ollama: { type: 'string', enum: ['free', 'pro', 'max'], description: 'Ollama subscription tier.' },
+      },
+    },
   },
 ];
 
@@ -221,10 +297,20 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.1.3',
+    version: '0.2.0',
   },
   {
     capabilities: { tools: {} },
+    instructions:
+      'model-council fans a question out to a council of local (Ollama) and ' +
+      'subscription models — Claude via the local `claude` CLI and ChatGPT via the ' +
+      'local `codex` CLI — and reconciles the answers (individual / categorized / ' +
+      'deconflicted / pooled / dialectic). It auto-configures on first use. On a ' +
+      'new session or when the user asks about setup, call `council_status` to show ' +
+      'detected models, subscription login state, per-provider concurrency, and quota ' +
+      'usage; use `setup_council` to pick subscription tiers, `configure_council` to ' +
+      'edit members, and `ask_council` to ask. Council members run under the user\'s ' +
+      'own subscription quotas.',
   },
 );
 
@@ -303,6 +389,11 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
 
         orchestrator.updateConfig(update);
         const cfg = orchestrator.getConfig();
+
+        // Persist member edits so deletions/selections survive plugin reloads.
+        if (input.models !== undefined) {
+          saveState({ members: cfg.members.map(m => modelIdLabel(m.modelId)) });
+        }
 
         return {
           content: [
@@ -437,6 +528,89 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
         };
       }
 
+      // ── council_status ───────────────────────────────────────────────────
+      case 'council_status': {
+        const subs = loadSubscriptions();
+        // Always detect fresh so a login/logout since boot is reflected.
+        const report = await detectEnvironment(registry, appConfig.tiers, subs);
+        const cfg = orchestrator.getConfig();
+        const members = cfg.members.map(m => modelIdLabel(m.modelId));
+        const ollamaUrl = appConfig.servers.find(s => s.type === 'ollama')?.baseUrl ?? '';
+        const hints: string[] = [];
+        if (!report.claude.installed) hints.push('Claude CLI not found — install the Claude Code CLI and log in to add Claude subscription members.');
+        else if (!report.claude.usable) hints.push('Claude CLI is installed but not usable — run `claude` then `/login` (or `claude setup-token`).');
+        if (!report.codex.installed) hints.push('Codex CLI not found — `npm i -g @openai/codex` then `codex login` to add ChatGPT members.');
+        else if (!report.codex.usable) hints.push('Codex CLI is installed but not signed in — run `codex login`.');
+        if (report.ollama.cloud === 'failed') hints.push('Ollama cloud models did not respond — your plan may not include cloud (needs Ollama Pro/Max).');
+        if (!report.ollama.reachable) hints.push(`Ollama not reachable at ${ollamaUrl}.`);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  tiers: appConfig.tiers,
+                  detected: report,
+                  council: { members, count: members.length },
+                  concurrency: appConfig.runtime.poolLimits,
+                  quotaWarning: quotaWarning(report),
+                  hints,
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }
+
+      // ── setup_council ────────────────────────────────────────────────────
+      case 'setup_council': {
+        const input = SetupCouncilInput.parse(args ?? {});
+        const subs = loadSubscriptions();
+        const tiers = { ...appConfig.tiers, ...(loadState().tiers ?? {}) };
+        const applied: Record<string, string> = {};
+        const applyTier = (provider: SubProvider, value: string | undefined): void => {
+          if (value !== undefined && validTiers(provider, subs).includes(value)) {
+            tiers[provider] = value;
+            applied[provider] = value;
+          }
+        };
+        applyTier('chatgpt', input.chatgpt);
+        applyTier('claude', input.claude);
+        applyTier('ollama', input.ollama);
+        saveState({ tiers });
+
+        // Re-detect + re-populate from currently-registered providers.
+        const report = await detectEnvironment(registry, tiers, subs);
+        const labels = autoPopulatedMembers(report, tiers, subs);
+        orchestrator.updateConfig({ members: labelsToMembers(labels) });
+        saveState({ members: labels });
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  status: 'updated',
+                  tiers,
+                  applied,
+                  council: { members: labels, count: labels.length },
+                  quotaWarning: quotaWarning(report),
+                  note:
+                    'Tiers saved. Concurrency changes and newly-enabled subscription ' +
+                    'providers take full effect after `/reload-plugins` (or restarting the server).',
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }
+
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
     }
@@ -461,6 +635,8 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   process.stderr.write('model-council-mcp running on stdio\n');
+  // Auto-configure in the background — never blocks serving requests.
+  initCouncil().catch(() => {});
 }
 
 main().catch(err => {

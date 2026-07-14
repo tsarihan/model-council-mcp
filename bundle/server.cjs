@@ -24503,6 +24503,9 @@ function loadSubscriptions() {
   cached2 = EMBEDDED;
   return cached2;
 }
+function tierAllowsCloud(provider, tier, subs = loadSubscriptions()) {
+  return subs.providers[provider]?.tiers[tier]?.cloud ?? false;
+}
 function tierConcurrency(provider, tier, subs = loadSubscriptions()) {
   const t2 = subs.providers[provider]?.tiers[tier];
   if (t2?.concurrency && t2.concurrency > 0) return t2.concurrency;
@@ -24547,6 +24550,16 @@ function loadState() {
   } catch {
   }
   return { version: STATE_VERSION };
+}
+function saveState(patch) {
+  const next = { ...loadState(), ...patch, version: STATE_VERSION };
+  try {
+    const p2 = statePath();
+    (0, import_node_fs2.mkdirSync)((0, import_node_path2.dirname)(p2), { recursive: true });
+    (0, import_node_fs2.writeFileSync)(p2, JSON.stringify(next, null, 2));
+  } catch {
+  }
+  return next;
 }
 
 // src/config.ts
@@ -24618,6 +24631,17 @@ function envBool(name, fallback) {
 }
 function loadConfig() {
   const servers = [];
+  const subs = loadSubscriptions();
+  const state = loadState();
+  const resolveTier = (provider, envName, def) => {
+    const chosen = state.tiers?.[provider] ?? envClean(envName) ?? def;
+    return validTiers(provider, subs).includes(chosen) ? chosen : def;
+  };
+  const tiers = {
+    chatgpt: resolveTier("chatgpt", "CHATGPT_TIER", "plus"),
+    claude: resolveTier("claude", "CLAUDE_TIER", "pro"),
+    ollama: resolveTier("ollama", "OLLAMA_TIER", "pro")
+  };
   servers.push({
     id: "ollama",
     type: "ollama",
@@ -24659,8 +24683,9 @@ function loadConfig() {
     ...parseOpenAICompatibleServers(envClean("TRTLLM_SERVERS"), "trtllm"),
     ...parseOpenAICompatibleServers(envClean("SGLANG_SERVERS"), "sglang")
   );
-  if (envBool("CLAUDE_CLI", false)) {
-    const cliModels = (envClean("CLAUDE_CLI_MODELS") ?? "opus,sonnet").split(",").map((s2) => s2.trim()).filter(Boolean);
+  if (tierAllowsCloud("claude", tiers.claude, subs) || envBool("CLAUDE_CLI", false)) {
+    const defModels = subs.providers.claude.models?.join(",") ?? "opus,sonnet";
+    const cliModels = (envClean("CLAUDE_CLI_MODELS") ?? defModels).split(",").map((s2) => s2.trim()).filter(Boolean);
     servers.push({
       id: "claude-cli",
       type: "claude-cli",
@@ -24670,8 +24695,9 @@ function loadConfig() {
       models: cliModels.length ? cliModels : ["opus", "sonnet"]
     });
   }
-  if (envBool("CODEX_CLI", false)) {
-    const codexModels = (envClean("CODEX_CLI_MODELS") ?? "default").split(",").map((s2) => s2.trim()).filter(Boolean);
+  if (tierAllowsCloud("chatgpt", tiers.chatgpt, subs) || envBool("CODEX_CLI", false)) {
+    const defModels = subs.providers.chatgpt.models?.join(",") ?? "default";
+    const codexModels = (envClean("CODEX_CLI_MODELS") ?? defModels).split(",").map((s2) => s2.trim()).filter(Boolean);
     servers.push({
       id: "codex-cli",
       type: "codex-cli",
@@ -24695,17 +24721,6 @@ function loadConfig() {
   );
   const autoRaw = (envClean("AUTO_COUNCIL") ?? "true").toLowerCase();
   const autoCouncil = !["false", "0", "no", "off"].includes(autoRaw);
-  const subs = loadSubscriptions();
-  const state = loadState();
-  const resolveTier = (provider, envName, def) => {
-    const chosen = state.tiers?.[provider] ?? envClean(envName) ?? def;
-    return validTiers(provider, subs).includes(chosen) ? chosen : def;
-  };
-  const tiers = {
-    chatgpt: resolveTier("chatgpt", "CHATGPT_TIER", "plus"),
-    claude: resolveTier("claude", "CLAUDE_TIER", "pro"),
-    ollama: resolveTier("ollama", "OLLAMA_TIER", "pro")
-  };
   const cloudOverrideRaw = envClean("CLOUD_CONCURRENCY");
   const localOverrideRaw = envClean("LOCAL_CONCURRENCY");
   const cloudOverride = cloudOverrideRaw !== void 0 ? Math.max(1, parseInt(cloudOverrideRaw, 10) || subs.defaults.cloudConcurrency) : void 0;
@@ -24728,7 +24743,8 @@ function loadConfig() {
       maxDeconflictRounds,
       autoCouncil
     },
-    runtime
+    runtime,
+    tiers
   };
 }
 
@@ -35667,10 +35683,161 @@ var CouncilOrchestrator = class {
   }
 };
 
+// src/detect.ts
+var import_node_child_process3 = require("node:child_process");
+var isCloudModel = (m2) => m2.endsWith(":cloud") || m2.endsWith("-cloud");
+function runCli(command, args, opts = { timeoutMs: 8e3 }) {
+  return new Promise((resolve) => {
+    const env = { ...process.env };
+    if (opts.stripKeys === "anthropic") {
+      delete env.ANTHROPIC_API_KEY;
+      delete env.ANTHROPIC_AUTH_TOKEN;
+    }
+    if (opts.stripKeys === "openai") {
+      delete env.OPENAI_API_KEY;
+      delete env.CODEX_API_KEY;
+    }
+    let child;
+    try {
+      child = (0, import_node_child_process3.spawn)(command, args, { env, stdio: ["pipe", "pipe", "pipe"] });
+    } catch {
+      resolve({ code: 127, stdout: "", stderr: "spawn failed" });
+      return;
+    }
+    let stdout = "", stderr = "", settled = false;
+    const done = (r2) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolve(r2);
+      }
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+      }
+      done({ code: 124, stdout, stderr });
+    }, opts.timeoutMs);
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (d2) => stdout += d2);
+    child.stderr?.on("data", (d2) => stderr += d2);
+    child.stdin?.on("error", () => {
+    });
+    child.on("error", () => done({ code: 127, stdout, stderr }));
+    child.on("close", (code) => done({ code: code ?? 1, stdout, stderr }));
+    if (opts.input !== void 0) child.stdin?.write(opts.input);
+    child.stdin?.end();
+  });
+}
+async function withTimeout(p2, ms, fallback) {
+  let timer;
+  const t2 = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(fallback), ms);
+  });
+  try {
+    return await Promise.race([p2, t2]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function detectEnvironment(registry3, tiers, subs) {
+  const ollama = registry3.getAll().find((p2) => p2.config.type === "ollama");
+  const ollamaReport = { reachable: false, localModels: [], cloud: "skipped" };
+  if (ollama) {
+    try {
+      const models = await withTimeout(ollama.listModels(), 6e3, []);
+      ollamaReport.reachable = true;
+      ollamaReport.localModels = models.filter((m2) => !isCloudModel(m2.model) && !isEmbeddingModel(m2)).map((m2) => m2.model);
+    } catch {
+      ollamaReport.reachable = false;
+    }
+    if (!tierAllowsCloud("ollama", tiers.ollama, subs)) {
+      ollamaReport.cloud = "disabled";
+    } else if (ollamaReport.reachable && subs.curatedCloudModels.length) {
+      const probe = withTimeout(
+        ollama.complete(subs.curatedCloudModels[0], [{ role: "user", content: "hi" }], { maxTokens: 1 }).then(() => "ok").catch(() => "failed"),
+        15e3,
+        "failed"
+      );
+      ollamaReport.cloud = await probe;
+    }
+  }
+  const claudeCmd = (process.env.CLAUDE_CLI_PATH || "").trim() && !(process.env.CLAUDE_CLI_PATH || "").includes("${") ? process.env.CLAUDE_CLI_PATH.trim() : "claude";
+  const claudeInstalled = (await runCli(claudeCmd, ["--version"], { timeoutMs: 8e3 })).code === 0;
+  let claudeUsable = false;
+  if (claudeInstalled) {
+    const probe = await runCli(
+      claudeCmd,
+      ["-p", "Reply with the single word READY", "--output-format", "text"],
+      { timeoutMs: 25e3, stripKeys: "anthropic" }
+    );
+    claudeUsable = probe.code === 0 && probe.stdout.trim().length > 0;
+  }
+  const codexCmd = (process.env.CODEX_CLI_PATH || "").trim() && !(process.env.CODEX_CLI_PATH || "").includes("${") ? process.env.CODEX_CLI_PATH.trim() : "codex";
+  const codexInstalled = (await runCli(codexCmd, ["--version"], { timeoutMs: 8e3 })).code === 0;
+  let codexUsable = false;
+  if (codexInstalled) {
+    const st2 = await runCli(codexCmd, ["login", "status"], { timeoutMs: 8e3 });
+    codexUsable = /logged in/i.test(`${st2.stdout}
+${st2.stderr}`);
+  }
+  return {
+    ollama: ollamaReport,
+    claude: { installed: claudeInstalled, usable: claudeUsable },
+    codex: { installed: codexInstalled, usable: codexUsable }
+  };
+}
+function autoPopulatedMembers(report, tiers, subs) {
+  const out = [];
+  for (const m2 of report.ollama.localModels) out.push(`ollama:${m2}`);
+  if (report.ollama.cloud === "ok") {
+    for (const m2 of subs.curatedCloudModels) out.push(`ollama:${m2}`);
+  }
+  if (report.claude.usable && tierAllowsCloud("claude", tiers.claude, subs)) {
+    for (const m2 of subs.providers.claude.models ?? []) out.push(`claude-cli:${m2}`);
+  }
+  if (report.codex.usable && tierAllowsCloud("chatgpt", tiers.chatgpt, subs)) {
+    for (const m2 of subs.providers.chatgpt.models ?? []) out.push(`codex-cli:${m2}`);
+  }
+  return [...new Set(out)];
+}
+function quotaWarning(report) {
+  const paid = [];
+  if (report.ollama.cloud === "ok") paid.push("Ollama cloud");
+  if (report.claude.usable) paid.push("Claude subscription");
+  if (report.codex.usable) paid.push("ChatGPT/Codex subscription");
+  if (paid.length === 0) return null;
+  return `The council includes ${paid.join(", ")} members \u2014 asking it consumes your ${paid.length > 1 ? "quotas" : "quota"}. Remove any you don't want with configure_council (or /model-council:setup) to reduce usage.`;
+}
+
 // src/index.ts
 var appConfig = loadConfig();
 var registry2 = new ProviderRegistry(appConfig.servers);
 var orchestrator = new CouncilOrchestrator(registry2, appConfig.council, appConfig.runtime);
+var labelsToMembers = (labels) => labels.flatMap((s2) => {
+  const id = parseModelId(s2);
+  return id ? [{ modelId: id }] : [];
+});
+async function initCouncil() {
+  if (orchestrator.getConfig().members.length > 0) return;
+  const persisted = loadState();
+  if (Array.isArray(persisted.members)) {
+    orchestrator.updateConfig({ members: labelsToMembers(persisted.members) });
+    return;
+  }
+  try {
+    const subs = loadSubscriptions();
+    const report = await detectEnvironment(registry2, appConfig.tiers, subs);
+    const labels = autoPopulatedMembers(report, appConfig.tiers, subs);
+    if (labels.length) {
+      orchestrator.updateConfig({ members: labelsToMembers(labels) });
+      saveState({ members: labels, tiers: appConfig.tiers, welcomedVersion: subs.version });
+    }
+  } catch {
+  }
+}
 var ListModelsInput = external_exports.object({
   filter_provider: external_exports.string().optional().describe(
     "Optional provider to filter by (ollama, openai, anthropic, groq, vllm, trtllm, sglang)"
@@ -35700,9 +35867,15 @@ var AskCouncilInput = external_exports.object({
   )
 });
 var GetCouncilConfigInput = external_exports.object({});
+var SetupCouncilInput = external_exports.object({
+  chatgpt: external_exports.string().optional().describe("ChatGPT tier: free | plus | pro5x | pro20x"),
+  claude: external_exports.string().optional().describe("Claude tier: free | pro | max5x | max20x"),
+  ollama: external_exports.string().optional().describe("Ollama tier: free | pro | max")
+});
 var TOOLS = [
   {
     name: "list_models",
+    annotations: { title: "List models", readOnlyHint: true },
     description: "List all AI models available across every configured provider (Ollama, OpenAI, Anthropic, Groq, vLLM, TRT-LLM, SGLang). Use the returned model IDs when calling configure_council.",
     inputSchema: {
       type: "object",
@@ -35716,6 +35889,7 @@ var TOOLS = [
   },
   {
     name: "configure_council",
+    annotations: { title: "Configure council", readOnlyHint: false },
     description: "Update the council configuration: select which models form the council, choose a judge model, set the response mode (individual / categorized / deconflicted), and set the maximum deconfliction rounds.",
     inputSchema: {
       type: "object",
@@ -35747,6 +35921,7 @@ var TOOLS = [
   },
   {
     name: "ask_council",
+    annotations: { title: "Ask the council", readOnlyHint: false },
     description: "Send a question to the model council and get a structured response. Mode: individual (each model answers separately), categorized (judge groups responses into agreement/complementary/conflicting), deconflicted (iterative loop \u2014 judge orchestrates re-questioning until conflicts resolve, returns a deconfliction score 0\u2013100%), pooled (Delphi-style \u2014 members reconsider against a neutral, deduplicated, attribution-free pool of answers; no winner is forced, so genuine divergence is preserved), or dialectic (thesis/antithesis/synthesis \u2014 members defend their pick and critique the rest, the judge compiles a pros/cons dossier per option, then members re-select a ranked top-3).",
     inputSchema: {
       type: "object",
@@ -35774,17 +35949,38 @@ var TOOLS = [
   },
   {
     name: "get_council_config",
+    annotations: { title: "Get council config", readOnlyHint: true },
     description: "Return the current council configuration: member models, judge model, response mode, and max deconfliction rounds.",
     inputSchema: { type: "object", properties: {} }
+  },
+  {
+    name: "council_status",
+    annotations: { title: "Council status", readOnlyHint: true },
+    description: "Report the detected environment and current setup: local Ollama models, whether Ollama cloud is reachable on this plan, whether the Claude and Codex CLIs are installed AND logged in, the current council members, resolved subscription tiers, per-provider concurrency, and a quota warning. Use this as the welcome/status readout \u2014 it works in every client and install method.",
+    inputSchema: { type: "object", properties: {} }
+  },
+  {
+    name: "setup_council",
+    annotations: { title: "Set up council (tiers + auto-populate)", readOnlyHint: false },
+    description: "Set subscription tiers, then re-detect and auto-populate the council with everything usable. Tiers gate cloud availability and per-provider concurrency: chatgpt (free|plus|pro5x|pro20x), claude (free|pro|max5x|max20x), ollama (free|pro|max). Choices persist across reloads. Note: registering a NEW subscription provider or changing concurrency takes full effect after a reload.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        chatgpt: { type: "string", enum: ["free", "plus", "pro5x", "pro20x"], description: "ChatGPT subscription tier." },
+        claude: { type: "string", enum: ["free", "pro", "max5x", "max20x"], description: "Claude subscription tier." },
+        ollama: { type: "string", enum: ["free", "pro", "max"], description: "Ollama subscription tier." }
+      }
+    }
   }
 ];
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.1.3"
+    version: "0.2.0"
   },
   {
-    capabilities: { tools: {} }
+    capabilities: { tools: {} },
+    instructions: "model-council fans a question out to a council of local (Ollama) and subscription models \u2014 Claude via the local `claude` CLI and ChatGPT via the local `codex` CLI \u2014 and reconciles the answers (individual / categorized / deconflicted / pooled / dialectic). It auto-configures on first use. On a new session or when the user asks about setup, call `council_status` to show detected models, subscription login state, per-provider concurrency, and quota usage; use `setup_council` to pick subscription tiers, `configure_council` to edit members, and `ask_council` to ask. Council members run under the user's own subscription quotas."
   }
 );
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
@@ -35848,6 +36044,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         }
         orchestrator.updateConfig(update);
         const cfg = orchestrator.getConfig();
+        if (input.models !== void 0) {
+          saveState({ members: cfg.members.map((m2) => modelIdLabel(m2.modelId)) });
+        }
         return {
           content: [
             {
@@ -35966,6 +36165,80 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           ]
         };
       }
+      // ── council_status ───────────────────────────────────────────────────
+      case "council_status": {
+        const subs = loadSubscriptions();
+        const report = await detectEnvironment(registry2, appConfig.tiers, subs);
+        const cfg = orchestrator.getConfig();
+        const members = cfg.members.map((m2) => modelIdLabel(m2.modelId));
+        const ollamaUrl = appConfig.servers.find((s2) => s2.type === "ollama")?.baseUrl ?? "";
+        const hints = [];
+        if (!report.claude.installed) hints.push("Claude CLI not found \u2014 install the Claude Code CLI and log in to add Claude subscription members.");
+        else if (!report.claude.usable) hints.push("Claude CLI is installed but not usable \u2014 run `claude` then `/login` (or `claude setup-token`).");
+        if (!report.codex.installed) hints.push("Codex CLI not found \u2014 `npm i -g @openai/codex` then `codex login` to add ChatGPT members.");
+        else if (!report.codex.usable) hints.push("Codex CLI is installed but not signed in \u2014 run `codex login`.");
+        if (report.ollama.cloud === "failed") hints.push("Ollama cloud models did not respond \u2014 your plan may not include cloud (needs Ollama Pro/Max).");
+        if (!report.ollama.reachable) hints.push(`Ollama not reachable at ${ollamaUrl}.`);
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  tiers: appConfig.tiers,
+                  detected: report,
+                  council: { members, count: members.length },
+                  concurrency: appConfig.runtime.poolLimits,
+                  quotaWarning: quotaWarning(report),
+                  hints
+                },
+                null,
+                2
+              )
+            }
+          ]
+        };
+      }
+      // ── setup_council ────────────────────────────────────────────────────
+      case "setup_council": {
+        const input = SetupCouncilInput.parse(args ?? {});
+        const subs = loadSubscriptions();
+        const tiers = { ...appConfig.tiers, ...loadState().tiers ?? {} };
+        const applied = {};
+        const applyTier = (provider, value) => {
+          if (value !== void 0 && validTiers(provider, subs).includes(value)) {
+            tiers[provider] = value;
+            applied[provider] = value;
+          }
+        };
+        applyTier("chatgpt", input.chatgpt);
+        applyTier("claude", input.claude);
+        applyTier("ollama", input.ollama);
+        saveState({ tiers });
+        const report = await detectEnvironment(registry2, tiers, subs);
+        const labels = autoPopulatedMembers(report, tiers, subs);
+        orchestrator.updateConfig({ members: labelsToMembers(labels) });
+        saveState({ members: labels });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  status: "updated",
+                  tiers,
+                  applied,
+                  council: { members: labels, count: labels.length },
+                  quotaWarning: quotaWarning(report),
+                  note: "Tiers saved. Concurrency changes and newly-enabled subscription providers take full effect after `/reload-plugins` (or restarting the server)."
+                },
+                null,
+                2
+              )
+            }
+          ]
+        };
+      }
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
     }
@@ -35987,6 +36260,8 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   process.stderr.write("model-council-mcp running on stdio\n");
+  initCouncil().catch(() => {
+  });
 }
 main().catch((err) => {
   process.stderr.write(`Fatal: ${err}

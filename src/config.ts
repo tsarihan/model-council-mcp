@@ -6,10 +6,12 @@ import {
   ResponseMode,
   RuntimeConfig,
   ServerConfig,
+  SubscriptionTiers,
 } from './types.js';
 import {
   loadSubscriptions,
   resolvePoolLimits,
+  tierAllowsCloud,
   validTiers,
   SubProvider,
 } from './subscriptions.js';
@@ -19,6 +21,8 @@ export interface AppConfig {
   servers: ServerConfig[];
   council: CouncilConfig;
   runtime: RuntimeConfig;
+  /** Resolved subscription tiers (state > env > default). */
+  tiers: SubscriptionTiers;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -151,6 +155,22 @@ function envBool(name: string, fallback: boolean): boolean {
 export function loadConfig(): AppConfig {
   const servers: ServerConfig[] = [];
 
+  // ── Subscription tiers (resolved early: state > env > code default) ────────
+  // Tiers gate which subscription-CLI providers are registered and drive
+  // per-provider concurrency. Reference data (subscriptions.json) is editable
+  // and pulled; the state file carries the user's interactive choices.
+  const subs = loadSubscriptions();
+  const state = loadState();
+  const resolveTier = (provider: SubProvider, envName: string, def: string): string => {
+    const chosen = state.tiers?.[provider] ?? envClean(envName) ?? def;
+    return validTiers(provider, subs).includes(chosen) ? chosen : def;
+  };
+  const tiers = {
+    chatgpt: resolveTier('chatgpt', 'CHATGPT_TIER', 'plus'),
+    claude: resolveTier('claude', 'CLAUDE_TIER', 'pro'),
+    ollama: resolveTier('ollama', 'OLLAMA_TIER', 'pro'),
+  };
+
   // ── Ollama ────────────────────────────────────────────────────────────────
   servers.push({
     id: 'ollama',
@@ -200,12 +220,13 @@ export function loadConfig(): AppConfig {
     ...parseOpenAICompatibleServers(envClean('SGLANG_SERVERS'), 'sglang'),
   );
 
-  // ── Claude subscription via the first-party CLI (opt-in) ──────────────────
-  // Adds subscription-backed Claude members that shell out to the local
-  // `claude -p` binary instead of billing an API key. Requires the Claude Code
-  // CLI installed and logged in to a Pro/Max subscription.
-  if (envBool('CLAUDE_CLI', false)) {
-    const cliModels = (envClean('CLAUDE_CLI_MODELS') ?? 'opus,sonnet')
+  // ── Claude subscription via the first-party CLI ───────────────────────────
+  // Registered when the Claude tier grants cloud (default) or the legacy
+  // CLAUDE_CLI boolean is set. Registration only makes the provider available;
+  // whether its members join the auto-council depends on live login detection.
+  if (tierAllowsCloud('claude', tiers.claude, subs) || envBool('CLAUDE_CLI', false)) {
+    const defModels = subs.providers.claude.models?.join(',') ?? 'opus,sonnet';
+    const cliModels = (envClean('CLAUDE_CLI_MODELS') ?? defModels)
       .split(',')
       .map(s => s.trim())
       .filter(Boolean);
@@ -219,12 +240,13 @@ export function loadConfig(): AppConfig {
     });
   }
 
-  // ── ChatGPT subscription via the first-party Codex CLI (opt-in) ───────────
-  // Adds subscription-backed OpenAI members that shell out to the local
-  // `codex exec` binary (Codex is a coding agent). Requires the Codex CLI
-  // installed and signed in to a ChatGPT subscription (`codex login`).
-  if (envBool('CODEX_CLI', false)) {
-    const codexModels = (envClean('CODEX_CLI_MODELS') ?? 'default')
+  // ── ChatGPT subscription via the first-party Codex CLI ────────────────────
+  // Registered when the ChatGPT tier grants cloud (default) or the legacy
+  // CODEX_CLI boolean is set. Codex is a coding agent; members answer with a
+  // coding-agent flavour.
+  if (tierAllowsCloud('chatgpt', tiers.chatgpt, subs) || envBool('CODEX_CLI', false)) {
+    const defModels = subs.providers.chatgpt.models?.join(',') ?? 'default';
+    const codexModels = (envClean('CODEX_CLI_MODELS') ?? defModels)
       .split(',')
       .map(s => s.trim())
       .filter(Boolean);
@@ -274,22 +296,10 @@ export function loadConfig(): AppConfig {
   const autoRaw = (envClean('AUTO_COUNCIL') ?? 'true').toLowerCase();
   const autoCouncil = !['false', '0', 'no', 'off'].includes(autoRaw);
 
-  // ── Subscription tiers → per-provider concurrency ─────────────────────────
-  // Tiers resolve (precedence): persistent state (interactive setup) > env /
-  // userConfig default > code default. Each tier maps to a concurrency ceiling
-  // in subscriptions.json (editable + pullable). Explicit CLOUD_CONCURRENCY /
-  // LOCAL_CONCURRENCY still override, for back-compat and power users.
-  const subs = loadSubscriptions();
-  const state = loadState();
-  const resolveTier = (provider: SubProvider, envName: string, def: string): string => {
-    const chosen = state.tiers?.[provider] ?? envClean(envName) ?? def;
-    return validTiers(provider, subs).includes(chosen) ? chosen : def;
-  };
-  const tiers = {
-    chatgpt: resolveTier('chatgpt', 'CHATGPT_TIER', 'plus'),
-    claude: resolveTier('claude', 'CLAUDE_TIER', 'pro'),
-    ollama: resolveTier('ollama', 'OLLAMA_TIER', 'pro'),
-  };
+  // ── Per-provider concurrency from the tiers resolved above ────────────────
+  // Each tier maps to a concurrency ceiling in subscriptions.json (editable +
+  // pullable). Explicit CLOUD_CONCURRENCY / LOCAL_CONCURRENCY still override,
+  // for back-compat and power users.
   const cloudOverrideRaw = envClean('CLOUD_CONCURRENCY');
   const localOverrideRaw = envClean('LOCAL_CONCURRENCY');
   const cloudOverride =
@@ -317,5 +327,6 @@ export function loadConfig(): AppConfig {
       autoCouncil,
     },
     runtime,
+    tiers,
   };
 }

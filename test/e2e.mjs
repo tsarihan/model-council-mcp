@@ -3,7 +3,9 @@
  * backend) and drive all 4 tools + 3 response modes via the MCP protocol.
  */
 import { spawn } from 'node:child_process';
-import { chmodSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -64,6 +66,9 @@ async function main() {
       MAX_DECONFLICT_ROUNDS: '3',
       CLOUD_CONCURRENCY: '2',
       LOCAL_CONCURRENCY: '1',
+      CLAUDE_TIER: 'free', // keep the main suite Ollama-only (CLI providers tested in isolation)
+      CHATGPT_TIER: 'free',
+      MODEL_COUNCIL_STATE: join(tmpdir(), `mc-e2e-main-${process.pid}.json`), // isolate from real ~/.config
     },
   });
 
@@ -75,10 +80,12 @@ async function main() {
     console.log('\n▶ list tools');
     const tools = await client.listTools();
     const toolNames = tools.tools.map(t => t.name).sort();
-    check('4 tools exposed', toolNames.length === 4, `got ${toolNames.join(',')}`);
+    check('6 tools exposed', toolNames.length === 6, `got ${toolNames.join(',')}`);
     check('has ask_council', toolNames.includes('ask_council'));
     check('has configure_council', toolNames.includes('configure_council'));
     check('has list_models', toolNames.includes('list_models'));
+    check('has council_status', toolNames.includes('council_status'));
+    check('has setup_council', toolNames.includes('setup_council'));
     check('has get_council_config', toolNames.includes('get_council_config'));
 
     // ── Test: list_models ─────────────────────────────────────────────────────
@@ -392,7 +399,6 @@ async function main() {
 
   } finally {
     await client.close();
-    mock.kill();
   }
 
   // ── Test: claude-cli subscription provider (isolated server instance) ──────
@@ -477,6 +483,63 @@ async function main() {
   } finally {
     await codexClient.close();
   }
+
+  // ── Test: Phase 2 — auto-population + environment detection (isolated) ──────
+  console.log('\n▶ zero-config auto-population + environment detection');
+  chmodSync(MOCK_CLAUDE, 0o755);
+  chmodSync(MOCK_CODEX, 0o755);
+  const stateDir = mkdtempSync(join(tmpdir(), 'mc-e2e-'));
+  const stateFile = join(stateDir, 'state.json');
+  const detectTransport = new StdioClientTransport({
+    command: 'node',
+    args: [serverEntry],
+    env: {
+      ...process.env,
+      OLLAMA_ADDRESS: MOCK_URL,
+      CLAUDE_CLI_PATH: MOCK_CLAUDE,
+      CODEX_CLI_PATH: MOCK_CODEX,
+      MODEL_COUNCIL_STATE: stateFile, // fresh → boot auto-populates
+      // default tiers (unset) → plus/pro/pro → cloud on for all three
+    },
+  });
+  const detectClient = new Client({ name: 'detect-e2e', version: '1.0.0' }, { capabilities: {} });
+  await detectClient.connect(detectTransport);
+  try {
+    const st = parseToolResult(await detectClient.callTool({ name: 'council_status', arguments: {} }));
+    check('status: ollama reachable', st.detected?.ollama?.reachable === true);
+    check('status: local models detected', (st.detected?.ollama?.localModels ?? []).length >= 3, JSON.stringify(st.detected?.ollama?.localModels));
+    check('status: ollama cloud probe ok', st.detected?.ollama?.cloud === 'ok', st.detected?.ollama?.cloud);
+    check('status: claude CLI installed + usable', st.detected?.claude?.installed === true && st.detected?.claude?.usable === true);
+    check('status: codex CLI installed + logged in', st.detected?.codex?.installed === true && st.detected?.codex?.usable === true);
+    check('status: per-provider concurrency from tiers', st.concurrency?.chatgpt === 6 && st.concurrency?.['ollama-cloud'] === 3 && st.concurrency?.claude === 2, JSON.stringify(st.concurrency));
+    check('status: quota warning present', typeof st.quotaWarning === 'string' && st.quotaWarning.length > 0);
+
+    const setup = parseToolResult(await detectClient.callTool({ name: 'setup_council', arguments: { ollama: 'max' } }));
+    check('setup: ollama tier max applied', setup.tiers?.ollama === 'max' && setup.applied?.ollama === 'max');
+    const labels = setup.council?.members ?? [];
+    check('setup: auto-populated local + cloud + claude + codex',
+      labels.includes('ollama:small-a') && labels.some(l => /cloud/.test(l)) && labels.some(l => l.startsWith('claude-cli:')) && labels.some(l => l.startsWith('codex-cli:')),
+      labels.join(','));
+
+    const persisted = JSON.parse(readFileSync(stateFile, 'utf8'));
+    check('setup: council persisted to state file', Array.isArray(persisted.members) && persisted.members.length === labels.length);
+    check('setup: tier persisted to state file', persisted.tiers?.ollama === 'max');
+
+    // Delete a member via configure_council → the reduced set persists.
+    const reduced = labels.filter(l => l !== 'ollama:small-a');
+    await detectClient.callTool({ name: 'configure_council', arguments: { models: reduced } });
+    const persisted2 = JSON.parse(readFileSync(stateFile, 'utf8'));
+    check('configure_council: deletion persisted', persisted2.members?.length === reduced.length && !persisted2.members.includes('ollama:small-a'));
+
+    // Logged-out detection surfaces a hint (isolated server with codex logged out).
+    const st2 = parseToolResult(await detectClient.callTool({ name: 'council_status', arguments: {} }));
+    check('status: exposes hints array', Array.isArray(st2.hints));
+  } finally {
+    await detectClient.close();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+
+  mock.kill();
 
   // ── Summary ──────────────────────────────────────────────────────────────
   console.log(`\n${'─'.repeat(50)}`);

@@ -24,9 +24,13 @@ This repo is a self-contained Claude Code **plugin** — the server is bundled i
 /plugin install model-council@model-council
 ```
 
-**Zero-config:** accept the defaults and it just works. With no council models pinned, the council auto-uses **every local Ollama model plus your Ollama `:cloud` models** (embedding models like `bge-m3` are skipped). The judge auto-selects your largest model. Ask a question immediately — no setup.
+**Zero-config — it just works.** On first run the plugin **detects your environment and auto-populates the council with everything usable**: every local Ollama chat model, your top curated Ollama `:cloud` models, and — if you're logged into them — Claude (via the local `claude` CLI) and ChatGPT (via the local `codex` CLI). It tells you what it found, warns that cloud/subscription members use your own quotas, and lets you delete any you don't want. Deletions and setup **persist across reloads**. Ask a question immediately — no setup required.
 
-On install, Claude Code prompts you for the (all-optional) configurable options — Ollama address, whether to pin specific council models, API keys, default mode, deconfliction rounds. Nothing is required. API keys are stored in your system keychain. Change settings any time from `/plugin` → Configure.
+- On a new session the plugin prints a one-line status (council size, Ollama up/down, which CLIs are installed).
+- Run **`/model-council:status`** any time for the full readout — detected models, CLI login state, per-provider concurrency, and quota usage.
+- Run **`/model-council:setup`** to pick your subscription tiers with an interactive menu.
+
+Everything is optional and adjustable from `/plugin` → Configure. API keys are stored in your system keychain.
 
 **Local development / test install:**
 
@@ -45,17 +49,37 @@ claude --plugin-dir /path/to/model-council-mcp
 | Ollama address | Base URL of your Ollama server | `http://localhost:11434` |
 | Council models | Pin specific models, or leave blank to auto-use all Ollama models | *(empty → auto)* |
 | Auto-discover council | Use all Ollama chat models (local + `:cloud`) when none pinned | `true` |
+| **Claude tier** | `free` / `pro` / `max5x` / `max20x` — cloud access + Claude concurrency | `pro` |
+| **ChatGPT tier** | `free` / `plus` / `pro5x` / `pro20x` — Codex concurrency | `plus` |
+| **Ollama tier** | `free` / `pro` / `max` — `free` = local only; `pro`/`max` = cloud + 3/10 concurrency | `pro` |
 | Judge model | Categorizer/deconflicter, or `auto` (largest) | `auto` |
 | Default response mode | `individual` / `categorized` / `deconflicted` / `pooled` / `dialectic` | `categorized` |
 | Max deconfliction rounds | 1–10 | `3` |
 | OpenAI / Anthropic / Groq API key | Enable cloud models (stored in keychain) | — |
 | vLLM / TRT-LLM / SGLang servers | `name:host:port` entries | — |
 | Max response tokens | Tokens per completion | `16000` |
-| Cloud / local concurrency | Simultaneous requests (cloud pool / local pool) | `3` / `1` |
+| Cloud concurrency (override) | Optional; caps all cloud pools, overriding the per-tier limits | *(unset → tiers)* |
+| Local concurrency | Simultaneous local requests (0 = unlimited) | `1` |
 | Completion retries | Retries on an empty/failed response | `3` |
-| Verbose deconfliction | Include per-round detail in deconflicted results | `false` |
-| Claude subscription (CLI) | Use your Claude Pro/Max subscription via `claude -p` (no API key) | `false` |
-| ChatGPT subscription (Codex CLI) | Use your ChatGPT subscription via `codex exec` (no API key) | `false` |
+
+---
+
+## Subscription tiers, auto-population & detection
+
+The council mixes three kinds of member, each gated by a **subscription tier** so it never quietly burns quota you don't have:
+
+| Provider | Tiers | `free` means | Reference file |
+|---|---|---|---|
+| **Ollama** | `free` / `pro` / `max` | local models only (no `:cloud`) | [`config/subscriptions.json`](config/subscriptions.json) |
+| **Claude** (via `claude` CLI) | `free` / `pro` / `max5x` / `max20x` | no Claude members | ″ |
+| **ChatGPT** (via `codex` CLI) | `free` / `plus` / `pro5x` / `pro20x` | no ChatGPT/Codex members | ″ |
+
+- **Per-provider concurrency.** Each subscription gets its own concurrency ceiling (e.g. ChatGPT 6, Claude 2, Ollama-cloud 3 on Pro / 10 on Max), so one slow, tightly-rate-limited provider can't starve another. Tier→limit mappings, curated cloud models, and provider model names all live in **`config/subscriptions.json`** — edit it and pull to pick up new plans/models.
+- **Detection.** On boot (and on `council_status`) the server checks: is Ollama reachable, does your plan reach `:cloud`, is the `claude` CLI installed **and logged in** (a locked-down probe), is the `codex` CLI **signed in** (`codex login status`). Only usable providers are auto-added; the rest get a hint (e.g. *"Codex CLI installed but not signed in — run `codex login`"*).
+- **It persists.** Your tier choices and member edits are saved to `~/.config/model-council/state.json` (override with `MODEL_COUNCIL_STATE`), so they survive plugin reloads.
+- **Works standalone too.** The auto-config, `council_status`, and `setup_council` tools all work for a plain `claude mcp add` / MCP-store install; only the SessionStart welcome line and the `/model-council:*` slash commands are Claude-Code-plugin-only sugar.
+
+> Cloud and subscription members run under **your own** subscription quotas via the sanctioned first-party CLIs. `council_status` always shows a quota warning listing which paid providers are in the council. Reusing a subscription *token* against a raw vendor API from a third-party app is a separate, prohibited thing — this plugin does not do that.
 
 ---
 
@@ -355,6 +379,21 @@ Where `pooled` is deliberately *neutral*, `dialectic` is deliberately *adversari
 
 Returns current council settings plus all configured provider connections and the full env-var reference.
 
+### `council_status`
+
+The welcome/status readout (works in **every** client and install method). Returns the detected environment (local Ollama models, Ollama-cloud reachability, whether the Claude/Codex CLIs are installed **and logged in**), the current council members, resolved subscription tiers, per-provider concurrency, a quota warning, and hints for anything not usable. Read-only.
+
+### `setup_council`
+
+Set subscription tiers (`chatgpt`, `claude`, `ollama`), then re-detect and auto-populate the council with everything usable. Persists across reloads. Concurrency and newly-registered providers take full effect after a `/reload-plugins`.
+
+### Slash commands (Claude Code plugin only)
+
+- **`/model-council:setup`** — interactive tier selection (arrow-select menus) → `setup_council`.
+- **`/model-council:status`** — renders `council_status`.
+
+Standalone MCP installs call the `setup_council` / `council_status` **tools** directly for the same result.
+
 ---
 
 ## Deconfliction algorithm
@@ -418,6 +457,24 @@ This design is informed by *The Mirror Law*, which shows that a learner trained 
   note   = {Preprint}
 }
 ```
+
+---
+
+## Privacy & data handling
+
+model-council runs **entirely locally** and stores nothing off your machine.
+
+- **Where your prompts go.** A question is sent only to the model endpoints you configure: your local Ollama server, any self-hosted vLLM/TRT-LLM/SGLang servers, cloud API providers you supply keys for (OpenAI/Anthropic/Groq), and — for subscription members — your own local `claude` / `codex` CLIs. There is no model-council backend and no telemetry; nothing is sent to the author.
+- **Credentials.** API keys are stored in your client's secure storage (system keychain) and used only to call the provider you gave them for. Subscription members run under **your own** Claude/ChatGPT login via the first-party CLIs; the server strips `ANTHROPIC_*` / `OPENAI_*` / `CODEX_*` keys from those child processes so inference is billed to your subscription, not an API key.
+- **On disk.** The only file written is `~/.config/model-council/state.json` (your selected tiers + council members), plus `~/.codex` / Claude CLI session state owned by those tools. No conversation content is persisted by this server.
+- **Subprocesses.** Detection and subscription inference shell out to the locally-installed `claude` and `codex` binaries (read-only sandbox for Codex; MCP/tools disabled for the Claude probe so it can't recurse or take actions).
+
+## Submitting to a directory
+
+This plugin is distributed as a GitHub plugin marketplace (above). To also list it:
+
+- **Community Plugin Marketplace** (`anthropics/claude-plugins-community`) — open a PR; it passes automated validation + safety screening. `claude plugin validate .` must pass (it does).
+- **Anthropic Connectors Directory** — submit via the claude.ai admin portal. Checklist: tool annotations (present — `title` + `readOnlyHint` on every tool), the Privacy section above (also linked from the manifest), clear docs, and an explicit disclosure that inference shells out to the user's own local `claude`/`codex` CLIs under their subscription (keys stripped; no third-party backend).
 
 ---
 

@@ -3,7 +3,7 @@
  * retry-on-empty completion.
  */
 import { ChatMessage, CompletionOptions, Provider } from '../providers/base.js';
-import { ModelId, RawResponse, RuntimeConfig } from '../types.js';
+import { ModelId, PoolKey, RawResponse, RuntimeConfig } from '../types.js';
 import { modelIdLabel } from '../config.js';
 
 export interface Member {
@@ -21,10 +21,36 @@ export interface Member {
  * (e.g. `qwen3-coder:480b-cloud`, `mistral-large-3:675b-cloud`).
  */
 export function isCloudMember(m: Member): boolean {
+  return poolKey(m) !== 'local';
+}
+
+/**
+ * The concurrency pool a member belongs to. Each subscription gets its own
+ * ceiling so a slow, tightly-limited provider can't starve another. `local`
+ * covers local Ollama and self-hosted vLLM/TRT-LLM/SGLang.
+ */
+export function poolKey(m: Member): PoolKey {
   const type = m.provider.config.type;
-  if (type === 'openai' || type === 'anthropic' || type === 'groq' || type === 'claude-cli' || type === 'codex-cli') return true;
-  const model = m.modelId.model;
-  return model.endsWith(':cloud') || model.endsWith('-cloud');
+  switch (type) {
+    case 'codex-cli': return 'chatgpt';
+    case 'claude-cli': return 'claude';
+    case 'openai': return 'openai';
+    case 'anthropic': return 'anthropic';
+    case 'groq': return 'groq';
+    case 'ollama': {
+      const model = m.modelId.model;
+      return model.endsWith(':cloud') || model.endsWith('-cloud') ? 'ollama-cloud' : 'local';
+    }
+    default:
+      return 'local'; // vllm / trtllm / sglang — self-hosted
+  }
+}
+
+/** Effective concurrency limit for a pool, with back-compat fallbacks. */
+function limitForPool(key: PoolKey, runtime: RuntimeConfig): number {
+  const explicit = runtime.poolLimits?.[key];
+  if (explicit !== undefined) return explicit;
+  return key === 'local' ? runtime.localConcurrency : runtime.cloudConcurrency;
 }
 
 /** Thrown by completeWithRetry when every attempt returned an empty response. */
@@ -92,8 +118,9 @@ export async function queryMembersVarying(
   opts: CompletionOptions = {},
 ): Promise<RawResponse[]> {
   const results: RawResponse[] = new Array(members.length);
-  const cloudTasks: Array<() => Promise<void>> = [];
-  const localTasks: Array<() => Promise<void>> = [];
+  // Group tasks into per-provider pools so each subscription's concurrency
+  // ceiling is honoured independently (ChatGPT 6, Ollama cloud 3/10, …).
+  const buckets = new Map<PoolKey, Array<() => Promise<void>>>();
 
   members.forEach((member, i) => {
     const task = async () => {
@@ -118,13 +145,15 @@ export async function queryMembersVarying(
         };
       }
     };
-    (isCloudMember(member) ? cloudTasks : localTasks).push(task);
+    const key = poolKey(member);
+    const arr = buckets.get(key);
+    if (arr) arr.push(task);
+    else buckets.set(key, [task]);
   });
 
-  await Promise.all([
-    pooled(cloudTasks, runtime.cloudConcurrency),
-    pooled(localTasks, runtime.localConcurrency),
-  ]);
+  await Promise.all(
+    [...buckets.entries()].map(([key, tasks]) => pooled(tasks, limitForPool(key, runtime))),
+  );
 
   return results;
 }

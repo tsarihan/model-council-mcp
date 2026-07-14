@@ -7,6 +7,13 @@ import {
   RuntimeConfig,
   ServerConfig,
 } from './types.js';
+import {
+  loadSubscriptions,
+  resolvePoolLimits,
+  validTiers,
+  SubProvider,
+} from './subscriptions.js';
+import { loadState } from './state.js';
 
 export interface AppConfig {
   servers: ServerConfig[];
@@ -267,14 +274,35 @@ export function loadConfig(): AppConfig {
   const autoRaw = (envClean('AUTO_COUNCIL') ?? 'true').toLowerCase();
   const autoCouncil = !['false', '0', 'no', 'off'].includes(autoRaw);
 
-  // ── Runtime tuning ────────────────────────────────────────────────────────
-  // Cloud concurrency defaults to 3 (Ollama cloud requires a Pro plan, which
-  // grants at least 3 concurrent requests). Local defaults to 1 (sequential)
-  // to avoid resource contention; set LOCAL_CONCURRENCY=0 for unlimited.
+  // ── Subscription tiers → per-provider concurrency ─────────────────────────
+  // Tiers resolve (precedence): persistent state (interactive setup) > env /
+  // userConfig default > code default. Each tier maps to a concurrency ceiling
+  // in subscriptions.json (editable + pullable). Explicit CLOUD_CONCURRENCY /
+  // LOCAL_CONCURRENCY still override, for back-compat and power users.
+  const subs = loadSubscriptions();
+  const state = loadState();
+  const resolveTier = (provider: SubProvider, envName: string, def: string): string => {
+    const chosen = state.tiers?.[provider] ?? envClean(envName) ?? def;
+    return validTiers(provider, subs).includes(chosen) ? chosen : def;
+  };
+  const tiers = {
+    chatgpt: resolveTier('chatgpt', 'CHATGPT_TIER', 'plus'),
+    claude: resolveTier('claude', 'CLAUDE_TIER', 'pro'),
+    ollama: resolveTier('ollama', 'OLLAMA_TIER', 'pro'),
+  };
+  const cloudOverrideRaw = envClean('CLOUD_CONCURRENCY');
+  const localOverrideRaw = envClean('LOCAL_CONCURRENCY');
+  const cloudOverride =
+    cloudOverrideRaw !== undefined ? Math.max(1, parseInt(cloudOverrideRaw, 10) || subs.defaults.cloudConcurrency) : undefined;
+  const localOverride =
+    localOverrideRaw !== undefined ? (Number.isFinite(parseInt(localOverrideRaw, 10)) ? parseInt(localOverrideRaw, 10) : subs.defaults.localConcurrency) : undefined;
+  const poolLimits = resolvePoolLimits(tiers, { cloud: cloudOverride, local: localOverride }, subs);
+
   const runtime: RuntimeConfig = {
     maxTokens: Math.max(1, envInt('MAX_TOKENS', 16000)),
-    cloudConcurrency: Math.max(1, envInt('CLOUD_CONCURRENCY', 3)),
-    localConcurrency: envInt('LOCAL_CONCURRENCY', 1),
+    cloudConcurrency: cloudOverride ?? subs.defaults.cloudConcurrency,
+    localConcurrency: localOverride ?? subs.defaults.localConcurrency,
+    poolLimits,
     retries: Math.max(1, envInt('COMPLETION_RETRIES', 3)),
     verbose: envBool('DECONFLICT_VERBOSE', false),
   };

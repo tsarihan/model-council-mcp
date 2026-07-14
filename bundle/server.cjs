@@ -24418,6 +24418,137 @@ var StdioServerTransport = class {
   }
 };
 
+// src/subscriptions.ts
+var import_node_fs = require("node:fs");
+var import_node_path = require("node:path");
+var EMBEDDED = {
+  version: "2026-07-14",
+  providers: {
+    chatgpt: {
+      cliType: "codex-cli",
+      tiers: {
+        free: { cloud: false },
+        plus: { cloud: true, concurrency: 6 },
+        pro5x: { cloud: true, concurrency: 6 },
+        pro20x: { cloud: true, concurrency: 6 }
+      },
+      models: ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra"]
+    },
+    claude: {
+      cliType: "claude-cli",
+      tiers: {
+        free: { cloud: false },
+        pro: { cloud: true, concurrency: 2 },
+        max5x: { cloud: true, concurrency: 4 },
+        max20x: { cloud: true, concurrency: 8 }
+      },
+      models: ["opus", "sonnet", "haiku"]
+    },
+    ollama: {
+      tiers: {
+        free: { cloud: false },
+        pro: { cloud: true, concurrency: 3 },
+        max: { cloud: true, concurrency: 10 }
+      }
+    }
+  },
+  curatedCloudModels: [
+    "glm-5.2:cloud",
+    "deepseek-v4-pro:cloud",
+    "qwen3.5:cloud",
+    "minimax-m3:cloud",
+    "kimi-k2.7-code:cloud",
+    "nemotron-3-super:cloud",
+    "gemma4:cloud",
+    "qwen3-coder:480b-cloud",
+    "mistral-large-3:675b-cloud",
+    "ministral-3:14b-cloud"
+  ],
+  defaults: { cloudConcurrency: 3, apiConcurrency: 4, localConcurrency: 1 }
+};
+function moduleDir() {
+  try {
+    if (typeof __dirname !== "undefined") return __dirname;
+  } catch {
+  }
+  return void 0;
+}
+function candidatePaths() {
+  const out = [];
+  const override = process.env.MODEL_COUNCIL_SUBSCRIPTIONS;
+  if (override && override.trim() && !override.includes("${")) out.push(override.trim());
+  const dir = moduleDir();
+  if (dir) out.push((0, import_node_path.join)(dir, "subscriptions.json"));
+  out.push((0, import_node_path.join)(process.cwd(), "config", "subscriptions.json"));
+  out.push((0, import_node_path.join)(process.cwd(), "subscriptions.json"));
+  return out;
+}
+function isValid2(s2) {
+  const o2 = s2;
+  return !!o2 && !!o2.providers && !!o2.providers.chatgpt && !!o2.providers.claude && !!o2.providers.ollama && Array.isArray(o2.curatedCloudModels) && !!o2.defaults;
+}
+var cached2 = null;
+function loadSubscriptions() {
+  if (cached2) return cached2;
+  for (const p2 of candidatePaths()) {
+    try {
+      const parsed = JSON.parse((0, import_node_fs.readFileSync)(p2, "utf8"));
+      if (isValid2(parsed)) {
+        cached2 = parsed;
+        return cached2;
+      }
+    } catch {
+    }
+  }
+  cached2 = EMBEDDED;
+  return cached2;
+}
+function tierConcurrency(provider, tier, subs = loadSubscriptions()) {
+  const t2 = subs.providers[provider]?.tiers[tier];
+  if (t2?.concurrency && t2.concurrency > 0) return t2.concurrency;
+  return subs.defaults.cloudConcurrency;
+}
+function validTiers(provider, subs = loadSubscriptions()) {
+  return Object.keys(subs.providers[provider]?.tiers ?? {});
+}
+function resolvePoolLimits(tiers, overrides = {}, subs = loadSubscriptions()) {
+  const cloud = overrides.cloud;
+  return {
+    chatgpt: cloud ?? tierConcurrency("chatgpt", tiers.chatgpt, subs),
+    claude: cloud ?? tierConcurrency("claude", tiers.claude, subs),
+    "ollama-cloud": cloud ?? tierConcurrency("ollama", tiers.ollama, subs),
+    openai: cloud ?? subs.defaults.apiConcurrency,
+    anthropic: cloud ?? subs.defaults.apiConcurrency,
+    groq: cloud ?? subs.defaults.apiConcurrency,
+    local: overrides.local ?? subs.defaults.localConcurrency
+  };
+}
+
+// src/state.ts
+var import_node_fs2 = require("node:fs");
+var import_node_os = require("node:os");
+var import_node_path2 = require("node:path");
+var STATE_VERSION = 1;
+var clean = (v2) => {
+  if (!v2) return void 0;
+  const t2 = v2.trim();
+  return t2 && !t2.includes("${") ? t2 : void 0;
+};
+function statePath() {
+  const override = clean(process.env.MODEL_COUNCIL_STATE);
+  if (override) return override;
+  const base = clean(process.env.XDG_CONFIG_HOME) ?? (0, import_node_path2.join)((0, import_node_os.homedir)(), ".config");
+  return (0, import_node_path2.join)(base, "model-council", "state.json");
+}
+function loadState() {
+  try {
+    const parsed = JSON.parse((0, import_node_fs2.readFileSync)(statePath(), "utf8"));
+    if (parsed && typeof parsed === "object") return parsed;
+  } catch {
+  }
+  return { version: STATE_VERSION };
+}
+
 // src/config.ts
 var DEFAULT_PORTS = {
   vllm: 8e3,
@@ -24564,10 +24695,27 @@ function loadConfig() {
   );
   const autoRaw = (envClean("AUTO_COUNCIL") ?? "true").toLowerCase();
   const autoCouncil = !["false", "0", "no", "off"].includes(autoRaw);
+  const subs = loadSubscriptions();
+  const state = loadState();
+  const resolveTier = (provider, envName, def) => {
+    const chosen = state.tiers?.[provider] ?? envClean(envName) ?? def;
+    return validTiers(provider, subs).includes(chosen) ? chosen : def;
+  };
+  const tiers = {
+    chatgpt: resolveTier("chatgpt", "CHATGPT_TIER", "plus"),
+    claude: resolveTier("claude", "CLAUDE_TIER", "pro"),
+    ollama: resolveTier("ollama", "OLLAMA_TIER", "pro")
+  };
+  const cloudOverrideRaw = envClean("CLOUD_CONCURRENCY");
+  const localOverrideRaw = envClean("LOCAL_CONCURRENCY");
+  const cloudOverride = cloudOverrideRaw !== void 0 ? Math.max(1, parseInt(cloudOverrideRaw, 10) || subs.defaults.cloudConcurrency) : void 0;
+  const localOverride = localOverrideRaw !== void 0 ? Number.isFinite(parseInt(localOverrideRaw, 10)) ? parseInt(localOverrideRaw, 10) : subs.defaults.localConcurrency : void 0;
+  const poolLimits = resolvePoolLimits(tiers, { cloud: cloudOverride, local: localOverride }, subs);
   const runtime = {
     maxTokens: Math.max(1, envInt("MAX_TOKENS", 16e3)),
-    cloudConcurrency: Math.max(1, envInt("CLOUD_CONCURRENCY", 3)),
-    localConcurrency: envInt("LOCAL_CONCURRENCY", 1),
+    cloudConcurrency: cloudOverride ?? subs.defaults.cloudConcurrency,
+    localConcurrency: localOverride ?? subs.defaults.localConcurrency,
+    poolLimits,
     retries: Math.max(1, envInt("COMPLETION_RETRIES", 3)),
     verbose: envBool("DECONFLICT_VERBOSE", false)
   };
@@ -25199,7 +25347,7 @@ init_File();
 // node_modules/openai/_shims/node-runtime.mjs
 var import_agentkeepalive = __toESM(require_agentkeepalive(), 1);
 var import_abort_controller = __toESM(require_abort_controller(), 1);
-var import_node_fs = require("node:fs");
+var import_node_fs3 = require("node:fs");
 
 // node_modules/form-data-encoder/lib/esm/util/createBoundary.js
 var alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -25426,7 +25574,7 @@ function getRuntime() {
     getMultipartRequestOptions: getMultipartRequestOptions2,
     getDefaultAgent: (url) => url.startsWith("https") ? defaultHttpsAgent : defaultHttpAgent,
     fileFromPath: fileFromPath3,
-    isFsReadStream: (value) => value instanceof import_node_fs.ReadStream
+    isFsReadStream: (value) => value instanceof import_node_fs3.ReadStream
   };
 }
 
@@ -31367,7 +31515,7 @@ function setShims2(shims, options = { auto: false }) {
 var nf2 = __toESM(require_lib2(), 1);
 var import_agentkeepalive2 = __toESM(require_agentkeepalive(), 1);
 var import_abort_controller2 = __toESM(require_abort_controller(), 1);
-var import_node_fs2 = require("node:fs");
+var import_node_fs4 = require("node:fs");
 var import_node_stream2 = require("node:stream");
 
 // node_modules/@anthropic-ai/sdk/_shims/MultipartBody.mjs
@@ -31421,7 +31569,7 @@ function getRuntime2() {
     getMultipartRequestOptions: getMultipartRequestOptions4,
     getDefaultAgent: (url) => url.startsWith("https") ? defaultHttpsAgent2 : defaultHttpAgent2,
     fileFromPath: fileFromPath5,
-    isFsReadStream: (value) => value instanceof import_node_fs2.ReadStream
+    isFsReadStream: (value) => value instanceof import_node_fs4.ReadStream
   };
 }
 
@@ -34384,9 +34532,9 @@ var ClaudeCliProvider = class {
 
 // src/providers/codex-cli.ts
 var import_node_child_process2 = require("node:child_process");
-var import_node_fs3 = require("node:fs");
-var import_node_os = require("node:os");
-var import_node_path = require("node:path");
+var import_node_fs5 = require("node:fs");
+var import_node_os2 = require("node:os");
+var import_node_path3 = require("node:path");
 var DEFAULT_MODELS2 = ["default"];
 var DEFAULT_TIMEOUT_MS2 = 3e5;
 var CodexCliProvider = class {
@@ -34425,8 +34573,8 @@ var CodexCliProvider = class {
       opts.jsonMode ? "Respond with valid JSON only." : "",
       convo
     ].filter(Boolean).join("\n\n");
-    const dir = (0, import_node_fs3.mkdtempSync)((0, import_node_path.join)((0, import_node_os.tmpdir)(), "codex-council-"));
-    const outFile = (0, import_node_path.join)(dir, "out.txt");
+    const dir = (0, import_node_fs5.mkdtempSync)((0, import_node_path3.join)((0, import_node_os2.tmpdir)(), "codex-council-"));
+    const outFile = (0, import_node_path3.join)(dir, "out.txt");
     const args = [
       "exec",
       "--sandbox",
@@ -34454,14 +34602,14 @@ var CodexCliProvider = class {
       }
       let out = "";
       try {
-        out = (0, import_node_fs3.readFileSync)(outFile, "utf8");
+        out = (0, import_node_fs5.readFileSync)(outFile, "utf8");
       } catch {
         out = "";
       }
       return out.trim();
     } finally {
       try {
-        (0, import_node_fs3.rmSync)(dir, { recursive: true, force: true });
+        (0, import_node_fs5.rmSync)(dir, { recursive: true, force: true });
       } catch {
       }
     }
@@ -34561,11 +34709,31 @@ var ProviderRegistry = class {
 };
 
 // src/council/query.ts
-function isCloudMember(m2) {
+function poolKey(m2) {
   const type = m2.provider.config.type;
-  if (type === "openai" || type === "anthropic" || type === "groq" || type === "claude-cli" || type === "codex-cli") return true;
-  const model = m2.modelId.model;
-  return model.endsWith(":cloud") || model.endsWith("-cloud");
+  switch (type) {
+    case "codex-cli":
+      return "chatgpt";
+    case "claude-cli":
+      return "claude";
+    case "openai":
+      return "openai";
+    case "anthropic":
+      return "anthropic";
+    case "groq":
+      return "groq";
+    case "ollama": {
+      const model = m2.modelId.model;
+      return model.endsWith(":cloud") || model.endsWith("-cloud") ? "ollama-cloud" : "local";
+    }
+    default:
+      return "local";
+  }
+}
+function limitForPool(key, runtime) {
+  const explicit = runtime.poolLimits?.[key];
+  if (explicit !== void 0) return explicit;
+  return key === "local" ? runtime.localConcurrency : runtime.cloudConcurrency;
 }
 var EmptyCompletionError = class extends Error {
   constructor(message = "empty response after retries") {
@@ -34603,8 +34771,7 @@ async function completeWithRetry(provider, model, messages, opts, retries) {
 }
 async function queryMembersVarying(promptFor, members, runtime, opts = {}) {
   const results = new Array(members.length);
-  const cloudTasks = [];
-  const localTasks = [];
+  const buckets = /* @__PURE__ */ new Map();
   members.forEach((member, i2) => {
     const task = async () => {
       const label = modelIdLabel(member.modelId);
@@ -34628,12 +34795,14 @@ async function queryMembersVarying(promptFor, members, runtime, opts = {}) {
         };
       }
     };
-    (isCloudMember(member) ? cloudTasks : localTasks).push(task);
+    const key = poolKey(member);
+    const arr = buckets.get(key);
+    if (arr) arr.push(task);
+    else buckets.set(key, [task]);
   });
-  await Promise.all([
-    pooled(cloudTasks, runtime.cloudConcurrency),
-    pooled(localTasks, runtime.localConcurrency)
-  ]);
+  await Promise.all(
+    [...buckets.entries()].map(([key, tasks]) => pooled(tasks, limitForPool(key, runtime)))
+  );
   return results;
 }
 async function queryMembers(question, members, runtime, opts = {}) {

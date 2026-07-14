@@ -59,15 +59,38 @@ export interface CouncilConfig {
 }
 
 /**
+ * Concurrency pool a member belongs to. Each pool has its own limit so one
+ * subscription's ceiling (e.g. ChatGPT 6) never starves another (Ollama cloud
+ * 3/10). `local` covers local Ollama + self-hosted vLLM/TRT-LLM/SGLang.
+ */
+export type PoolKey =
+  | 'chatgpt'
+  | 'claude'
+  | 'openai'
+  | 'anthropic'
+  | 'groq'
+  | 'ollama-cloud'
+  | 'local';
+
+/** The user's selected subscription tiers (validated against subscriptions.json). */
+export interface SubscriptionTiers {
+  chatgpt: string;
+  claude: string;
+  ollama: string;
+}
+
+/**
  * Runtime tuning knobs, set via environment / plugin userConfig.
  */
 export interface RuntimeConfig {
   /** Max tokens requested per completion (default 16000). */
   maxTokens: number;
-  /** Max concurrent cloud requests (Ollama :cloud / OpenAI / Anthropic / Groq). Default 3. */
+  /** Max concurrent cloud requests — fallback default when a pool has no explicit limit. */
   cloudConcurrency: number;
   /** Max concurrent local requests. Default 1 (sequential) to avoid contention; <=0 = unlimited. */
   localConcurrency: number;
+  /** Per-provider concurrency ceilings, derived from subscription tiers. */
+  poolLimits: Record<PoolKey, number>;
   /** Attempts per completion before giving up on an empty/failed response. Default 3. */
   retries: number;
   /** Default value of the verbose flag for deconflicted results. */

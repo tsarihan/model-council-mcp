@@ -1,0 +1,50 @@
+{
+  "version": "2026-07-14",
+  "note": "Reference data for subscription tiers, per-provider concurrency, and curated cloud models. Editable: update this file and pull to pick up new plans/models/limits. Copied to bundle/subscriptions.json at build time and read at boot (with an embedded fallback in src/subscriptions.ts).",
+  "providers": {
+    "chatgpt": {
+      "cliType": "codex-cli",
+      "tiers": {
+        "free": { "cloud": false },
+        "plus": { "cloud": true, "concurrency": 6 },
+        "pro5x": { "cloud": true, "concurrency": 6 },
+        "pro20x": { "cloud": true, "concurrency": 6 }
+      },
+      "models": ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra"]
+    },
+    "claude": {
+      "cliType": "claude-cli",
+      "tiers": {
+        "free": { "cloud": false },
+        "pro": { "cloud": true, "concurrency": 2 },
+        "max5x": { "cloud": true, "concurrency": 4 },
+        "max20x": { "cloud": true, "concurrency": 8 }
+      },
+      "models": ["opus", "sonnet", "haiku"]
+    },
+    "ollama": {
+      "tiers": {
+        "free": { "cloud": false },
+        "pro": { "cloud": true, "concurrency": 3 },
+        "max": { "cloud": true, "concurrency": 10 }
+      }
+    }
+  },
+  "curatedCloudModels": [
+    "glm-5.2:cloud",
+    "deepseek-v4-pro:cloud",
+    "qwen3.5:cloud",
+    "minimax-m3:cloud",
+    "kimi-k2.7-code:cloud",
+    "nemotron-3-super:cloud",
+    "gemma4:cloud",
+    "qwen3-coder:480b-cloud",
+    "mistral-large-3:675b-cloud",
+    "ministral-3:14b-cloud"
+  ],
+  "defaults": {
+    "cloudConcurrency": 3,
+    "apiConcurrency": 4,
+    "localConcurrency": 1
+  }
+}

@@ -335,6 +335,21 @@ async function main() {
     check('all 3 local members answered', lcRes.responses?.length === 3, `got ${lcRes.responses?.length}`);
     check('local concurrency is sequential (1)', dbgLocal.maxConcurrent === 1, `maxConcurrent=${dbgLocal.maxConcurrent}`);
 
+    // ── Test: per-provider pools drain independently (cloud + local in parallel) ─
+    console.log('\n▶ per-provider pools run in parallel');
+    await resetMock();
+    await client.callTool({
+      name: 'configure_council',
+      arguments: { models: ['ollama:conc1:cloud', 'ollama:conc2:cloud', 'ollama:conc3:cloud', 'ollama:concLa', 'ollama:concLb'], response_mode: 'individual' },
+    });
+    const mixRes = parseToolResult(await client.callTool({
+      name: 'ask_council', arguments: { question: 'mix', mode: 'individual' },
+    }));
+    const dbgMix = await (await fetch(`${MOCK_URL}/debug`)).json();
+    check('per-pool: 5 members answered', mixRes.responses?.length === 5, `got ${mixRes.responses?.length}`);
+    // ollama-cloud pool (limit 2) + local pool (limit 1) drain concurrently → global max 3
+    check('per-pool: cloud(2)+local(1) run concurrently → max 3', dbgMix.maxConcurrent === 3, `maxConcurrent=${dbgMix.maxConcurrent}`);
+
     // ── Test: deconflicted verbose ────────────────────────────────────────────
     console.log('\n▶ deconflicted verbose');
     await resetMock();

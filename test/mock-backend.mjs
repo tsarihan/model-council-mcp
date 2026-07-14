@@ -13,6 +13,8 @@
 import http from 'node:http';
 
 let categorizeCalls = 0;
+let poolCalls = 0;
+let lastRepollPrompt = null;
 let curConcurrent = 0;
 let maxConcurrent = 0;
 let lastNumPredict = null;
@@ -79,6 +81,37 @@ function categorizationFor(call) {
   };
 }
 
+// Neutral pooled digest (pooled/Delphi mode), indexed by call number.
+// Call 1 = round-0 pool (two distinct options); call 2 = post-reconsideration
+// pool (converged to one). Rationales are deliberately attribution-free.
+function poolDigestFor(call) {
+  if (call === 1) {
+    return {
+      options: [
+        {
+          answer: 'Exponential backoff',
+          rationale: 'Retry with progressively longer delays to avoid overwhelming a struggling dependency.',
+          models: ['ollama:small-a', 'ollama:big-judge'],
+        },
+        {
+          answer: 'Fixed-interval retry',
+          rationale: 'Retry on a simple constant cadence for predictability.',
+          models: ['ollama:small-b'],
+        },
+      ],
+    };
+  }
+  return {
+    options: [
+      {
+        answer: 'Exponential backoff',
+        rationale: 'A single converged approach: retry with increasing delays and clear observability.',
+        models: ['ollama:small-a', 'ollama:small-b', 'ollama:big-judge'],
+      },
+    ],
+  };
+}
+
 function chatResponse(body) {
   const messages = body.messages ?? [];
   const lastUser = [...messages].reverse().find(m => m.role === 'user');
@@ -111,6 +144,23 @@ function chatResponse(body) {
            `On caching I still lean toward my original position.`;
   }
 
+  // Pooled/Delphi: judge distils responses into a neutral digest.
+  if (content.includes('pooled digest')) {
+    poolCalls++;
+    return JSON.stringify(poolDigestFor(poolCalls));
+  }
+
+  // Pooled/Delphi: member re-poll against the neutral, attribution-free digest.
+  if (content.includes('in no particular order')) {
+    lastRepollPrompt = content;
+    const reconsidered = {
+      'small-a': 'On reflection I keep exponential backoff; write-through caching is non-essential.',
+      'small-b': 'Weighing the pooled reasoning, I move from fixed-interval to exponential backoff.',
+      'big-judge': 'Exponential backoff with strong observability; caching is a separate concern.',
+    };
+    return reconsidered[model] ?? `[${model}] reconsidered opinion.`;
+  }
+
   // Normal first-pass member opinion — vary by model so responses differ
   const opinions = {
     'small-a':   'Handle errors with exponential backoff and write-through caching. Log as JSON.',
@@ -129,6 +179,8 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/reset') {
     categorizeCalls = 0;
+    poolCalls = 0;
+    lastRepollPrompt = null;
     maxConcurrent = 0;
     flakyCalls = 0;
     lastNumPredict = null;
@@ -139,7 +191,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'GET' && req.url === '/debug') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ maxConcurrent, lastNumPredict }));
+    res.end(JSON.stringify({ maxConcurrent, lastNumPredict, lastRepollPrompt }));
     return;
   }
 

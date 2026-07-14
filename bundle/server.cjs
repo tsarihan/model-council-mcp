@@ -24557,7 +24557,7 @@ function loadConfig() {
   const judgeStr = envClean("JUDGE_MODEL");
   const judgeModelId = judgeStr && judgeStr !== "auto" ? parseModelId(judgeStr) ?? void 0 : void 0;
   const modeRaw = envClean("RESPONSE_MODE");
-  const responseMode = modeRaw === "individual" || modeRaw === "categorized" || modeRaw === "deconflicted" ? modeRaw : "categorized";
+  const responseMode = modeRaw === "individual" || modeRaw === "categorized" || modeRaw === "deconflicted" || modeRaw === "pooled" ? modeRaw : "categorized";
   const maxDeconflictRounds = Math.max(
     1,
     Math.min(10, parseInt(envClean("MAX_DECONFLICT_ROUNDS") ?? "3", 10) || 3)
@@ -34993,6 +34993,130 @@ async function deconflict(input) {
   };
 }
 
+// src/council/pool.ts
+function buildPoolPrompt(question, responses) {
+  const responseBlock = responses.filter((r2) => !r2.error && r2.response.trim()).map((r2) => `### ${r2.label}
+${r2.response}`).join("\n\n");
+  return `You are pooling answers from multiple AI models to the SAME question, Delphi-style.
+
+Question:
+"""
+${question}
+"""
+
+Model responses (the labels are for your bookkeeping only):
+${responseBlock}
+
+Produce a NEUTRAL pooled digest of the DISTINCT answers. Rules:
+- Identify each distinct option that appears across the responses. If the question asks for a list or ranking, treat every listed item as a separate option and IGNORE its rank/order.
+- Merge duplicates: when several responses give the same option (the same city, language, state, tool, etc.), combine them into ONE entry whose rationale synthesises all the reasons offered for it.
+- Each rationale must be neutral and self-contained. Do NOT state how many models chose an option, do NOT signal popularity, do NOT rank or order by preference.
+- In "models", list the labels of the responses that included that option. This is for record-keeping only and will NOT be shown back to the members.
+
+Return ONLY valid JSON (no markdown), with this schema:
+{
+  "options": [
+    { "answer": "<concise option, e.g. 'Sarasota, FL' or 'Rust'>", "rationale": "<merged neutral reasoning>", "models": ["<label>", ...] }
+  ]
+}`;
+}
+function parsePoolJSON(raw) {
+  const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
+  return JSON.parse(stripped);
+}
+async function poolResponses(question, responses, judgeModelId, judgeProvider, cc) {
+  const prompt = buildPoolPrompt(question, responses);
+  let rawJson;
+  try {
+    rawJson = await completeWithRetry(
+      judgeProvider,
+      judgeModelId.model,
+      [{ role: "user", content: prompt }],
+      { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens },
+      cc.retries
+    );
+  } catch (err) {
+    if (err instanceof EmptyCompletionError) return { options: [] };
+    throw new Error(
+      `Judge model (${modelIdLabel(judgeModelId)}) failed to pool responses: ${String(err)}`
+    );
+  }
+  let parsed;
+  try {
+    parsed = parsePoolJSON(rawJson);
+  } catch {
+    return { options: [] };
+  }
+  return {
+    options: (parsed.options ?? []).map((o2) => ({
+      answer: (o2.answer ?? "").trim(),
+      rationale: (o2.rationale ?? "").trim(),
+      models: o2.models ?? []
+    })).filter((o2) => o2.answer)
+  };
+}
+function shuffled(items) {
+  const a2 = [...items];
+  for (let i2 = a2.length - 1; i2 > 0; i2--) {
+    const j2 = Math.floor(Math.random() * (i2 + 1));
+    [a2[i2], a2[j2]] = [a2[j2], a2[i2]];
+  }
+  return a2;
+}
+function buildRepollPrompt(question, digest) {
+  if (digest.options.length === 0) {
+    return question;
+  }
+  const list = shuffled(digest.options).map((o2) => `- ${o2.answer}: ${o2.rationale}`).join("\n");
+  return `Original question:
+"""
+${question}
+"""
+
+Below, in no particular order, are the distinct answers other council members proposed, each with the combined reasoning offered for it. They are NOT ranked, and nothing indicates how many members chose each option or who chose it:
+
+${list}
+
+Considering these perspectives on their merits, answer the ORIGINAL question again in your own judgment. Keep your original view or revise it as you see fit \u2014 do not favour any option merely because it appears above; there is no popularity or ordering implied here.`;
+}
+async function runPooled(input) {
+  const {
+    question,
+    initialResponses,
+    members,
+    judgeModelId,
+    judgeProvider,
+    runtime,
+    verbose
+  } = input;
+  const cc = { maxTokens: runtime.maxTokens, retries: runtime.retries };
+  const initialPool = await poolResponses(
+    question,
+    initialResponses,
+    judgeModelId,
+    judgeProvider,
+    cc
+  );
+  const repollPrompt = buildRepollPrompt(question, initialPool);
+  const reconsidered = await queryMembers(repollPrompt, members, runtime);
+  const finalPool = await poolResponses(
+    question,
+    reconsidered,
+    judgeModelId,
+    judgeProvider,
+    cc
+  );
+  return {
+    mode: "pooled",
+    question,
+    judgeModel: modelIdLabel(judgeModelId),
+    initialPool,
+    reconsidered,
+    finalPool,
+    ...verbose ? { initialResponses } : {}
+  };
+}
+
 // src/council/orchestrator.ts
 function isEmbeddingModel(m2) {
   if (m2.family && /^(bert|nomic-bert)$/i.test(m2.family)) return true;
@@ -35114,6 +35238,17 @@ var CouncilOrchestrator = class {
       );
     }
     const cc = { maxTokens: this.runtime.maxTokens, retries: this.runtime.retries };
+    if (mode === "pooled") {
+      return runPooled({
+        question,
+        initialResponses: responses,
+        members,
+        judgeModelId,
+        judgeProvider,
+        runtime: this.runtime,
+        verbose
+      });
+    }
     const catResult = await categorize(
       question,
       responses,
@@ -35160,8 +35295,8 @@ var ConfigureCouncilInput = external_exports.object({
   judge_model: external_exports.string().optional().describe(
     'Model to act as judge for categorisation/deconfliction. Same format as models. Omit for "auto" (picks largest council member).'
   ),
-  response_mode: external_exports.enum(["individual", "categorized", "deconflicted"]).optional().describe(
-    "individual \u2192 each model responds independently. categorized \u2192 judge groups into agreement/complementary/conflicting. deconflicted \u2192 iterative loop until conflicts resolve or max_rounds reached."
+  response_mode: external_exports.enum(["individual", "categorized", "deconflicted", "pooled"]).optional().describe(
+    "individual \u2192 each model responds independently. categorized \u2192 judge groups into agreement/complementary/conflicting. deconflicted \u2192 iterative loop until conflicts resolve or max_rounds reached. pooled \u2192 Delphi-style: members reconsider against a neutral, attribution-free pool of answers."
   ),
   max_deconflict_rounds: external_exports.number().int().min(1).max(10).optional().describe("Maximum deconfliction rounds (1\u201310, default 3)."),
   auto_council: external_exports.boolean().optional().describe(
@@ -35170,10 +35305,10 @@ var ConfigureCouncilInput = external_exports.object({
 });
 var AskCouncilInput = external_exports.object({
   question: external_exports.string().describe("The question or prompt to send to the council."),
-  mode: external_exports.enum(["individual", "categorized", "deconflicted"]).optional().describe("Override the default response mode for this call only."),
+  mode: external_exports.enum(["individual", "categorized", "deconflicted", "pooled"]).optional().describe("Override the default response mode for this call only."),
   max_deconflict_rounds: external_exports.number().int().min(1).max(10).optional().describe("Override max deconfliction rounds for this call only."),
   verbose: external_exports.boolean().optional().describe(
-    "Deconflicted mode only: include the initial categorization and per-round detail in the result."
+    "deconflicted \u2192 include the initial categorization and per-round detail; pooled \u2192 include the initial (round-0) raw member responses."
   )
 });
 var GetCouncilConfigInput = external_exports.object({});
@@ -35208,8 +35343,8 @@ var TOOLS = [
         },
         response_mode: {
           type: "string",
-          enum: ["individual", "categorized", "deconflicted"],
-          description: "individual: raw responses. categorized: agreement/complementary/conflicting. deconflicted: iterative loop with deconfliction score."
+          enum: ["individual", "categorized", "deconflicted", "pooled"],
+          description: "individual: raw responses. categorized: agreement/complementary/conflicting. deconflicted: iterative loop with deconfliction score. pooled: Delphi-style neutral reconsideration (no attribution or ranking shown to members)."
         },
         max_deconflict_rounds: {
           type: "number",
@@ -35224,7 +35359,7 @@ var TOOLS = [
   },
   {
     name: "ask_council",
-    description: "Send a question to the model council and get a structured response. Mode: individual (each model answers separately), categorized (judge groups responses into agreement/complementary/conflicting), or deconflicted (iterative loop \u2014 judge orchestrates re-questioning until conflicts resolve, returns a deconfliction score 0\u2013100%).",
+    description: "Send a question to the model council and get a structured response. Mode: individual (each model answers separately), categorized (judge groups responses into agreement/complementary/conflicting), deconflicted (iterative loop \u2014 judge orchestrates re-questioning until conflicts resolve, returns a deconfliction score 0\u2013100%), or pooled (Delphi-style \u2014 members reconsider against a neutral, deduplicated, attribution-free pool of answers; no winner is forced, so genuine divergence is preserved).",
     inputSchema: {
       type: "object",
       required: ["question"],
@@ -35235,7 +35370,7 @@ var TOOLS = [
         },
         mode: {
           type: "string",
-          enum: ["individual", "categorized", "deconflicted"],
+          enum: ["individual", "categorized", "deconflicted", "pooled"],
           description: "Response mode override for this call only."
         },
         max_deconflict_rounds: {
@@ -35244,7 +35379,7 @@ var TOOLS = [
         },
         verbose: {
           type: "boolean",
-          description: "Deconflicted mode only: include the initial categorization and per-round detail."
+          description: "deconflicted \u2192 include the initial categorization and per-round detail; pooled \u2192 include the initial (round-0) raw member responses."
         }
       }
     }
@@ -35258,7 +35393,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.1.0"
+    version: "0.1.2"
   },
   {
     capabilities: { tools: {} }
@@ -35421,7 +35556,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                     COUNCIL_MODELS: 'Default council members, e.g. "ollama:llama3,openai:gpt-4o". Empty = auto.',
                     AUTO_COUNCIL: "true (default) auto-fills council from all Ollama chat models when COUNCIL_MODELS is empty",
                     JUDGE_MODEL: "Judge model (default: auto)",
-                    RESPONSE_MODE: "individual | categorized | deconflicted",
+                    RESPONSE_MODE: "individual | categorized | deconflicted | pooled",
                     MAX_DECONFLICT_ROUNDS: "Max deconfliction rounds (default: 3)",
                     CLAUDE_CLI: "true \u2192 add a subscription-backed Claude member via the local `claude` CLI (no API key/billing)",
                     CLAUDE_CLI_MODELS: "Comma-separated model aliases for the CLI member (default: opus,sonnet)",

@@ -1,12 +1,13 @@
 # model-council-mcp
 
-An MCP server that routes a question to a **council** of AI models — local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, Groq) — and synthesizes their answers in three configurable modes:
+An MCP server that routes a question to a **council** of AI models — local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, Groq) — and synthesizes their answers in four configurable modes:
 
 | Mode | What you get |
 |---|---|
 | `individual` | Each model's raw answer, side by side |
 | `categorized` | Judge groups responses into **common agreement**, **complementary insights**, and **conflicting positions** |
 | `deconflicted` | Iterative loop — judge re-questions the council on each conflict until resolved or rounds exhausted; returns a **deconfliction score** (0–100 %) |
+| `pooled` | **Delphi-style** — judge distils all answers into a neutral, deduplicated pool (no counts, no attribution, no ranking); members reconsider against it and answer freshly. No winner is forced, so genuine divergence is **preserved** rather than collapsed by social proof |
 
 ---
 
@@ -44,7 +45,7 @@ claude --plugin-dir /path/to/model-council-mcp
 | Council models | Pin specific models, or leave blank to auto-use all Ollama models | *(empty → auto)* |
 | Auto-discover council | Use all Ollama chat models (local + `:cloud`) when none pinned | `true` |
 | Judge model | Categorizer/deconflicter, or `auto` (largest) | `auto` |
-| Default response mode | `individual` / `categorized` / `deconflicted` | `categorized` |
+| Default response mode | `individual` / `categorized` / `deconflicted` / `pooled` | `categorized` |
 | Max deconfliction rounds | 1–10 | `3` |
 | OpenAI / Anthropic / Groq API key | Enable cloud models (stored in keychain) | — |
 | vLLM / TRT-LLM / SGLang servers | `name:host:port` entries | — |
@@ -157,7 +158,7 @@ Full URLs also work: `gpu3:http://10.0.0.5:9000`
 |---|---|---|
 | `COUNCIL_MODELS` | Comma-separated model IDs | *(empty — use `configure_council`)* |
 | `JUDGE_MODEL` | Judge model ID or `auto` | `auto` (largest council member) |
-| `RESPONSE_MODE` | `individual` \| `categorized` \| `deconflicted` | `categorized` |
+| `RESPONSE_MODE` | `individual` \| `categorized` \| `deconflicted` \| `pooled` | `categorized` |
 | `MAX_DECONFLICT_ROUNDS` | Max deconfliction iterations | `3` |
 
 ### Performance & output
@@ -237,7 +238,7 @@ Send a question to the full council.
 }
 ```
 
-`mode` and `max_deconflict_rounds` override the configured defaults for this call only. In `deconflicted` mode, set `"verbose": true` to include the initial categorization, every member's per-round responses, and the round-by-round re-categorization alongside the final synthesis.
+`mode` and `max_deconflict_rounds` override the configured defaults for this call only. In `deconflicted` mode, set `"verbose": true` to include the initial categorization, every member's per-round responses, and the round-by-round re-categorization alongside the final synthesis. In `pooled` mode, `"verbose": true` adds the initial (round-0) raw member responses.
 
 #### Individual result
 
@@ -299,6 +300,27 @@ Send a question to the full council.
 
 **Deconfliction score**: `resolved / totalConflicts × 100`.  
 100 % means all conflicts resolved; n/m means n conflicts resolved out of m found.
+
+#### Pooled result (Delphi)
+
+```json
+{
+  "mode": "pooled",
+  "question": "...",
+  "judgeModel": "openai:gpt-4o",
+  "initialPool": {
+    "options": [
+      { "answer": "Exponential backoff", "rationale": "<reasons merged from everyone who said it>", "models": ["ollama:llama3", "openai:gpt-4o"] }
+    ]
+  },
+  "reconsidered": [
+    { "label": "ollama:llama3", "response": "<fresh answer after seeing the neutral pool>", "latencyMs": 1120 }
+  ],
+  "finalPool": { "options": [ { "answer": "...", "rationale": "...", "models": ["..."] } ] }
+}
+```
+
+Why `pooled` exists: the `deconflicted` loop shows each member the *labelled* factions (`[modelA, modelB]: X`) and asks them to "agree with one of the existing positions" — that is social proof, and minority views tend to collapse toward the visible plurality in a single round, erasing the decorrelation the council exists to surface. `pooled` follows the **Delphi method** instead: the judge distils all answers into a neutral digest — one entry per distinct answer, rationale merged from everyone who gave it, but with **no counts, no attribution, and no ranking** — then re-asks members the original question against that digest ("in no particular order, here is what others said — what do you think?"). Members reconsider on substance, not popularity. The `models` field on each option is recorded for *your* analysis and is **never** shown back to members. No final winner is declared: compare `initialPool` vs. `finalPool` to see whether — and how much — opinion actually moved.
 
 ---
 

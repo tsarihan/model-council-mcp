@@ -149,6 +149,35 @@ async function main() {
     check('partial: 1 unresolved', part.unresolvedConflicts?.length === 1, `got ${part.unresolvedConflicts?.length}`);
     check('partial: unresolved is caching', /caching/i.test(part.unresolvedConflicts?.[0]?.topic ?? ''));
 
+    // ── Test: pooled (Delphi) mode ────────────────────────────────────────────
+    console.log('\n▶ ask_council (pooled — Delphi neutral reconsideration)');
+    await resetMock();
+    const pool = parseToolResult(await client.callTool({
+      name: 'ask_council',
+      arguments: { question: 'How to handle errors?', mode: 'pooled', verbose: true },
+    }));
+    check('pooled: mode pooled', pool.mode === 'pooled');
+    check('pooled: judge is big-judge', pool.judgeModel === 'ollama:big-judge', `got ${pool.judgeModel}`);
+    check('pooled: initial pool has 2 options', pool.initialPool?.options?.length === 2, `got ${pool.initialPool?.options?.length}`);
+    check('pooled: option has answer + rationale', typeof pool.initialPool?.options?.[0]?.answer === 'string' && typeof pool.initialPool?.options?.[0]?.rationale === 'string');
+    check('pooled: option records models (for analysis)', Array.isArray(pool.initialPool?.options?.[0]?.models));
+    check('pooled: all 3 members reconsidered', pool.reconsidered?.length === 3, `got ${pool.reconsidered?.length}`);
+    check('pooled: final pool converged to 1', pool.finalPool?.options?.length === 1, `got ${pool.finalPool?.options?.length}`);
+    check('pooled: verbose includes round-0 responses', pool.initialResponses?.length === 3, `got ${pool.initialResponses?.length}`);
+    // Neutrality: the prompt shown to members must carry NO attribution/labels.
+    const dbgPool = await (await fetch(`${MOCK_URL}/debug`)).json();
+    check('pooled: re-poll prompt framed "in no particular order"', /in no particular order/.test(dbgPool.lastRepollPrompt ?? ''));
+    check('pooled: re-poll prompt shows the pooled answers', /Exponential backoff/.test(dbgPool.lastRepollPrompt ?? ''));
+    check('pooled: re-poll prompt leaks NO model attribution', !!dbgPool.lastRepollPrompt && !/ollama:|small-a|small-b|big-judge/.test(dbgPool.lastRepollPrompt));
+
+    // verbose off → round-0 responses omitted
+    await resetMock();
+    const poolQuiet = parseToolResult(await client.callTool({
+      name: 'ask_council',
+      arguments: { question: 'How to handle errors?', mode: 'pooled' },
+    }));
+    check('pooled: non-verbose omits round-0 responses', poolQuiet.initialResponses === undefined);
+
     // ── Test: configure_council + get_council_config ──────────────────────────
     console.log('\n▶ configure_council / get_council_config');
     const conf = parseToolResult(await client.callTool({

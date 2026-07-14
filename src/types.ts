@@ -11,7 +11,7 @@ export type ProviderType =
   | 'claude-cli'
   | 'codex-cli';
 
-export type ResponseMode = 'individual' | 'categorized' | 'deconflicted';
+export type ResponseMode = 'individual' | 'categorized' | 'deconflicted' | 'pooled';
 
 /** A reference to a specific model on a specific server */
 export interface ModelId {
@@ -161,7 +161,45 @@ export interface DeconflictedResult {
   rounds?: DeconflictRoundDetail[];
 }
 
-export type CouncilResult = IndividualResult | CategorizedResult | DeconflictedResult;
+// ─── Pooled (Delphi) result ───────────────────────────────────────────────────
+
+export interface PooledOption {
+  /** The distinct answer (city, language, state, …). */
+  answer: string;
+  /** Reasoning merged from every response that offered this answer. */
+  rationale: string;
+  /**
+   * Labels of the responses that included this answer. Recorded for the caller's
+   * analysis only — it is deliberately NOT shown back to members during re-poll,
+   * so their reconsideration stays free of attribution/popularity cues.
+   */
+  models: string[];
+}
+
+export interface PooledDigest {
+  options: PooledOption[];
+}
+
+export interface PooledResult {
+  mode: 'pooled';
+  question: string;
+  judgeModel: string;     // label
+  /** Neutral pool distilled from the initial (round-0) answers. */
+  initialPool: PooledDigest;
+  /** Each member's fresh answer after seeing the neutral pool. */
+  reconsidered: RawResponse[];
+  /** Neutral pool distilled from the reconsidered answers (no winner declared). */
+  finalPool: PooledDigest;
+  // ── Verbose-only ──
+  /** The initial fan-out responses from every council member. */
+  initialResponses?: RawResponse[];
+}
+
+export type CouncilResult =
+  | IndividualResult
+  | CategorizedResult
+  | DeconflictedResult
+  | PooledResult;
 
 // ─── Server connectivity ──────────────────────────────────────────────────────
 

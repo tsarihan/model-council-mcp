@@ -251,7 +251,10 @@ export function loadConfig(): AppConfig {
   // ── Response mode ─────────────────────────────────────────────────────────
   const modeRaw = envClean('RESPONSE_MODE');
   const responseMode: ResponseMode =
-    modeRaw === 'individual' || modeRaw === 'categorized' || modeRaw === 'deconflicted'
+    modeRaw === 'individual' ||
+    modeRaw === 'categorized' ||
+    modeRaw === 'deconflicted' ||
+    modeRaw === 'pooled'
       ? modeRaw
       : 'categorized';
   const maxDeconflictRounds = Math.max(

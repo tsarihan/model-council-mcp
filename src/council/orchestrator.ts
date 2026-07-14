@@ -17,6 +17,7 @@ import { ProviderRegistry } from '../providers/registry.js';
 import { modelIdLabel } from '../config.js';
 import { categorize } from './categorizer.js';
 import { deconflict } from './deconflict.js';
+import { runPooled } from './pool.js';
 import { queryMembers } from './query.js';
 
 // ─── Model classification ──────────────────────────────────────────────────────
@@ -195,6 +196,20 @@ export class CouncilOrchestrator {
     }
 
     const cc = { maxTokens: this.runtime.maxTokens, retries: this.runtime.retries };
+
+    // ── Pooled (Delphi) ────────────────────────────────────────────────────
+    // Neutral, attribution-free reconsideration. Skips categorization entirely.
+    if (mode === 'pooled') {
+      return runPooled({
+        question,
+        initialResponses: responses,
+        members,
+        judgeModelId,
+        judgeProvider,
+        runtime: this.runtime,
+        verbose,
+      });
+    }
 
     // ── Categorize ────────────────────────────────────────────────────────
     const catResult = await categorize(

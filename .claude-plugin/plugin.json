@@ -1,7 +1,7 @@
 {
   "name": "model-council",
   "description": "Ask a council of local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, Groq) AI models. Get individual, categorized (agreement / complementary / conflicting), or fully deconflicted answers with a resolution score.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "author": {
     "name": "Tom Sarihan"
   },
@@ -44,7 +44,7 @@
     "response_mode": {
       "type": "string",
       "title": "Default response mode",
-      "description": "One of: individual | categorized | deconflicted. individual = raw answers; categorized = grouped into agreement/complementary/conflicting; deconflicted = iterative resolution loop with a score.",
+      "description": "One of: individual | categorized | deconflicted | pooled. individual = raw answers; categorized = grouped into agreement/complementary/conflicting; deconflicted = iterative resolution loop with a score; pooled = Delphi-style neutral reconsideration (no attribution/ranking shown to members, divergence preserved).",
       "default": "categorized"
     },
     "max_deconflict_rounds": {

@@ -1,6 +1,6 @@
 {
   "name": "model-council-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "MCP server: ask a council of local and cloud AI models, get individual, categorized, or fully deconflicted answers",
   "type": "module",
   "main": "dist/index.js",

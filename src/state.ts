@@ -4,7 +4,7 @@
  * every plugin reload. Location: $MODEL_COUNCIL_STATE, else
  * $XDG_CONFIG_HOME/model-council/state.json, else ~/.config/model-council/state.json.
  */
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 
@@ -43,13 +43,19 @@ export function loadState(): CouncilState {
   return { version: STATE_VERSION };
 }
 
-/** Merge `patch` into the persisted state and write it back. Best-effort (non-fatal if unwritable). */
+/**
+ * Merge `patch` into the persisted state and write it back atomically (temp file
+ * + rename), so a concurrent reader in another process never observes a
+ * half-written file. Best-effort — non-fatal if the location is unwritable.
+ */
 export function saveState(patch: Partial<CouncilState>): CouncilState {
   const next: CouncilState = { ...loadState(), ...patch, version: STATE_VERSION };
   try {
     const p = statePath();
     mkdirSync(dirname(p), { recursive: true });
-    writeFileSync(p, JSON.stringify(next, null, 2));
+    const tmp = `${p}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(next, null, 2));
+    renameSync(tmp, p); // atomic within a filesystem
   } catch {
     /* best-effort */
   }

@@ -21,7 +21,7 @@ import { z } from 'zod';
 import { loadConfig, modelIdLabel, parseModelId } from './config.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { CouncilOrchestrator } from './council/orchestrator.js';
-import { CouncilConfig, CouncilMember, ModelId, ResponseMode } from './types.js';
+import { CouncilConfig, CouncilMember, ModelId, ResponseMode, SubscriptionTiers } from './types.js';
 import { loadState, saveState } from './state.js';
 import { loadSubscriptions, validTiers, SubProvider } from './subscriptions.js';
 import { detectEnvironment, autoPopulatedMembers, quotaWarning } from './detect.js';
@@ -32,11 +32,26 @@ const appConfig = loadConfig();
 const registry = new ProviderRegistry(appConfig.servers);
 const orchestrator = new CouncilOrchestrator(registry, appConfig.council, appConfig.runtime);
 
-const labelsToMembers = (labels: string[]): CouncilMember[] =>
+const labelsToMembers = (labels: unknown[]): CouncilMember[] =>
   labels.flatMap(s => {
+    if (typeof s !== 'string') return []; // tolerate a hand-corrupted state.json
     const id = parseModelId(s);
     return id ? [{ modelId: id }] : [];
   });
+
+/**
+ * Tiers actually in effect: boot tiers overlaid by persisted state, each
+ * re-validated against subscriptions.json (so a tier a pulled config no longer
+ * defines falls back to the boot-sanitised value rather than being resurrected).
+ */
+function effectiveTiers(subs = loadSubscriptions()): SubscriptionTiers {
+  const stateTiers = loadState().tiers ?? {};
+  const guard = (p: SubProvider): string => {
+    const v = stateTiers[p] ?? appConfig.tiers[p];
+    return validTiers(p, subs).includes(v) ? v : appConfig.tiers[p];
+  };
+  return { chatgpt: guard('chatgpt'), claude: guard('claude'), ollama: guard('ollama') };
+}
 
 /**
  * On boot: honour a persisted council (survives reloads), or — on a fresh
@@ -56,10 +71,16 @@ async function initCouncil(): Promise<void> {
   try {
     const subs = loadSubscriptions();
     const report = await detectEnvironment(registry, appConfig.tiers, subs);
+    // Detection is slow (subprocess probes); an explicit configure_council or
+    // setup_council may have landed while we awaited — it MUST win. Re-check both
+    // guards before clobbering.
+    if (orchestrator.getConfig().members.length > 0) return;
+    if (Array.isArray(loadState().members)) return;
     const labels = autoPopulatedMembers(report, appConfig.tiers, subs);
     if (labels.length) {
       orchestrator.updateConfig({ members: labelsToMembers(labels) });
-      saveState({ members: labels, tiers: appConfig.tiers, welcomedVersion: subs.version });
+      // Persist only members here — never overwrite the user's tier choices.
+      saveState({ members: labels, welcomedVersion: subs.version });
     }
   } catch {
     /* detection failed → keep zero-config Ollama auto-discovery */
@@ -531,8 +552,9 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // ── council_status ───────────────────────────────────────────────────
       case 'council_status': {
         const subs = loadSubscriptions();
-        // Always detect fresh so a login/logout since boot is reflected.
-        const report = await detectEnvironment(registry, appConfig.tiers, subs);
+        const tiers = effectiveTiers(subs); // persisted tiers win, re-validated
+        // Detect fresh (concurrently) so a login/logout since boot is reflected.
+        const report = await detectEnvironment(registry, tiers, subs);
         const cfg = orchestrator.getConfig();
         const members = cfg.members.map(m => modelIdLabel(m.modelId));
         const ollamaUrl = appConfig.servers.find(s => s.type === 'ollama')?.baseUrl ?? '';
@@ -543,6 +565,9 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
         else if (!report.codex.usable) hints.push('Codex CLI is installed but not signed in — run `codex login`.');
         if (report.ollama.cloud === 'failed') hints.push('Ollama cloud models did not respond — your plan may not include cloud (needs Ollama Pro/Max).');
         if (!report.ollama.reachable) hints.push(`Ollama not reachable at ${ollamaUrl}.`);
+        // Concurrency/registration are fixed at boot; a tier changed since then needs a reload.
+        const reloadPending = JSON.stringify(tiers) !== JSON.stringify(appConfig.tiers);
+        if (reloadPending) hints.push('Subscription tier changed since boot — run /reload-plugins (or restart) to apply new concurrency and provider registration.');
 
         return {
           content: [
@@ -550,11 +575,12 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
               type: 'text',
               text: JSON.stringify(
                 {
-                  tiers: appConfig.tiers,
+                  tiers,
                   detected: report,
                   council: { members, count: members.length },
-                  concurrency: appConfig.runtime.poolLimits,
-                  quotaWarning: quotaWarning(report),
+                  concurrency: appConfig.runtime.poolLimits, // currently in effect (boot-time)
+                  reloadPending,
+                  quotaWarning: quotaWarning(report, tiers, subs),
                   hints,
                 },
                 null,
@@ -569,7 +595,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       case 'setup_council': {
         const input = SetupCouncilInput.parse(args ?? {});
         const subs = loadSubscriptions();
-        const tiers = { ...appConfig.tiers, ...(loadState().tiers ?? {}) };
+        const tiers = effectiveTiers(subs); // re-validated base (drops tiers a pulled config removed)
         const applied: Record<string, string> = {};
         const applyTier = (provider: SubProvider, value: string | undefined): void => {
           if (value !== undefined && validTiers(provider, subs).includes(value)) {
@@ -598,7 +624,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
                   tiers,
                   applied,
                   council: { members: labels, count: labels.length },
-                  quotaWarning: quotaWarning(report),
+                  quotaWarning: quotaWarning(report, tiers, subs),
                   note:
                     'Tiers saved. Concurrency changes and newly-enabled subscription ' +
                     'providers take full effect after `/reload-plugins` (or restarting the server).',

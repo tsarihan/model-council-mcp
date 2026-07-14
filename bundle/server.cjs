@@ -24421,6 +24421,8 @@ var StdioServerTransport = class {
 // src/subscriptions.ts
 var import_node_fs = require("node:fs");
 var import_node_path = require("node:path");
+var import_node_url = require("node:url");
+var import_meta = {};
 var EMBEDDED = {
   version: "2026-07-14",
   providers: {
@@ -24471,6 +24473,12 @@ function moduleDir() {
     if (typeof __dirname !== "undefined") return __dirname;
   } catch {
   }
+  try {
+    if (typeof import_meta !== "undefined" && import_meta.url) {
+      return (0, import_node_path.dirname)((0, import_node_url.fileURLToPath)(import_meta.url));
+    }
+  } catch {
+  }
   return void 0;
 }
 function candidatePaths() {
@@ -24485,7 +24493,8 @@ function candidatePaths() {
 }
 function isValid2(s2) {
   const o2 = s2;
-  return !!o2 && !!o2.providers && !!o2.providers.chatgpt && !!o2.providers.claude && !!o2.providers.ollama && Array.isArray(o2.curatedCloudModels) && !!o2.defaults;
+  const hasTiers = (p2) => !!p2 && typeof p2.tiers === "object" && p2.tiers !== null;
+  return !!o2 && !!o2.providers && hasTiers(o2.providers.chatgpt) && hasTiers(o2.providers.claude) && hasTiers(o2.providers.ollama) && Array.isArray(o2.curatedCloudModels) && !!o2.defaults;
 }
 var cached2 = null;
 function loadSubscriptions() {
@@ -24504,10 +24513,10 @@ function loadSubscriptions() {
   return cached2;
 }
 function tierAllowsCloud(provider, tier, subs = loadSubscriptions()) {
-  return subs.providers[provider]?.tiers[tier]?.cloud ?? false;
+  return subs.providers[provider]?.tiers?.[tier]?.cloud ?? false;
 }
 function tierConcurrency(provider, tier, subs = loadSubscriptions()) {
-  const t2 = subs.providers[provider]?.tiers[tier];
+  const t2 = subs.providers[provider]?.tiers?.[tier];
   if (t2?.concurrency && t2.concurrency > 0) return t2.concurrency;
   return subs.defaults.cloudConcurrency;
 }
@@ -24556,7 +24565,9 @@ function saveState(patch) {
   try {
     const p2 = statePath();
     (0, import_node_fs2.mkdirSync)((0, import_node_path2.dirname)(p2), { recursive: true });
-    (0, import_node_fs2.writeFileSync)(p2, JSON.stringify(next, null, 2));
+    const tmp = `${p2}.${process.pid}.tmp`;
+    (0, import_node_fs2.writeFileSync)(tmp, JSON.stringify(next, null, 2));
+    (0, import_node_fs2.renameSync)(tmp, p2);
   } catch {
   }
   return next;
@@ -35742,52 +35753,69 @@ async function withTimeout(p2, ms, fallback) {
     clearTimeout(timer);
   }
 }
-async function detectEnvironment(registry3, tiers, subs) {
+function cliPath(envVar, fallback) {
+  const v2 = (process.env[envVar] || "").trim();
+  return v2 && !v2.includes("${") ? v2 : fallback;
+}
+async function detectOllama(registry3, tiers, subs) {
   const ollama = registry3.getAll().find((p2) => p2.config.type === "ollama");
-  const ollamaReport = { reachable: false, localModels: [], cloud: "skipped" };
-  if (ollama) {
-    try {
-      const models = await withTimeout(ollama.listModels(), 6e3, []);
-      ollamaReport.reachable = true;
-      ollamaReport.localModels = models.filter((m2) => !isCloudModel(m2.model) && !isEmbeddingModel(m2)).map((m2) => m2.model);
-    } catch {
-      ollamaReport.reachable = false;
-    }
-    if (!tierAllowsCloud("ollama", tiers.ollama, subs)) {
-      ollamaReport.cloud = "disabled";
-    } else if (ollamaReport.reachable && subs.curatedCloudModels.length) {
-      const probe = withTimeout(
-        ollama.complete(subs.curatedCloudModels[0], [{ role: "user", content: "hi" }], { maxTokens: 1 }).then(() => "ok").catch(() => "failed"),
-        15e3,
-        "failed"
-      );
-      ollamaReport.cloud = await probe;
-    }
+  const report = { reachable: false, localModels: [], cloud: "skipped" };
+  if (!ollama) return report;
+  try {
+    const models = await withTimeout(ollama.listModels(), 6e3, []);
+    report.reachable = true;
+    report.localModels = models.filter((m2) => !isCloudModel(m2.model) && !isEmbeddingModel(m2)).map((m2) => m2.model);
+  } catch {
+    report.reachable = false;
   }
-  const claudeCmd = (process.env.CLAUDE_CLI_PATH || "").trim() && !(process.env.CLAUDE_CLI_PATH || "").includes("${") ? process.env.CLAUDE_CLI_PATH.trim() : "claude";
-  const claudeInstalled = (await runCli(claudeCmd, ["--version"], { timeoutMs: 8e3 })).code === 0;
-  let claudeUsable = false;
-  if (claudeInstalled) {
-    const probe = await runCli(
-      claudeCmd,
-      ["-p", "Reply with the single word READY", "--output-format", "text"],
-      { timeoutMs: 25e3, stripKeys: "anthropic" }
+  if (!tierAllowsCloud("ollama", tiers.ollama, subs)) {
+    report.cloud = "disabled";
+  } else if (report.reachable && subs.curatedCloudModels.length) {
+    report.cloud = await withTimeout(
+      ollama.complete(subs.curatedCloudModels[0], [{ role: "user", content: "hi" }], { maxTokens: 1 }).then(() => "ok").catch(() => "failed"),
+      15e3,
+      "failed"
     );
-    claudeUsable = probe.code === 0 && probe.stdout.trim().length > 0;
   }
-  const codexCmd = (process.env.CODEX_CLI_PATH || "").trim() && !(process.env.CODEX_CLI_PATH || "").includes("${") ? process.env.CODEX_CLI_PATH.trim() : "codex";
-  const codexInstalled = (await runCli(codexCmd, ["--version"], { timeoutMs: 8e3 })).code === 0;
-  let codexUsable = false;
-  if (codexInstalled) {
-    const st2 = await runCli(codexCmd, ["login", "status"], { timeoutMs: 8e3 });
-    codexUsable = /logged in/i.test(`${st2.stdout}
-${st2.stderr}`);
-  }
-  return {
-    ollama: ollamaReport,
-    claude: { installed: claudeInstalled, usable: claudeUsable },
-    codex: { installed: codexInstalled, usable: codexUsable }
-  };
+  return report;
+}
+async function detectClaude() {
+  const cmd = cliPath("CLAUDE_CLI_PATH", "claude");
+  const installed = (await runCli(cmd, ["--version"], { timeoutMs: 8e3 })).code === 0;
+  if (!installed) return { installed: false, usable: false };
+  const probe = await runCli(
+    cmd,
+    [
+      "-p",
+      "Reply with the single word READY",
+      "--output-format",
+      "text",
+      "--tools",
+      "",
+      "--strict-mcp-config",
+      "--no-session-persistence"
+    ],
+    { timeoutMs: 2e4, stripKeys: "anthropic" }
+  );
+  return { installed: true, usable: probe.code === 0 && probe.stdout.trim().length > 0 };
+}
+async function detectCodex() {
+  const cmd = cliPath("CODEX_CLI_PATH", "codex");
+  const installed = (await runCli(cmd, ["--version"], { timeoutMs: 8e3 })).code === 0;
+  if (!installed) return { installed: false, usable: false };
+  const st2 = await runCli(cmd, ["login", "status"], { timeoutMs: 8e3 });
+  const out = `${st2.stdout}
+${st2.stderr}`;
+  const usable = /logged in/i.test(out) && !/not logged in/i.test(out);
+  return { installed: true, usable };
+}
+async function detectEnvironment(registry3, tiers, subs) {
+  const [ollama, claude, codex] = await Promise.all([
+    detectOllama(registry3, tiers, subs),
+    detectClaude(),
+    detectCodex()
+  ]);
+  return { ollama, claude, codex };
 }
 function autoPopulatedMembers(report, tiers, subs) {
   const out = [];
@@ -35803,11 +35831,11 @@ function autoPopulatedMembers(report, tiers, subs) {
   }
   return [...new Set(out)];
 }
-function quotaWarning(report) {
+function quotaWarning(report, tiers, subs) {
   const paid = [];
   if (report.ollama.cloud === "ok") paid.push("Ollama cloud");
-  if (report.claude.usable) paid.push("Claude subscription");
-  if (report.codex.usable) paid.push("ChatGPT/Codex subscription");
+  if (report.claude.usable && tierAllowsCloud("claude", tiers.claude, subs)) paid.push("Claude subscription");
+  if (report.codex.usable && tierAllowsCloud("chatgpt", tiers.chatgpt, subs)) paid.push("ChatGPT/Codex subscription");
   if (paid.length === 0) return null;
   return `The council includes ${paid.join(", ")} members \u2014 asking it consumes your ${paid.length > 1 ? "quotas" : "quota"}. Remove any you don't want with configure_council (or /model-council:setup) to reduce usage.`;
 }
@@ -35817,9 +35845,18 @@ var appConfig = loadConfig();
 var registry2 = new ProviderRegistry(appConfig.servers);
 var orchestrator = new CouncilOrchestrator(registry2, appConfig.council, appConfig.runtime);
 var labelsToMembers = (labels) => labels.flatMap((s2) => {
+  if (typeof s2 !== "string") return [];
   const id = parseModelId(s2);
   return id ? [{ modelId: id }] : [];
 });
+function effectiveTiers(subs = loadSubscriptions()) {
+  const stateTiers = loadState().tiers ?? {};
+  const guard = (p2) => {
+    const v2 = stateTiers[p2] ?? appConfig.tiers[p2];
+    return validTiers(p2, subs).includes(v2) ? v2 : appConfig.tiers[p2];
+  };
+  return { chatgpt: guard("chatgpt"), claude: guard("claude"), ollama: guard("ollama") };
+}
 async function initCouncil() {
   if (orchestrator.getConfig().members.length > 0) return;
   const persisted = loadState();
@@ -35830,10 +35867,12 @@ async function initCouncil() {
   try {
     const subs = loadSubscriptions();
     const report = await detectEnvironment(registry2, appConfig.tiers, subs);
+    if (orchestrator.getConfig().members.length > 0) return;
+    if (Array.isArray(loadState().members)) return;
     const labels = autoPopulatedMembers(report, appConfig.tiers, subs);
     if (labels.length) {
       orchestrator.updateConfig({ members: labelsToMembers(labels) });
-      saveState({ members: labels, tiers: appConfig.tiers, welcomedVersion: subs.version });
+      saveState({ members: labels, welcomedVersion: subs.version });
     }
   } catch {
   }
@@ -36168,7 +36207,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       // ── council_status ───────────────────────────────────────────────────
       case "council_status": {
         const subs = loadSubscriptions();
-        const report = await detectEnvironment(registry2, appConfig.tiers, subs);
+        const tiers = effectiveTiers(subs);
+        const report = await detectEnvironment(registry2, tiers, subs);
         const cfg = orchestrator.getConfig();
         const members = cfg.members.map((m2) => modelIdLabel(m2.modelId));
         const ollamaUrl = appConfig.servers.find((s2) => s2.type === "ollama")?.baseUrl ?? "";
@@ -36179,17 +36219,21 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         else if (!report.codex.usable) hints.push("Codex CLI is installed but not signed in \u2014 run `codex login`.");
         if (report.ollama.cloud === "failed") hints.push("Ollama cloud models did not respond \u2014 your plan may not include cloud (needs Ollama Pro/Max).");
         if (!report.ollama.reachable) hints.push(`Ollama not reachable at ${ollamaUrl}.`);
+        const reloadPending = JSON.stringify(tiers) !== JSON.stringify(appConfig.tiers);
+        if (reloadPending) hints.push("Subscription tier changed since boot \u2014 run /reload-plugins (or restart) to apply new concurrency and provider registration.");
         return {
           content: [
             {
               type: "text",
               text: JSON.stringify(
                 {
-                  tiers: appConfig.tiers,
+                  tiers,
                   detected: report,
                   council: { members, count: members.length },
                   concurrency: appConfig.runtime.poolLimits,
-                  quotaWarning: quotaWarning(report),
+                  // currently in effect (boot-time)
+                  reloadPending,
+                  quotaWarning: quotaWarning(report, tiers, subs),
                   hints
                 },
                 null,
@@ -36203,7 +36247,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case "setup_council": {
         const input = SetupCouncilInput.parse(args ?? {});
         const subs = loadSubscriptions();
-        const tiers = { ...appConfig.tiers, ...loadState().tiers ?? {} };
+        const tiers = effectiveTiers(subs);
         const applied = {};
         const applyTier = (provider, value) => {
           if (value !== void 0 && validTiers(provider, subs).includes(value)) {
@@ -36229,7 +36273,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                   tiers,
                   applied,
                   council: { members: labels, count: labels.length },
-                  quotaWarning: quotaWarning(report),
+                  quotaWarning: quotaWarning(report, tiers, subs),
                   note: "Tiers saved. Concurrency changes and newly-enabled subscription providers take full effect after `/reload-plugins` (or restarting the server)."
                 },
                 null,

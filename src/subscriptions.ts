@@ -8,7 +8,8 @@
  * never bricks the server. Update the JSON and pull to pick up new plans/models.
  */
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { PoolKey } from './types.js';
 
 export interface TierInfo {
@@ -71,13 +72,20 @@ const EMBEDDED: Subscriptions = {
   defaults: { cloudConcurrency: 3, apiConcurrency: 4, localConcurrency: 1 },
 };
 
-/** Best-effort module directory (defined in the CJS bundle; undefined under ESM/tsx dev). */
+/** Best-effort module directory: __dirname in the CJS bundle, import.meta.url under ESM/tsx. */
 function moduleDir(): string | undefined {
   try {
     // eslint-disable-next-line no-undef
     if (typeof __dirname !== 'undefined') return __dirname;
   } catch {
     /* ESM — no __dirname */
+  }
+  try {
+    if (typeof import.meta !== 'undefined' && import.meta.url) {
+      return dirname(fileURLToPath(import.meta.url));
+    }
+  } catch {
+    /* no import.meta */
   }
   return undefined;
 }
@@ -95,8 +103,13 @@ function candidatePaths(): string[] {
 
 function isValid(s: unknown): s is Subscriptions {
   const o = s as Partial<Subscriptions> | null;
-  return !!o && !!o.providers && !!o.providers.chatgpt && !!o.providers.claude
-    && !!o.providers.ollama && Array.isArray(o.curatedCloudModels) && !!o.defaults;
+  const hasTiers = (p: unknown): boolean =>
+    !!p && typeof (p as ProviderInfo).tiers === 'object' && (p as ProviderInfo).tiers !== null;
+  return (
+    !!o && !!o.providers &&
+    hasTiers(o.providers.chatgpt) && hasTiers(o.providers.claude) && hasTiers(o.providers.ollama) &&
+    Array.isArray(o.curatedCloudModels) && !!o.defaults
+  );
 }
 
 let cached: Subscriptions | null = null;
@@ -124,12 +137,12 @@ export type SubProvider = 'chatgpt' | 'claude' | 'ollama';
 
 /** Does `tier` grant cloud access for `provider`? Unknown tier → false (safe). */
 export function tierAllowsCloud(provider: SubProvider, tier: string, subs = loadSubscriptions()): boolean {
-  return subs.providers[provider]?.tiers[tier]?.cloud ?? false;
+  return subs.providers[provider]?.tiers?.[tier]?.cloud ?? false;
 }
 
 /** Concurrency for a provider at a tier (falls back to sensible defaults). */
 export function tierConcurrency(provider: SubProvider, tier: string, subs = loadSubscriptions()): number {
-  const t = subs.providers[provider]?.tiers[tier];
+  const t = subs.providers[provider]?.tiers?.[tier];
   if (t?.concurrency && t.concurrency > 0) return t.concurrency;
   return subs.defaults.cloudConcurrency;
 }

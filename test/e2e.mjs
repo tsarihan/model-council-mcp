@@ -417,6 +417,7 @@ async function main() {
       COUNCIL_MODELS: 'claude-cli:opus,claude-cli:sonnet',
       RESPONSE_MODE: 'individual',
       CLOUD_CONCURRENCY: '2',
+      MODEL_COUNCIL_STATE: join(tmpdir(), `mc-e2e-cli-${process.pid}.json`), // isolate from real ~/.config
     },
   });
   const cliClient = new Client({ name: 'cli-e2e', version: '1.0.0' }, { capabilities: {} });
@@ -462,6 +463,7 @@ async function main() {
       COUNCIL_MODELS: 'codex-cli:gpt-5-codex,codex-cli:default',
       RESPONSE_MODE: 'individual',
       CLOUD_CONCURRENCY: '2',
+      MODEL_COUNCIL_STATE: join(tmpdir(), `mc-e2e-codex-${process.pid}.json`), // isolate from real ~/.config
     },
   });
   const codexClient = new Client({ name: 'codex-e2e', version: '1.0.0' }, { capabilities: {} });
@@ -504,6 +506,7 @@ async function main() {
   });
   const detectClient = new Client({ name: 'detect-e2e', version: '1.0.0' }, { capabilities: {} });
   await detectClient.connect(detectTransport);
+  let rebootClient, loggedOutClient, loDir;
   try {
     const st = parseToolResult(await detectClient.callTool({ name: 'council_status', arguments: {} }));
     check('status: ollama reachable', st.detected?.ollama?.reachable === true);
@@ -530,13 +533,46 @@ async function main() {
     await detectClient.callTool({ name: 'configure_council', arguments: { models: reduced } });
     const persisted2 = JSON.parse(readFileSync(stateFile, 'utf8'));
     check('configure_council: deletion persisted', persisted2.members?.length === reduced.length && !persisted2.members.includes('ollama:small-a'));
-
-    // Logged-out detection surfaces a hint (isolated server with codex logged out).
-    const st2 = parseToolResult(await detectClient.callTool({ name: 'council_status', arguments: {} }));
-    check('status: exposes hints array', Array.isArray(st2.hints));
-  } finally {
     await detectClient.close();
+
+    // Reboot against the SAME state file → the reduced council must be honoured
+    // (initCouncil applies persisted members, does NOT re-auto-populate the deletion).
+    const rebootTransport = new StdioClientTransport({
+      command: 'node', args: [serverEntry],
+      env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, MODEL_COUNCIL_STATE: stateFile },
+    });
+    rebootClient = new Client({ name: 'reboot-e2e', version: '1.0.0' }, { capabilities: {} });
+    await rebootClient.connect(rebootTransport);
+    let rebootMembers = [];
+    for (let i = 0; i < 50; i++) { // initCouncil applies persisted members async after boot
+      const gc = parseToolResult(await rebootClient.callTool({ name: 'get_council_config', arguments: {} }));
+      rebootMembers = gc.council?.members ?? [];
+      if (rebootMembers.length === reduced.length) break;
+      await new Promise(r => setTimeout(r, 100));
+    }
+    check('reboot: persisted (reduced) council honoured — deletions stick', rebootMembers.length === reduced.length && !rebootMembers.includes('ollama:small-a'), `got ${rebootMembers.length}`);
+    await rebootClient.close(); rebootClient = undefined;
+
+    // Logged-out Codex → detected not-usable, excluded from the auto-council, hinted.
+    loDir = mkdtempSync(join(tmpdir(), 'mc-e2e-lo-'));
+    const loTransport = new StdioClientTransport({
+      command: 'node', args: [serverEntry],
+      env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, CODEX_MOCK_LOGGED_OUT: '1', MODEL_COUNCIL_STATE: join(loDir, 'state.json') },
+    });
+    loggedOutClient = new Client({ name: 'lo-e2e', version: '1.0.0' }, { capabilities: {} });
+    await loggedOutClient.connect(loTransport);
+    const lo = parseToolResult(await loggedOutClient.callTool({ name: 'council_status', arguments: {} }));
+    check('logged-out: codex installed but NOT usable', lo.detected?.codex?.installed === true && lo.detected?.codex?.usable === false, JSON.stringify(lo.detected?.codex));
+    check('logged-out: hint tells user to run `codex login`', (lo.hints ?? []).some(h => /codex login/i.test(h)), (lo.hints ?? []).join(' | '));
+    const loSetup = parseToolResult(await loggedOutClient.callTool({ name: 'setup_council', arguments: {} }));
+    check('logged-out: codex members excluded from auto-council', !(loSetup.council?.members ?? []).some(l => l.startsWith('codex-cli:')), (loSetup.council?.members ?? []).join(','));
+    await loggedOutClient.close(); loggedOutClient = undefined;
+  } finally {
+    try { await detectClient.close(); } catch { /* already closed */ }
+    try { if (rebootClient) await rebootClient.close(); } catch { /* noop */ }
+    try { if (loggedOutClient) await loggedOutClient.close(); } catch { /* noop */ }
     rmSync(stateDir, { recursive: true, force: true });
+    if (loDir) rmSync(loDir, { recursive: true, force: true });
   }
 
   mock.kill();

@@ -57,6 +57,39 @@ check('ollama -cloud → ollama-cloud', poolKey(member('ollama', 'qwen3-coder:48
 check('ollama local → local', poolKey(member('ollama', 'gemma4:31b-mlx')) === 'local');
 check('vllm (self-hosted) → local', poolKey(member('vllm', 'meta-llama/Llama-3')) === 'local');
 
+console.log('▶ per-provider pools drain independently at their own limits');
+{
+  const { queryMembersVarying } = await import('../dist/council/query.js');
+  const tracker = { inflight: 0, peak: 0, poolInflight: {}, poolPeak: {} };
+  const fake = (type) => ({
+    config: { type },
+    complete: async (model) => {
+      const pool = (model.endsWith(':cloud') || model.endsWith('-cloud')) ? 'ollama-cloud' : type;
+      tracker.inflight++; tracker.peak = Math.max(tracker.peak, tracker.inflight);
+      tracker.poolInflight[pool] = (tracker.poolInflight[pool] || 0) + 1;
+      tracker.poolPeak[pool] = Math.max(tracker.poolPeak[pool] || 0, tracker.poolInflight[pool]);
+      await new Promise(r => setTimeout(r, 40));
+      tracker.inflight--; tracker.poolInflight[pool]--;
+      return 'ok';
+    },
+  });
+  const members = [
+    ...Array.from({ length: 6 }, (_, i) => ({ modelId: { provider: 'openai', model: `gpt-${i}` }, provider: fake('openai') })),
+    ...Array.from({ length: 4 }, (_, i) => ({ modelId: { provider: 'ollama', model: `m${i}:cloud` }, provider: fake('ollama') })),
+  ];
+  const runtime = {
+    maxTokens: 50, retries: 1, cloudConcurrency: 3, localConcurrency: 1, verbose: false,
+    poolLimits: { chatgpt: 1, claude: 1, openai: 6, anthropic: 1, groq: 1, 'ollama-cloud': 3, local: 1 },
+  };
+  const res = await queryMembersVarying(() => 'q', members, runtime);
+  check('drain: all 10 members answered', res.length === 10 && res.every(r => r.response === 'ok'));
+  // openai pool (6) + ollama-cloud pool (3) drain concurrently → global peak 9.
+  // Under the old single-"cloud"-bucket scheme this would cap at cloudConcurrency (3).
+  check('drain: two cloud pools run concurrently (peak 6+3=9)', tracker.peak === 9, `peak=${tracker.peak}`);
+  check('drain: openai pool capped at its own limit (6)', tracker.poolPeak.openai === 6, `got ${tracker.poolPeak.openai}`);
+  check('drain: ollama-cloud pool capped at its own limit (3)', tracker.poolPeak['ollama-cloud'] === 3, `got ${tracker.poolPeak['ollama-cloud']}`);
+}
+
 console.log('▶ persistent state round-trip');
 const dir = mkdtempSync(join(tmpdir(), 'mc-state-'));
 process.env.MODEL_COUNCIL_STATE = join(dir, 'state.json');

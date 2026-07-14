@@ -22,7 +22,7 @@ export interface Member {
  */
 export function isCloudMember(m: Member): boolean {
   const type = m.provider.config.type;
-  if (type === 'openai' || type === 'anthropic' || type === 'groq' || type === 'claude-cli') return true;
+  if (type === 'openai' || type === 'anthropic' || type === 'groq' || type === 'claude-cli' || type === 'codex-cli') return true;
   const model = m.modelId.model;
   return model.endsWith(':cloud') || model.endsWith('-cloud');
 }

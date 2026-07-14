@@ -23,7 +23,10 @@
         "DECONFLICT_VERBOSE": "${user_config.deconflict_verbose}",
         "CLAUDE_CLI": "${user_config.claude_cli}",
         "CLAUDE_CLI_MODELS": "${user_config.claude_cli_models}",
-        "CLAUDE_CLI_PATH": "${user_config.claude_cli_path}"
+        "CLAUDE_CLI_PATH": "${user_config.claude_cli_path}",
+        "CODEX_CLI": "${user_config.codex_cli}",
+        "CODEX_CLI_MODELS": "${user_config.codex_cli_models}",
+        "CODEX_CLI_PATH": "${user_config.codex_cli_path}"
       }
     }
   }

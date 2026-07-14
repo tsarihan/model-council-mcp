@@ -212,6 +212,25 @@ export function loadConfig(): AppConfig {
     });
   }
 
+  // ── ChatGPT subscription via the first-party Codex CLI (opt-in) ───────────
+  // Adds subscription-backed OpenAI members that shell out to the local
+  // `codex exec` binary (Codex is a coding agent). Requires the Codex CLI
+  // installed and signed in to a ChatGPT subscription (`codex login`).
+  if (envBool('CODEX_CLI', false)) {
+    const codexModels = (envClean('CODEX_CLI_MODELS') ?? 'default')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+    servers.push({
+      id: 'codex-cli',
+      type: 'codex-cli',
+      baseUrl: '(subscription via codex CLI)',
+      label: 'Codex (ChatGPT subscription CLI)',
+      command: envClean('CODEX_CLI_PATH') ?? 'codex',
+      models: codexModels.length ? codexModels : ['default'],
+    });
+  }
+
   // ── Council members ───────────────────────────────────────────────────────
   const members: CouncilMember[] = (envClean('COUNCIL_MODELS') ?? '')
     .split(',')

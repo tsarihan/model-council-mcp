@@ -1,0 +1,181 @@
+/**
+ * OpenAI via the first-party Codex CLI (`codex exec`).
+ *
+ * Analogous to the claude-cli provider: shells out to the locally-installed
+ * `codex` binary so members run under the user's own ChatGPT subscription
+ * (Sign in with ChatGPT / `codex login`) instead of a per-token API key. It is
+ * the sanctioned first-party surface for subscription use; it is NOT the
+ * (prohibited) reuse of a subscription token against the raw OpenAI API.
+ *
+ * The nested call is locked down: read-only sandbox (`--sandbox read-only`), no
+ * approval prompts (`-c approval_policy=never`), an isolated empty working dir
+ * (`-C <tmp>`), no session persistence (`--ephemeral`), no color codes, and the
+ * final agent message captured via `-o <file>`. OPENAI_API_KEY / CODEX_API_KEY
+ * are stripped from the child env so the ChatGPT subscription login is used.
+ *
+ * Note: Codex is a coding agent, so members answer with a coding-agent flavor.
+ */
+import { spawn } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
+import { ChatMessage, CompletionOptions, Provider } from './base.js';
+
+const DEFAULT_MODELS = ['default'];
+const DEFAULT_TIMEOUT_MS = 300_000;
+
+interface RunResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+export class CodexCliProvider implements Provider {
+  readonly serverId: string;
+  readonly config: ServerConfig;
+  private readonly command: string;
+  private readonly models: string[];
+
+  constructor(config: ServerConfig) {
+    this.config = config;
+    this.serverId = config.id;
+    this.command = config.command?.trim() || 'codex';
+    this.models =
+      config.models && config.models.length ? config.models : DEFAULT_MODELS;
+  }
+
+  async ping(): Promise<boolean> {
+    try {
+      const { code } = await this.run(['--version'], undefined, 8000);
+      return code === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  async listModels(): Promise<ModelInfo[]> {
+    return this.models.map(m => ({
+      provider: 'codex-cli' as ProviderType,
+      model: m,
+      label: `Codex ${m} (ChatGPT subscription)`,
+    }));
+  }
+
+  async complete(
+    model: string,
+    messages: ChatMessage[],
+    opts: CompletionOptions = {},
+  ): Promise<string> {
+    const systemParts = messages
+      .filter(m => m.role === 'system')
+      .map(m => m.content)
+      .join('\n\n');
+    const convo = messages
+      .filter(m => m.role !== 'system')
+      .map(m => (m.role === 'assistant' ? `Assistant: ${m.content}` : m.content))
+      .join('\n\n');
+
+    // Codex has no system-prompt flag in exec mode; prepend a neutral persona.
+    const preamble =
+      'You are a member of a model council. Answer the question directly, ' +
+      'neutrally, and concisely. Do not run commands or modify files — just answer.';
+    const prompt = [
+      preamble,
+      systemParts,
+      opts.jsonMode ? 'Respond with valid JSON only.' : '',
+      convo,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    // Run in a fresh empty dir with the final message written to a file, so the
+    // agent has nothing to explore and we read a clean answer.
+    const dir = mkdtempSync(join(tmpdir(), 'codex-council-'));
+    const outFile = join(dir, 'out.txt');
+    const args = [
+      'exec',
+      '--sandbox', 'read-only',
+      '--skip-git-repo-check',
+      '--ephemeral',
+      '--color', 'never',
+      '-c', 'approval_policy=never',
+      '-C', dir,
+      '-o', outFile,
+    ];
+    if (model && model !== 'default') {
+      args.push('-m', model);
+    }
+
+    try {
+      const { code, stderr } = await this.run(args, prompt, DEFAULT_TIMEOUT_MS);
+      if (code !== 0) {
+        throw new Error(
+          `codex CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || '(no stderr)'}`,
+        );
+      }
+      let out = '';
+      try {
+        out = readFileSync(outFile, 'utf8');
+      } catch {
+        out = '';
+      }
+      return out.trim();
+    } finally {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
+  }
+
+  private run(
+    args: string[],
+    input: string | undefined,
+    timeoutMs: number,
+  ): Promise<RunResult> {
+    return new Promise((resolve, reject) => {
+      // Force subscription auth: strip credentials so the ChatGPT login is used.
+      const env = { ...process.env };
+      delete env.OPENAI_API_KEY;
+      delete env.CODEX_API_KEY;
+
+      const child = spawn(this.command, args, {
+        env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      let stdout = '';
+      let stderr = '';
+      let settled = false;
+
+      const timer = setTimeout(() => {
+        settled = true;
+        child.kill('SIGKILL');
+        reject(new Error(`codex CLI timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', d => (stdout += d));
+      child.stderr.on('data', d => (stderr += d));
+      child.stdin.on('error', () => {}); // swallow EPIPE on early child exit
+      child.on('error', err => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      });
+      child.on('close', code => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ code: code ?? 1, stdout, stderr });
+      });
+
+      if (input !== undefined) child.stdin.write(input);
+      child.stdin.end();
+    });
+  }
+}

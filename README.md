@@ -53,6 +53,7 @@ claude --plugin-dir /path/to/model-council-mcp
 | Completion retries | Retries on an empty/failed response | `3` |
 | Verbose deconfliction | Include per-round detail in deconflicted results | `false` |
 | Claude subscription (CLI) | Use your Claude Pro/Max subscription via `claude -p` (no API key) | `false` |
+| ChatGPT subscription (Codex CLI) | Use your ChatGPT subscription via `codex exec` (no API key) | `false` |
 
 ---
 
@@ -102,6 +103,9 @@ Or add to `~/.claude.json` → `mcpServers`:
 | `CLAUDE_CLI` | `true` → add subscription-backed Claude members via the local `claude` CLI (no API key) | `false` |
 | `CLAUDE_CLI_MODELS` | Model aliases for the CLI member | `opus,sonnet` |
 | `CLAUDE_CLI_PATH` | Path to the `claude` binary | `claude` |
+| `CODEX_CLI` | `true` → add a subscription-backed ChatGPT member via the local `codex exec` CLI (no API key) | `false` |
+| `CODEX_CLI_MODELS` | Model names for the Codex member (`default` = Codex's configured model) | `default` |
+| `CODEX_CLI_PATH` | Path to the `codex` binary | `codex` |
 
 ### Claude via your subscription (first-party CLI)
 
@@ -116,6 +120,21 @@ Set `CLAUDE_CLI=true` to add council members that run through the locally-instal
 **Where it works:** anywhere the `claude` CLI actually executes — the Claude Code CLI, or the Claude Desktop app on a machine that also has the CLI. With `/remote-control` on your CLI, driving it from the Claude web/mobile *code* tab still runs `claude -p` on your machine, so it works there too. It does **not** work for a remotely-hosted copy of this server (no local CLI), and it can't borrow the Claude *app's* subscription directly (no client supports MCP sampling yet).
 
 > This uses the sanctioned first-party CLI under your own subscription, for your own use. High-volume automated fan-out can hit your subscription's rate limits — keep `CLOUD_CONCURRENCY` modest (these members use the cloud pool). Reusing a subscription *token* against the raw Anthropic API from a third-party app is a separate thing and is prohibited; this feature does not do that.
+
+### ChatGPT via your subscription (first-party Codex CLI)
+
+Set `CODEX_CLI=true` to add a council member that runs through the locally-installed **Codex CLI** (`codex exec`) instead of the OpenAI API. Inference runs under whatever your `codex` CLI is signed in with — typically your own **ChatGPT subscription** (`codex login` → *Sign in with ChatGPT*) — so this member doesn't consume API credits. It appears as `codex-cli:default` (or `codex-cli:<model>`).
+
+**Behavior & requirements**
+- The `codex` CLI must be installed and signed in (`codex login`). Set `CODEX_CLI_PATH` if it isn't on `PATH`.
+- Each call shells out to `codex exec` in a **read-only sandbox** (`--sandbox read-only`) with **no approval prompts** (`approval_policy=never`), run in an **empty ephemeral working dir** so the agent has nothing to explore, and reads the final answer from `-o <file>` — a clean single text answer, no file changes.
+- **`OPENAI_API_KEY` / `CODEX_API_KEY` are stripped from the nested call**, because the CLI silently prefers an API key over the ChatGPT login. So this member stays subscription-billed even if you also set an API key for the regular `openai:` provider.
+- Use `CODEX_CLI_MODELS=default` to let Codex pick its configured model, or name specific ones (e.g. `gpt-5-codex`). It is **not** auto-discovered — add `codex-cli:default` explicitly via `configure_council` or `COUNCIL_MODELS`.
+- **Codex is a coding agent**, so answers carry a coding-agent flavor (concise, implementation-oriented) even on general questions — useful as a distinct voice in the council, but not a neutral generalist.
+
+**Where it works:** same as the Claude CLI above — anywhere the `codex` binary actually executes (this machine, or a `/remote-control`-driven CLI running on your machine). It does **not** work for a remotely-hosted copy of this server.
+
+> Same rules as the Claude CLI: sanctioned first-party surface under your own subscription. Reusing a subscription *token* against the raw OpenAI API from a third-party app is a separate, prohibited thing; this feature does not do that.
 
 ### OpenAI-compatible server format
 

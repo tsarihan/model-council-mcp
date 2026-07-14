@@ -8,7 +8,8 @@ export type ProviderType =
   | 'vllm'
   | 'trtllm'
   | 'sglang'
-  | 'claude-cli';
+  | 'claude-cli'
+  | 'codex-cli';
 
 export type ResponseMode = 'individual' | 'categorized' | 'deconflicted';
 

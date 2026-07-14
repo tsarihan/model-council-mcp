@@ -11,6 +11,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 const MOCK_PORT = 11499;
 const MOCK_URL = `http://localhost:${MOCK_PORT}`;
 const MOCK_CLAUDE = fileURLToPath(new URL('./mock-claude.mjs', import.meta.url));
+const MOCK_CODEX = fileURLToPath(new URL('./mock-codex.mjs', import.meta.url));
 
 let passed = 0;
 let failed = 0;
@@ -339,6 +340,45 @@ async function main() {
     check('claude-cli: is_error surfaced as member error', !!errRes.responses?.[0]?.error && !errRes.responses?.[0]?.response, JSON.stringify(errRes.responses?.[0]));
   } finally {
     await cliClient.close();
+  }
+
+  // ── Test: codex-cli subscription provider (isolated server instance) ───────
+  console.log('\n▶ codex-cli subscription provider (mocked codex binary)');
+  chmodSync(MOCK_CODEX, 0o755);
+  const codexTransport = new StdioClientTransport({
+    command: 'node',
+    args: [serverEntry],
+    env: {
+      ...process.env,
+      OLLAMA_ADDRESS: 'http://127.0.0.1:1',
+      OPENAI_API_KEY: 'sk-openai-should-be-stripped',   // must NOT reach codex
+      CODEX_API_KEY: 'ck-should-be-stripped',           // must NOT reach codex
+      CODEX_CLI: 'true',
+      CODEX_CLI_PATH: MOCK_CODEX,
+      CODEX_CLI_MODELS: 'gpt-5-codex,default',
+      COUNCIL_MODELS: 'codex-cli:gpt-5-codex,codex-cli:default',
+      RESPONSE_MODE: 'individual',
+      CLOUD_CONCURRENCY: '2',
+    },
+  });
+  const codexClient = new Client({ name: 'codex-e2e', version: '1.0.0' }, { capabilities: {} });
+  await codexClient.connect(codexTransport);
+  try {
+    const ccfg = parseToolResult(await codexClient.callTool({ name: 'get_council_config', arguments: {} }));
+    check('codex-cli: provider registered', (ccfg.providers ?? []).some(p => p.type === 'codex-cli'), (ccfg.providers ?? []).map(p => p.type).join(','));
+
+    const cx = parseToolResult(await codexClient.callTool({
+      name: 'ask_council', arguments: { question: 'hi codex', mode: 'individual' },
+    }));
+    check('codex-cli: 2 members answered', cx.responses?.length === 2, `got ${cx.responses?.length}`);
+    check('codex-cli: model flag passed (gpt-5-codex)', cx.responses?.some(r => r.label === 'codex-cli:gpt-5-codex' && /model=gpt-5-codex/.test(r.response)), cx.responses?.map(r => r.label).join(','));
+    check('codex-cli: default member omits -m', cx.responses?.some(r => r.label === 'codex-cli:default' && /model=default/.test(r.response)));
+    check('codex-cli: OPENAI_API_KEY stripped (subscription auth)', cx.responses?.every(r => /okey=unset/.test(r.response ?? '')), cx.responses?.map(r => r.response).join(' | '));
+    check('codex-cli: CODEX_API_KEY stripped', cx.responses?.every(r => /ckey=unset/.test(r.response ?? '')));
+    check('codex-cli: read-only sandbox', cx.responses?.every(r => /sandbox=read-only/.test(r.response ?? '')));
+    check('codex-cli: prompt reached the CLI via stdin', cx.responses?.every(r => /hi codex/.test(r.response ?? '')));
+  } finally {
+    await codexClient.close();
   }
 
   // ── Summary ──────────────────────────────────────────────────────────────

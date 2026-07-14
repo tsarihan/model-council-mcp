@@ -24539,6 +24539,17 @@ function loadConfig() {
       models: cliModels.length ? cliModels : ["opus", "sonnet"]
     });
   }
+  if (envBool("CODEX_CLI", false)) {
+    const codexModels = (envClean("CODEX_CLI_MODELS") ?? "default").split(",").map((s2) => s2.trim()).filter(Boolean);
+    servers.push({
+      id: "codex-cli",
+      type: "codex-cli",
+      baseUrl: "(subscription via codex CLI)",
+      label: "Codex (ChatGPT subscription CLI)",
+      command: envClean("CODEX_CLI_PATH") ?? "codex",
+      models: codexModels.length ? codexModels : ["default"]
+    });
+  }
   const members = (envClean("COUNCIL_MODELS") ?? "").split(",").map((s2) => s2.trim()).filter(Boolean).flatMap((s2) => {
     const id = parseModelId(s2);
     return id ? [{ modelId: id }] : [];
@@ -34371,6 +34382,131 @@ var ClaudeCliProvider = class {
   }
 };
 
+// src/providers/codex-cli.ts
+var import_node_child_process2 = require("node:child_process");
+var import_node_fs3 = require("node:fs");
+var import_node_os = require("node:os");
+var import_node_path = require("node:path");
+var DEFAULT_MODELS2 = ["default"];
+var DEFAULT_TIMEOUT_MS2 = 3e5;
+var CodexCliProvider = class {
+  serverId;
+  config;
+  command;
+  models;
+  constructor(config2) {
+    this.config = config2;
+    this.serverId = config2.id;
+    this.command = config2.command?.trim() || "codex";
+    this.models = config2.models && config2.models.length ? config2.models : DEFAULT_MODELS2;
+  }
+  async ping() {
+    try {
+      const { code } = await this.run(["--version"], void 0, 8e3);
+      return code === 0;
+    } catch {
+      return false;
+    }
+  }
+  async listModels() {
+    return this.models.map((m2) => ({
+      provider: "codex-cli",
+      model: m2,
+      label: `Codex ${m2} (ChatGPT subscription)`
+    }));
+  }
+  async complete(model, messages, opts = {}) {
+    const systemParts = messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n");
+    const convo = messages.filter((m2) => m2.role !== "system").map((m2) => m2.role === "assistant" ? `Assistant: ${m2.content}` : m2.content).join("\n\n");
+    const preamble = "You are a member of a model council. Answer the question directly, neutrally, and concisely. Do not run commands or modify files \u2014 just answer.";
+    const prompt = [
+      preamble,
+      systemParts,
+      opts.jsonMode ? "Respond with valid JSON only." : "",
+      convo
+    ].filter(Boolean).join("\n\n");
+    const dir = (0, import_node_fs3.mkdtempSync)((0, import_node_path.join)((0, import_node_os.tmpdir)(), "codex-council-"));
+    const outFile = (0, import_node_path.join)(dir, "out.txt");
+    const args = [
+      "exec",
+      "--sandbox",
+      "read-only",
+      "--skip-git-repo-check",
+      "--ephemeral",
+      "--color",
+      "never",
+      "-c",
+      "approval_policy=never",
+      "-C",
+      dir,
+      "-o",
+      outFile
+    ];
+    if (model && model !== "default") {
+      args.push("-m", model);
+    }
+    try {
+      const { code, stderr } = await this.run(args, prompt, DEFAULT_TIMEOUT_MS2);
+      if (code !== 0) {
+        throw new Error(
+          `codex CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || "(no stderr)"}`
+        );
+      }
+      let out = "";
+      try {
+        out = (0, import_node_fs3.readFileSync)(outFile, "utf8");
+      } catch {
+        out = "";
+      }
+      return out.trim();
+    } finally {
+      try {
+        (0, import_node_fs3.rmSync)(dir, { recursive: true, force: true });
+      } catch {
+      }
+    }
+  }
+  run(args, input, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const env = { ...process.env };
+      delete env.OPENAI_API_KEY;
+      delete env.CODEX_API_KEY;
+      const child = (0, import_node_child_process2.spawn)(this.command, args, {
+        env,
+        stdio: ["pipe", "pipe", "pipe"]
+      });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const timer = setTimeout(() => {
+        settled = true;
+        child.kill("SIGKILL");
+        reject(new Error(`codex CLI timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (d2) => stdout += d2);
+      child.stderr.on("data", (d2) => stderr += d2);
+      child.stdin.on("error", () => {
+      });
+      child.on("error", (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      });
+      child.on("close", (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ code: code ?? 1, stdout, stderr });
+      });
+      if (input !== void 0) child.stdin.write(input);
+      child.stdin.end();
+    });
+  }
+};
+
 // src/providers/registry.ts
 var ProviderRegistry = class {
   providers = /* @__PURE__ */ new Map();
@@ -34386,6 +34522,9 @@ var ProviderRegistry = class {
           break;
         case "claude-cli":
           provider = new ClaudeCliProvider(srv);
+          break;
+        case "codex-cli":
+          provider = new CodexCliProvider(srv);
           break;
         case "openai":
         case "groq":
@@ -34424,7 +34563,7 @@ var ProviderRegistry = class {
 // src/council/query.ts
 function isCloudMember(m2) {
   const type = m2.provider.config.type;
-  if (type === "openai" || type === "anthropic" || type === "groq" || type === "claude-cli") return true;
+  if (type === "openai" || type === "anthropic" || type === "groq" || type === "claude-cli" || type === "codex-cli") return true;
   const model = m2.modelId.model;
   return model.endsWith(":cloud") || model.endsWith("-cloud");
 }
@@ -35287,6 +35426,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                     CLAUDE_CLI: "true \u2192 add a subscription-backed Claude member via the local `claude` CLI (no API key/billing)",
                     CLAUDE_CLI_MODELS: "Comma-separated model aliases for the CLI member (default: opus,sonnet)",
                     CLAUDE_CLI_PATH: "Path to the claude executable (default: claude)",
+                    CODEX_CLI: "true \u2192 add a ChatGPT-subscription member via the local `codex exec` CLI (coding-agent; no API key)",
+                    CODEX_CLI_MODELS: 'Comma-separated model names for the Codex member ("default" = codex default)',
+                    CODEX_CLI_PATH: "Path to the codex executable (default: codex)",
                     MAX_TOKENS: "Max tokens per completion (default: 16000)",
                     CLOUD_CONCURRENCY: "Max concurrent cloud requests (default: 3)",
                     LOCAL_CONCURRENCY: "Max concurrent local requests (default: 1; 0 = unlimited)",

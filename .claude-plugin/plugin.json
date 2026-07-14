@@ -146,6 +146,24 @@
       "title": "claude executable path",
       "description": "Path to the claude binary if it is not on PATH.",
       "default": "claude"
+    },
+    "codex_cli": {
+      "type": "boolean",
+      "title": "ChatGPT subscription (Codex CLI)",
+      "description": "Add a ChatGPT-subscription member via the local `codex exec` CLI instead of an OpenAI API key. Requires the Codex CLI installed and signed in (`codex login` → Sign in with ChatGPT). Codex is a coding agent, so answers are coding-flavored. Members appear as codex-cli:<model>.",
+      "default": false
+    },
+    "codex_cli_models": {
+      "type": "string",
+      "title": "Codex models",
+      "description": "Comma-separated model names for the Codex member. Use 'default' for Codex's configured default model.",
+      "default": "default"
+    },
+    "codex_cli_path": {
+      "type": "string",
+      "title": "codex executable path",
+      "description": "Path to the codex binary if it is not on PATH.",
+      "default": "codex"
     }
   }
 }

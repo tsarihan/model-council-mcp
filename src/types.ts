@@ -11,7 +11,12 @@ export type ProviderType =
   | 'claude-cli'
   | 'codex-cli';
 
-export type ResponseMode = 'individual' | 'categorized' | 'deconflicted' | 'pooled';
+export type ResponseMode =
+  | 'individual'
+  | 'categorized'
+  | 'deconflicted'
+  | 'pooled'
+  | 'dialectic';
 
 /** A reference to a specific model on a specific server */
 export interface ModelId {
@@ -195,11 +200,43 @@ export interface PooledResult {
   initialResponses?: RawResponse[];
 }
 
+// ─── Dialectic result (thesis → antithesis → synthesis) ───────────────────────
+
+export interface DialecticOption {
+  /** The distinct answer under debate. */
+  answer: string;
+  /** Arguments in favour, drawn from the answer's champions and defenders. */
+  pros: string[];
+  /** Adverse arguments, drawn from members arguing the alternatives are better. */
+  cons: string[];
+  /**
+   * Labels of the members that proposed this answer in the initial round.
+   * Recorded for the caller's analysis.
+   */
+  championedBy: string[];
+}
+
+export interface DialecticResult {
+  mode: 'dialectic';
+  question: string;
+  judgeModel: string;     // label
+  /** Antithesis: each member defends its initial pick and critiques the alternatives. */
+  defenses: RawResponse[];
+  /** Synthesis dossier: pros/cons for each distinct option. */
+  prosCons: DialecticOption[];
+  /** Each member's final ranked top-3, chosen after weighing the pros/cons. */
+  selections: RawResponse[];
+  // ── Verbose-only ──
+  /** Thesis: the initial fan-out responses from every council member. */
+  initialResponses?: RawResponse[];
+}
+
 export type CouncilResult =
   | IndividualResult
   | CategorizedResult
   | DeconflictedResult
-  | PooledResult;
+  | PooledResult
+  | DialecticResult;
 
 // ─── Server connectivity ──────────────────────────────────────────────────────
 

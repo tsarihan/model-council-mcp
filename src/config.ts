@@ -254,7 +254,8 @@ export function loadConfig(): AppConfig {
     modeRaw === 'individual' ||
     modeRaw === 'categorized' ||
     modeRaw === 'deconflicted' ||
-    modeRaw === 'pooled'
+    modeRaw === 'pooled' ||
+    modeRaw === 'dialectic'
       ? modeRaw
       : 'categorized';
   const maxDeconflictRounds = Math.max(

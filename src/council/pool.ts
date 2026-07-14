@@ -62,7 +62,11 @@ function parsePoolJSON(raw: string): RawPoolJSON {
     .replace(/^```(?:json)?\s*/im, '')
     .replace(/\s*```\s*$/im, '')
     .trim();
-  return JSON.parse(stripped) as RawPoolJSON;
+  // Tolerate a prose preamble/postamble around the JSON object.
+  const start = stripped.indexOf('{');
+  const end = stripped.lastIndexOf('}');
+  const json = start !== -1 && end > start ? stripped.slice(start, end + 1) : stripped;
+  return JSON.parse(json) as RawPoolJSON;
 }
 
 /** Ask the judge to distil responses into a neutral, deduplicated digest. */

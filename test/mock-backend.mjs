@@ -15,6 +15,9 @@ import http from 'node:http';
 let categorizeCalls = 0;
 let poolCalls = 0;
 let lastRepollPrompt = null;
+let lastDefensePrompt = null;
+let defensePrompts = {};
+let lastSelectionPrompt = null;
 let curConcurrent = 0;
 let maxConcurrent = 0;
 let lastNumPredict = null;
@@ -161,6 +164,43 @@ function chatResponse(body) {
     return reconsidered[model] ?? `[${model}] reconsidered opinion.`;
   }
 
+  // Dialectic: judge compiles the pros/cons dossier (capitalised marker is unique).
+  if (content.includes('DIALECTICAL pros/cons')) {
+    return JSON.stringify({
+      options: [
+        {
+          answer: 'Exponential backoff',
+          pros: ['Adapts to load', 'Avoids overwhelming a struggling dependency'],
+          cons: ['More complex to implement', 'Longer worst-case latency'],
+        },
+        {
+          answer: 'Fixed-interval retry',
+          pros: ['Simple and predictable'],
+          cons: ['Can hammer a failing service', 'No adaptive backpressure'],
+        },
+      ],
+    });
+  }
+
+  // Dialectic: member defends its initial pick and critiques the alternatives.
+  if (content.includes('Defend your initial selection')) {
+    lastDefensePrompt = content;
+    defensePrompts[model] = content; // per-member, for index-alignment assertions
+    const defense = {
+      'small-a': 'Defending exponential backoff: it adapts to load; fixed-interval risks hammering a down service.',
+      'small-b': 'Defending fixed-interval: simplicity wins; backoff adds complexity for marginal gain.',
+      'big-judge': 'Backoff with observability beats fixed-interval, which lacks adaptive backpressure.',
+    };
+    return defense[model] ?? `[${model}] defense.`;
+  }
+
+  // Dialectic: member re-selects a ranked top-3 from the pros/cons dossier.
+  if (content.includes('Weighing both sides')) {
+    lastSelectionPrompt = content;
+    return `#1 Exponential backoff — adaptive under load, accepting added complexity.\n` +
+           `#2 Fixed-interval retry — a simple fallback where predictability matters.`;
+  }
+
   // Normal first-pass member opinion — vary by model so responses differ
   const opinions = {
     'small-a':   'Handle errors with exponential backoff and write-through caching. Log as JSON.',
@@ -181,6 +221,9 @@ const server = http.createServer((req, res) => {
     categorizeCalls = 0;
     poolCalls = 0;
     lastRepollPrompt = null;
+    lastDefensePrompt = null;
+    defensePrompts = {};
+    lastSelectionPrompt = null;
     maxConcurrent = 0;
     flakyCalls = 0;
     lastNumPredict = null;
@@ -191,7 +234,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'GET' && req.url === '/debug') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ maxConcurrent, lastNumPredict, lastRepollPrompt }));
+    res.end(JSON.stringify({ maxConcurrent, lastNumPredict, lastRepollPrompt, lastDefensePrompt, defensePrompts, lastSelectionPrompt }));
     return;
   }
 

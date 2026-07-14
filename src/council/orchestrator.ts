@@ -17,6 +17,7 @@ import { ProviderRegistry } from '../providers/registry.js';
 import { modelIdLabel } from '../config.js';
 import { categorize } from './categorizer.js';
 import { deconflict } from './deconflict.js';
+import { runDialectic } from './dialectic.js';
 import { runPooled } from './pool.js';
 import { queryMembers } from './query.js';
 
@@ -201,6 +202,20 @@ export class CouncilOrchestrator {
     // Neutral, attribution-free reconsideration. Skips categorization entirely.
     if (mode === 'pooled') {
       return runPooled({
+        question,
+        initialResponses: responses,
+        members,
+        judgeModelId,
+        judgeProvider,
+        runtime: this.runtime,
+        verbose,
+      });
+    }
+
+    // ── Dialectic (thesis → antithesis → synthesis) ─────────────────────────
+    // Members defend their pick, judge builds pros/cons, members re-select.
+    if (mode === 'dialectic') {
+      return runDialectic({
         question,
         initialResponses: responses,
         members,

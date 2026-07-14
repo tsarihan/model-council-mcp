@@ -24557,7 +24557,7 @@ function loadConfig() {
   const judgeStr = envClean("JUDGE_MODEL");
   const judgeModelId = judgeStr && judgeStr !== "auto" ? parseModelId(judgeStr) ?? void 0 : void 0;
   const modeRaw = envClean("RESPONSE_MODE");
-  const responseMode = modeRaw === "individual" || modeRaw === "categorized" || modeRaw === "deconflicted" || modeRaw === "pooled" ? modeRaw : "categorized";
+  const responseMode = modeRaw === "individual" || modeRaw === "categorized" || modeRaw === "deconflicted" || modeRaw === "pooled" || modeRaw === "dialectic" ? modeRaw : "categorized";
   const maxDeconflictRounds = Math.max(
     1,
     Math.min(10, parseInt(envClean("MAX_DECONFLICT_ROUNDS") ?? "3", 10) || 3)
@@ -34601,7 +34601,7 @@ async function completeWithRetry(provider, model, messages, opts, retries) {
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
-async function queryMembers(question, members, runtime, opts = {}) {
+async function queryMembersVarying(promptFor, members, runtime, opts = {}) {
   const results = new Array(members.length);
   const cloudTasks = [];
   const localTasks = [];
@@ -34613,7 +34613,7 @@ async function queryMembers(question, members, runtime, opts = {}) {
         const response = await completeWithRetry(
           member.provider,
           member.modelId.model,
-          [{ role: "user", content: question }],
+          [{ role: "user", content: promptFor(member, i2) }],
           { maxTokens: runtime.maxTokens, ...opts },
           runtime.retries
         );
@@ -34635,6 +34635,9 @@ async function queryMembers(question, members, runtime, opts = {}) {
     pooled(localTasks, runtime.localConcurrency)
   ]);
   return results;
+}
+async function queryMembers(question, members, runtime, opts = {}) {
+  return queryMembersVarying(() => question, members, runtime, opts);
 }
 
 // src/council/categorizer.ts
@@ -35022,7 +35025,10 @@ Return ONLY valid JSON (no markdown), with this schema:
 }
 function parsePoolJSON(raw) {
   const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
-  return JSON.parse(stripped);
+  const start = stripped.indexOf("{");
+  const end = stripped.lastIndexOf("}");
+  const json = start !== -1 && end > start ? stripped.slice(start, end + 1) : stripped;
+  return JSON.parse(json);
 }
 async function poolResponses(question, responses, judgeModelId, judgeProvider, cc) {
   const prompt = buildPoolPrompt(question, responses);
@@ -35113,6 +35119,208 @@ async function runPooled(input) {
     initialPool,
     reconsidered,
     finalPool,
+    ...verbose ? { initialResponses } : {}
+  };
+}
+
+// src/council/dialectic.ts
+function renderOptions(digest) {
+  return digest.options.map((o2) => `- ${o2.answer}: ${o2.rationale}`).join("\n");
+}
+function buildDefensePrompt(question, optionsBlock, ownAnswer) {
+  const own = ownAnswer.trim() || "(you did not provide an initial answer)";
+  return `Original question:
+"""
+${question}
+"""
+
+The council proposed these options (each with the reasoning offered for it):
+${optionsBlock || "(no options were extracted)"}
+
+Your initial answer was:
+"""
+${own}
+"""
+
+Defend your initial selection: argue why it is the strongest choice, and explain
+specifically why each of the other options is NOT better. Be concrete and
+critical, but fair \u2014 concede a genuine strength where one exists. Keep it focused.`;
+}
+function buildDossierPrompt(question, digest, initial, defenses) {
+  const optionList = digest.options.map((o2) => `- ${o2.answer}`).join("\n");
+  const initialBlock = initial.filter((r2) => !r2.error && r2.response.trim()).map((r2) => `### ${r2.label}
+${r2.response}`).join("\n\n");
+  const defenseBlock = defenses.filter((r2) => !r2.error && r2.response.trim()).map((r2) => `### ${r2.label}
+${r2.response}`).join("\n\n");
+  return `You are compiling a DIALECTICAL pros/cons analysis (thesis \u2192 antithesis \u2192 synthesis).
+
+Question:
+"""
+${question}
+"""
+
+The distinct options under debate:
+${optionList || "(none)"}
+
+[INITIAL ANSWERS \u2014 theses]
+${initialBlock}
+
+[DEFENSES & CRITIQUES \u2014 antitheses]
+${defenseBlock}
+
+For EACH option above, extract:
+- "pros": the strongest arguments IN FAVOUR (from its proponents and defenders), merged and deduplicated.
+- "cons": the strongest ADVERSE arguments (raised by members arguing a different option is better), merged and deduplicated.
+Keep it balanced \u2014 where the texts support it, every option should carry both pros and cons. Use short, self-contained argument phrases.
+Use each option's answer text EXACTLY as written in the list above \u2014 do not rephrase, expand, abbreviate, or reformat it.
+
+Return ONLY valid JSON (no markdown):
+{ "options": [ { "answer": "<option>", "pros": ["..."], "cons": ["..."] } ] }`;
+}
+function parseDossierJSON(raw) {
+  const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
+  const start = stripped.indexOf("{");
+  const end = stripped.lastIndexOf("}");
+  const json = start !== -1 && end > start ? stripped.slice(start, end + 1) : stripped;
+  return JSON.parse(json);
+}
+function toStrList(v2) {
+  const arr = Array.isArray(v2) ? v2 : v2 == null ? [] : [v2];
+  return arr.map((s2) => (typeof s2 === "string" ? s2 : String(s2)).trim()).filter(Boolean);
+}
+var dedup = (xs) => [...new Set(xs)];
+var keyFor = (a2) => a2.trim().toLowerCase();
+function matchOption(answer, byAnswer) {
+  const k2 = keyFor(answer);
+  const exact = byAnswer.get(k2);
+  if (exact) return exact;
+  for (const opt of byAnswer.values()) {
+    const ok = keyFor(opt.answer);
+    if (k2.includes(ok) && ok.length >= 4 || ok.includes(k2) && k2.length >= 4) return opt;
+  }
+  return void 0;
+}
+async function buildProsCons(question, digest, initial, defenses, judgeModelId, judgeProvider, cc) {
+  const byAnswer = /* @__PURE__ */ new Map();
+  for (const o2 of digest.options) {
+    byAnswer.set(keyFor(o2.answer), {
+      answer: o2.answer,
+      pros: o2.rationale ? [o2.rationale] : [],
+      cons: [],
+      championedBy: o2.models
+    });
+  }
+  let parsed = {};
+  if (digest.options.length > 0) {
+    let rawJson = "";
+    try {
+      rawJson = await completeWithRetry(
+        judgeProvider,
+        judgeModelId.model,
+        [{ role: "user", content: buildDossierPrompt(question, digest, initial, defenses) }],
+        { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens },
+        cc.retries
+      );
+    } catch (err) {
+      if (!(err instanceof EmptyCompletionError)) {
+        throw new Error(
+          `Judge model (${modelIdLabel(judgeModelId)}) failed to build pros/cons: ${String(err)}`
+        );
+      }
+    }
+    if (rawJson) {
+      try {
+        parsed = parseDossierJSON(rawJson);
+      } catch {
+        parsed = {};
+      }
+    }
+  }
+  const options = Array.isArray(parsed.options) ? parsed.options : [];
+  for (const raw of options) {
+    const o2 = raw ?? {};
+    const answer = typeof o2.answer === "string" ? o2.answer.trim() : "";
+    if (!answer) continue;
+    const pros = toStrList(o2.pros);
+    const cons = toStrList(o2.cons);
+    const match = matchOption(answer, byAnswer);
+    if (match) {
+      if (pros.length) match.pros = dedup(pros);
+      if (cons.length) match.cons = dedup(cons);
+    } else {
+      byAnswer.set(keyFor(answer), { answer, pros, cons, championedBy: [] });
+    }
+  }
+  return [...byAnswer.values()];
+}
+function buildSelectionPrompt(question, prosCons) {
+  if (prosCons.length === 0) return question;
+  const block = prosCons.map((o2) => {
+    const pros = o2.pros.length ? o2.pros.join("; ") : "(none noted)";
+    const cons = o2.cons.length ? o2.cons.join("; ") : "(none noted)";
+    return `### ${o2.answer}
+Pros: ${pros}
+Cons: ${cons}`;
+  }).join("\n\n");
+  return `Original question:
+"""
+${question}
+"""
+
+Here is a balanced pros/cons analysis of each option, compiled from the council's
+arguments for and against:
+
+${block}
+
+Weighing both sides of this dialectic, select your TOP 3 as a ranked list, each
+with a one-line justification that reflects the trade-offs (acknowledge the main
+"con" you are accepting). Start with #1.`;
+}
+async function runDialectic(input) {
+  const {
+    question,
+    initialResponses,
+    members,
+    judgeModelId,
+    judgeProvider,
+    runtime,
+    verbose
+  } = input;
+  const cc = { maxTokens: runtime.maxTokens, retries: runtime.retries };
+  const digest = await poolResponses(
+    question,
+    initialResponses,
+    judgeModelId,
+    judgeProvider,
+    cc
+  );
+  const optionsBlock = renderOptions(digest);
+  const defenses = await queryMembersVarying(
+    (_member, i2) => buildDefensePrompt(question, optionsBlock, initialResponses[i2]?.response ?? ""),
+    members,
+    runtime
+  );
+  const prosCons = await buildProsCons(
+    question,
+    digest,
+    initialResponses,
+    defenses,
+    judgeModelId,
+    judgeProvider,
+    cc
+  );
+  const selections = await queryMembers(
+    buildSelectionPrompt(question, prosCons),
+    members,
+    runtime
+  );
+  return {
+    mode: "dialectic",
+    question,
+    judgeModel: modelIdLabel(judgeModelId),
+    defenses,
+    prosCons,
+    selections,
     ...verbose ? { initialResponses } : {}
   };
 }
@@ -35249,6 +35457,17 @@ var CouncilOrchestrator = class {
         verbose
       });
     }
+    if (mode === "dialectic") {
+      return runDialectic({
+        question,
+        initialResponses: responses,
+        members,
+        judgeModelId,
+        judgeProvider,
+        runtime: this.runtime,
+        verbose
+      });
+    }
     const catResult = await categorize(
       question,
       responses,
@@ -35295,8 +35514,8 @@ var ConfigureCouncilInput = external_exports.object({
   judge_model: external_exports.string().optional().describe(
     'Model to act as judge for categorisation/deconfliction. Same format as models. Omit for "auto" (picks largest council member).'
   ),
-  response_mode: external_exports.enum(["individual", "categorized", "deconflicted", "pooled"]).optional().describe(
-    "individual \u2192 each model responds independently. categorized \u2192 judge groups into agreement/complementary/conflicting. deconflicted \u2192 iterative loop until conflicts resolve or max_rounds reached. pooled \u2192 Delphi-style: members reconsider against a neutral, attribution-free pool of answers."
+  response_mode: external_exports.enum(["individual", "categorized", "deconflicted", "pooled", "dialectic"]).optional().describe(
+    "individual \u2192 each model responds independently. categorized \u2192 judge groups into agreement/complementary/conflicting. deconflicted \u2192 iterative loop until conflicts resolve or max_rounds reached. pooled \u2192 Delphi-style: members reconsider against a neutral, attribution-free pool of answers. dialectic \u2192 thesis/antithesis/synthesis: members defend their pick, judge builds pros/cons, members re-select."
   ),
   max_deconflict_rounds: external_exports.number().int().min(1).max(10).optional().describe("Maximum deconfliction rounds (1\u201310, default 3)."),
   auto_council: external_exports.boolean().optional().describe(
@@ -35305,10 +35524,10 @@ var ConfigureCouncilInput = external_exports.object({
 });
 var AskCouncilInput = external_exports.object({
   question: external_exports.string().describe("The question or prompt to send to the council."),
-  mode: external_exports.enum(["individual", "categorized", "deconflicted", "pooled"]).optional().describe("Override the default response mode for this call only."),
+  mode: external_exports.enum(["individual", "categorized", "deconflicted", "pooled", "dialectic"]).optional().describe("Override the default response mode for this call only."),
   max_deconflict_rounds: external_exports.number().int().min(1).max(10).optional().describe("Override max deconfliction rounds for this call only."),
   verbose: external_exports.boolean().optional().describe(
-    "deconflicted \u2192 include the initial categorization and per-round detail; pooled \u2192 include the initial (round-0) raw member responses."
+    "deconflicted \u2192 include the initial categorization and per-round detail; pooled/dialectic \u2192 include the initial (round-0/thesis) raw member responses."
   )
 });
 var GetCouncilConfigInput = external_exports.object({});
@@ -35343,8 +35562,8 @@ var TOOLS = [
         },
         response_mode: {
           type: "string",
-          enum: ["individual", "categorized", "deconflicted", "pooled"],
-          description: "individual: raw responses. categorized: agreement/complementary/conflicting. deconflicted: iterative loop with deconfliction score. pooled: Delphi-style neutral reconsideration (no attribution or ranking shown to members)."
+          enum: ["individual", "categorized", "deconflicted", "pooled", "dialectic"],
+          description: "individual: raw responses. categorized: agreement/complementary/conflicting. deconflicted: iterative loop with deconfliction score. pooled: Delphi-style neutral reconsideration (no attribution or ranking shown to members). dialectic: thesis/antithesis/synthesis \u2014 defend, build pros/cons, re-select."
         },
         max_deconflict_rounds: {
           type: "number",
@@ -35359,7 +35578,7 @@ var TOOLS = [
   },
   {
     name: "ask_council",
-    description: "Send a question to the model council and get a structured response. Mode: individual (each model answers separately), categorized (judge groups responses into agreement/complementary/conflicting), deconflicted (iterative loop \u2014 judge orchestrates re-questioning until conflicts resolve, returns a deconfliction score 0\u2013100%), or pooled (Delphi-style \u2014 members reconsider against a neutral, deduplicated, attribution-free pool of answers; no winner is forced, so genuine divergence is preserved).",
+    description: "Send a question to the model council and get a structured response. Mode: individual (each model answers separately), categorized (judge groups responses into agreement/complementary/conflicting), deconflicted (iterative loop \u2014 judge orchestrates re-questioning until conflicts resolve, returns a deconfliction score 0\u2013100%), pooled (Delphi-style \u2014 members reconsider against a neutral, deduplicated, attribution-free pool of answers; no winner is forced, so genuine divergence is preserved), or dialectic (thesis/antithesis/synthesis \u2014 members defend their pick and critique the rest, the judge compiles a pros/cons dossier per option, then members re-select a ranked top-3).",
     inputSchema: {
       type: "object",
       required: ["question"],
@@ -35370,7 +35589,7 @@ var TOOLS = [
         },
         mode: {
           type: "string",
-          enum: ["individual", "categorized", "deconflicted", "pooled"],
+          enum: ["individual", "categorized", "deconflicted", "pooled", "dialectic"],
           description: "Response mode override for this call only."
         },
         max_deconflict_rounds: {
@@ -35379,7 +35598,7 @@ var TOOLS = [
         },
         verbose: {
           type: "boolean",
-          description: "deconflicted \u2192 include the initial categorization and per-round detail; pooled \u2192 include the initial (round-0) raw member responses."
+          description: "deconflicted \u2192 include the initial categorization and per-round detail; pooled/dialectic \u2192 include the initial (round-0/thesis) raw member responses."
         }
       }
     }
@@ -35393,7 +35612,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.1.2"
+    version: "0.1.3"
   },
   {
     capabilities: { tools: {} }
@@ -35556,7 +35775,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                     COUNCIL_MODELS: 'Default council members, e.g. "ollama:llama3,openai:gpt-4o". Empty = auto.',
                     AUTO_COUNCIL: "true (default) auto-fills council from all Ollama chat models when COUNCIL_MODELS is empty",
                     JUDGE_MODEL: "Judge model (default: auto)",
-                    RESPONSE_MODE: "individual | categorized | deconflicted | pooled",
+                    RESPONSE_MODE: "individual | categorized | deconflicted | pooled | dialectic",
                     MAX_DECONFLICT_ROUNDS: "Max deconfliction rounds (default: 3)",
                     CLAUDE_CLI: "true \u2192 add a subscription-backed Claude member via the local `claude` CLI (no API key/billing)",
                     CLAUDE_CLI_MODELS: "Comma-separated model aliases for the CLI member (default: opus,sonnet)",

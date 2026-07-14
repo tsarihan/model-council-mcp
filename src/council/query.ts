@@ -79,13 +79,14 @@ export async function completeWithRetry(
 }
 
 /**
- * Query every member with the same prompt, honouring separate cloud/local
- * concurrency limits. Results preserve member order; a member that fails after
- * all retries is recorded with an `error` and empty response rather than
- * throwing.
+ * Query every member, building each member's prompt via `promptFor` (so
+ * different members can receive personalised prompts), honouring separate
+ * cloud/local concurrency limits. Results preserve member order; a member that
+ * fails after all retries is recorded with an `error` and empty response rather
+ * than throwing.
  */
-export async function queryMembers(
-  question: string,
+export async function queryMembersVarying(
+  promptFor: (member: Member, index: number) => string,
   members: Member[],
   runtime: RuntimeConfig,
   opts: CompletionOptions = {},
@@ -102,7 +103,7 @@ export async function queryMembers(
         const response = await completeWithRetry(
           member.provider,
           member.modelId.model,
-          [{ role: 'user', content: question }],
+          [{ role: 'user', content: promptFor(member, i) }],
           { maxTokens: runtime.maxTokens, ...opts },
           runtime.retries,
         );
@@ -126,4 +127,19 @@ export async function queryMembers(
   ]);
 
   return results;
+}
+
+/**
+ * Query every member with the SAME prompt, honouring separate cloud/local
+ * concurrency limits. Results preserve member order; a member that fails after
+ * all retries is recorded with an `error` and empty response rather than
+ * throwing.
+ */
+export async function queryMembers(
+  question: string,
+  members: Member[],
+  runtime: RuntimeConfig,
+  opts: CompletionOptions = {},
+): Promise<RawResponse[]> {
+  return queryMembersVarying(() => question, members, runtime, opts);
 }

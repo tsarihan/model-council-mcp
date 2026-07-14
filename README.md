@@ -1,6 +1,6 @@
 # model-council-mcp
 
-An MCP server that routes a question to a **council** of AI models — local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, Groq) — and synthesizes their answers in four configurable modes:
+An MCP server that routes a question to a **council** of AI models — local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, Groq) — and synthesizes their answers in five configurable modes:
 
 | Mode | What you get |
 |---|---|
@@ -8,6 +8,7 @@ An MCP server that routes a question to a **council** of AI models — local (Ol
 | `categorized` | Judge groups responses into **common agreement**, **complementary insights**, and **conflicting positions** |
 | `deconflicted` | Iterative loop — judge re-questions the council on each conflict until resolved or rounds exhausted; returns a **deconfliction score** (0–100 %) |
 | `pooled` | **Delphi-style** — judge distils all answers into a neutral, deduplicated pool (no counts, no attribution, no ranking); members reconsider against it and answer freshly. No winner is forced, so genuine divergence is **preserved** rather than collapsed by social proof |
+| `dialectic` | **Thesis → antithesis → synthesis** — members defend their initial pick and argue why the alternatives aren't better; the judge compiles a balanced **pros/cons dossier** per option; members then re-select a ranked top-3 having weighed both sides |
 
 ---
 
@@ -45,7 +46,7 @@ claude --plugin-dir /path/to/model-council-mcp
 | Council models | Pin specific models, or leave blank to auto-use all Ollama models | *(empty → auto)* |
 | Auto-discover council | Use all Ollama chat models (local + `:cloud`) when none pinned | `true` |
 | Judge model | Categorizer/deconflicter, or `auto` (largest) | `auto` |
-| Default response mode | `individual` / `categorized` / `deconflicted` / `pooled` | `categorized` |
+| Default response mode | `individual` / `categorized` / `deconflicted` / `pooled` / `dialectic` | `categorized` |
 | Max deconfliction rounds | 1–10 | `3` |
 | OpenAI / Anthropic / Groq API key | Enable cloud models (stored in keychain) | — |
 | vLLM / TRT-LLM / SGLang servers | `name:host:port` entries | — |
@@ -158,7 +159,7 @@ Full URLs also work: `gpu3:http://10.0.0.5:9000`
 |---|---|---|
 | `COUNCIL_MODELS` | Comma-separated model IDs | *(empty — use `configure_council`)* |
 | `JUDGE_MODEL` | Judge model ID or `auto` | `auto` (largest council member) |
-| `RESPONSE_MODE` | `individual` \| `categorized` \| `deconflicted` \| `pooled` | `categorized` |
+| `RESPONSE_MODE` | `individual` \| `categorized` \| `deconflicted` \| `pooled` \| `dialectic` | `categorized` |
 | `MAX_DECONFLICT_ROUNDS` | Max deconfliction iterations | `3` |
 
 ### Performance & output
@@ -321,6 +322,32 @@ Send a question to the full council.
 ```
 
 Why `pooled` exists: the `deconflicted` loop shows each member the *labelled* factions (`[modelA, modelB]: X`) and asks them to "agree with one of the existing positions" — that is social proof, and minority views tend to collapse toward the visible plurality in a single round, erasing the decorrelation the council exists to surface. `pooled` follows the **Delphi method** instead: the judge distils all answers into a neutral digest — one entry per distinct answer, rationale merged from everyone who gave it, but with **no counts, no attribution, and no ranking** — then re-asks members the original question against that digest ("in no particular order, here is what others said — what do you think?"). Members reconsider on substance, not popularity. The `models` field on each option is recorded for *your* analysis and is **never** shown back to members. No final winner is declared: compare `initialPool` vs. `finalPool` to see whether — and how much — opinion actually moved.
+
+#### Dialectic result (thesis → antithesis → synthesis)
+
+```json
+{
+  "mode": "dialectic",
+  "question": "...",
+  "judgeModel": "openai:gpt-4o",
+  "defenses": [
+    { "label": "ollama:llama3", "response": "<defends its pick, argues the others are weaker>", "latencyMs": 3900 }
+  ],
+  "prosCons": [
+    {
+      "answer": "Exponential backoff",
+      "pros": ["adapts to load", "avoids overwhelming a struggling dependency"],
+      "cons": ["more complex", "longer worst-case latency"],
+      "championedBy": ["ollama:llama3", "openai:gpt-4o"]
+    }
+  ],
+  "selections": [
+    { "label": "ollama:llama3", "response": "#1 ... #2 ... #3 ... (with the trade-off accepted)", "latencyMs": 4100 }
+  ]
+}
+```
+
+Where `pooled` is deliberately *neutral*, `dialectic` is deliberately *adversarial*. Step 1 (**antithesis**) shows every member the full option set and asks it to defend its own initial pick and argue why each alternative is not better — personalised per member. The judge then distils those defenses and critiques into a balanced **pros/cons dossier** (`prosCons`), one entry per option with arguments for *and* against. Step 2 (**synthesis**) shows that dossier to every member and asks for a fresh ranked top-3, accepting the main trade-off of each choice. `championedBy` records who originally proposed each option (for your analysis). Use it when you want each option stress-tested from both sides before anyone commits — the opposite of the social-proof collapse `deconflicted` can produce. Add `"verbose": true` to include the thesis (round-0) responses.
 
 ---
 

@@ -178,6 +178,59 @@ async function main() {
     }));
     check('pooled: non-verbose omits round-0 responses', poolQuiet.initialResponses === undefined);
 
+    // ── Test: dialectic mode (thesis → antithesis → synthesis) ────────────────
+    console.log('\n▶ ask_council (dialectic — defend / pros-cons / re-select)');
+    await resetMock();
+    const dia = parseToolResult(await client.callTool({
+      name: 'ask_council',
+      arguments: { question: 'How to handle errors?', mode: 'dialectic', verbose: true },
+    }));
+    check('dialectic: mode dialectic', dia.mode === 'dialectic');
+    check('dialectic: judge is big-judge', dia.judgeModel === 'ollama:big-judge', `got ${dia.judgeModel}`);
+    check('dialectic: 3 members defended', dia.defenses?.length === 3, `got ${dia.defenses?.length}`);
+    check('dialectic: pros/cons has 2 options', dia.prosCons?.length === 2, `got ${dia.prosCons?.length}`);
+    const backoff = dia.prosCons?.find(o => /Exponential backoff/i.test(o.answer));
+    check('dialectic: option has non-empty pros AND cons', backoff?.pros?.length > 0 && backoff?.cons?.length > 0);
+    check('dialectic: option records championedBy', Array.isArray(backoff?.championedBy) && backoff.championedBy.includes('ollama:small-a'));
+    check('dialectic: 3 members re-selected', dia.selections?.length === 3, `got ${dia.selections?.length}`);
+    check('dialectic: verbose includes thesis responses', dia.initialResponses?.length === 3, `got ${dia.initialResponses?.length}`);
+    // Structure: defense prompt is personalised; selection prompt carries the dossier.
+    const dbgDia = await (await fetch(`${MOCK_URL}/debug`)).json();
+    check('dialectic: defense prompt asks to defend + shows own answer', /Defend your initial selection/.test(dbgDia.lastDefensePrompt ?? '') && /Your initial answer was/.test(dbgDia.lastDefensePrompt ?? ''));
+    check('dialectic: selection prompt shows pros AND cons', /Pros:/.test(dbgDia.lastSelectionPrompt ?? '') && /Cons:/.test(dbgDia.lastSelectionPrompt ?? ''));
+    // Per-member alignment: each member's defense prompt embeds ITS OWN thesis
+    // (unique tokens: small-a=write-through, big-judge=write-back, small-b=stderr).
+    // Catches a constant-index or off-by-one regression in queryMembersVarying.
+    const dp = dbgDia.defensePrompts ?? {};
+    check('dialectic: small-a defense embeds its own thesis (write-through, not write-back)', /write-through/.test(dp['small-a'] ?? '') && !/write-back/.test(dp['small-a'] ?? ''));
+    check('dialectic: big-judge defense embeds its own thesis (write-back, not write-through)', /write-back/.test(dp['big-judge'] ?? '') && !/write-through/.test(dp['big-judge'] ?? ''));
+    check('dialectic: small-b defense embeds its own thesis (stderr)', /stderr/.test(dp['small-b'] ?? ''));
+
+    // verbose off → thesis responses omitted
+    await resetMock();
+    const diaQuiet = parseToolResult(await client.callTool({
+      name: 'ask_council',
+      arguments: { question: 'How to handle errors?', mode: 'dialectic' },
+    }));
+    check('dialectic: non-verbose omits thesis responses', diaQuiet.initialResponses === undefined);
+
+    // Graceful degradation: judge yields nothing → empty digest → empty pros/cons →
+    // members re-asked the bare question (no crash, no dossier).
+    await resetMock();
+    const diaEmpty = parseToolResult(await client.callTool({
+      name: 'configure_council',
+      arguments: { models: ['ollama:small-a', 'ollama:small-b', 'ollama:big-judge'], judge_model: 'ollama:empty-judge', response_mode: 'dialectic' },
+    }));
+    check('dialectic: empty-judge configured', diaEmpty.status === 'updated');
+    const diaDeg = parseToolResult(await client.callTool({
+      name: 'ask_council', arguments: { question: 'How to handle errors?', mode: 'dialectic' },
+    }));
+    check('dialectic: empty judge → mode still dialectic (no crash)', diaDeg.mode === 'dialectic');
+    check('dialectic: empty judge → no pros/cons', diaDeg.prosCons?.length === 0, `got ${diaDeg.prosCons?.length}`);
+    check('dialectic: empty judge → members still re-selected', diaDeg.selections?.length === 3, `got ${diaDeg.selections?.length}`);
+    const dbgDeg = await (await fetch(`${MOCK_URL}/debug`)).json();
+    check('dialectic: empty judge → selection falls back to bare question (no dossier)', dbgDeg.lastSelectionPrompt === null);
+
     // ── Test: configure_council + get_council_config ──────────────────────────
     console.log('\n▶ configure_council / get_council_config');
     const conf = parseToolResult(await client.callTool({

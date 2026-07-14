@@ -57,13 +57,14 @@ const ConfigureCouncilInput = z.object({
         'Same format as models. Omit for "auto" (picks largest council member).',
     ),
   response_mode: z
-    .enum(['individual', 'categorized', 'deconflicted', 'pooled'])
+    .enum(['individual', 'categorized', 'deconflicted', 'pooled', 'dialectic'])
     .optional()
     .describe(
       'individual → each model responds independently. ' +
         'categorized → judge groups into agreement/complementary/conflicting. ' +
         'deconflicted → iterative loop until conflicts resolve or max_rounds reached. ' +
-        'pooled → Delphi-style: members reconsider against a neutral, attribution-free pool of answers.',
+        'pooled → Delphi-style: members reconsider against a neutral, attribution-free pool of answers. ' +
+        'dialectic → thesis/antithesis/synthesis: members defend their pick, judge builds pros/cons, members re-select.',
     ),
   max_deconflict_rounds: z
     .number()
@@ -84,7 +85,7 @@ const ConfigureCouncilInput = z.object({
 const AskCouncilInput = z.object({
   question: z.string().describe('The question or prompt to send to the council.'),
   mode: z
-    .enum(['individual', 'categorized', 'deconflicted', 'pooled'])
+    .enum(['individual', 'categorized', 'deconflicted', 'pooled', 'dialectic'])
     .optional()
     .describe('Override the default response mode for this call only.'),
   max_deconflict_rounds: z
@@ -99,7 +100,7 @@ const AskCouncilInput = z.object({
     .optional()
     .describe(
       'deconflicted → include the initial categorization and per-round detail; ' +
-        'pooled → include the initial (round-0) raw member responses.',
+        'pooled/dialectic → include the initial (round-0/thesis) raw member responses.',
     ),
 });
 
@@ -148,11 +149,12 @@ const TOOLS = [
         },
         response_mode: {
           type: 'string',
-          enum: ['individual', 'categorized', 'deconflicted', 'pooled'],
+          enum: ['individual', 'categorized', 'deconflicted', 'pooled', 'dialectic'],
           description:
             'individual: raw responses. categorized: agreement/complementary/conflicting. ' +
             'deconflicted: iterative loop with deconfliction score. ' +
-            'pooled: Delphi-style neutral reconsideration (no attribution or ranking shown to members).',
+            'pooled: Delphi-style neutral reconsideration (no attribution or ranking shown to members). ' +
+            'dialectic: thesis/antithesis/synthesis — defend, build pros/cons, re-select.',
         },
         max_deconflict_rounds: {
           type: 'number',
@@ -174,9 +176,11 @@ const TOOLS = [
       'Mode: individual (each model answers separately), ' +
       'categorized (judge groups responses into agreement/complementary/conflicting), ' +
       'deconflicted (iterative loop — judge orchestrates re-questioning until conflicts resolve, ' +
-      'returns a deconfliction score 0–100%), or ' +
+      'returns a deconfliction score 0–100%), ' +
       'pooled (Delphi-style — members reconsider against a neutral, deduplicated, attribution-free ' +
-      'pool of answers; no winner is forced, so genuine divergence is preserved).',
+      'pool of answers; no winner is forced, so genuine divergence is preserved), or ' +
+      'dialectic (thesis/antithesis/synthesis — members defend their pick and critique the rest, ' +
+      'the judge compiles a pros/cons dossier per option, then members re-select a ranked top-3).',
     inputSchema: {
       type: 'object' as const,
       required: ['question'],
@@ -187,7 +191,7 @@ const TOOLS = [
         },
         mode: {
           type: 'string',
-          enum: ['individual', 'categorized', 'deconflicted', 'pooled'],
+          enum: ['individual', 'categorized', 'deconflicted', 'pooled', 'dialectic'],
           description: 'Response mode override for this call only.',
         },
         max_deconflict_rounds: {
@@ -198,7 +202,7 @@ const TOOLS = [
           type: 'boolean',
           description:
             'deconflicted → include the initial categorization and per-round detail; ' +
-            'pooled → include the initial (round-0) raw member responses.',
+            'pooled/dialectic → include the initial (round-0/thesis) raw member responses.',
         },
       },
     },
@@ -217,7 +221,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.1.2',
+    version: '0.1.3',
   },
   {
     capabilities: { tools: {} },
@@ -410,7 +414,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
                     COUNCIL_MODELS: 'Default council members, e.g. "ollama:llama3,openai:gpt-4o". Empty = auto.',
                     AUTO_COUNCIL: 'true (default) auto-fills council from all Ollama chat models when COUNCIL_MODELS is empty',
                     JUDGE_MODEL: 'Judge model (default: auto)',
-                    RESPONSE_MODE: 'individual | categorized | deconflicted | pooled',
+                    RESPONSE_MODE: 'individual | categorized | deconflicted | pooled | dialectic',
                     MAX_DECONFLICT_ROUNDS: 'Max deconfliction rounds (default: 3)',
                     CLAUDE_CLI: 'true → add a subscription-backed Claude member via the local `claude` CLI (no API key/billing)',
                     CLAUDE_CLI_MODELS: 'Comma-separated model aliases for the CLI member (default: opus,sonnet)',

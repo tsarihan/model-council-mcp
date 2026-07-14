@@ -11,3 +11,5 @@ Call the `council_status` tool and present the result clearly and concisely:
 - **Hints**: relay any hints (e.g. how to log a CLI in) so the user can fix anything not usable.
 
 Do not call any other tool unless the user asks to change something (then point them at `/model-council:setup` or `configure_council`).
+
+**Write model IDs in full and verbatim as they appear in `council_status`** — the Codex members are `gpt-5.6-sol`, `gpt-5.6-luna`, and `gpt-5.6-terra`; never abbreviate them to `sol` / `luna` / `terra`.

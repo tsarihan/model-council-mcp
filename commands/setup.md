@@ -19,3 +19,5 @@ Help the user set up the model council interactively.
    - and that a `/reload-plugins` is needed for concurrency / newly-enabled providers to take full effect.
 
 Keep it friendly and concise. If they want to trim the council, remind them `configure_council` can remove members and the change persists.
+
+**Always write model IDs in full and verbatim as they appear in the tool output** — in particular the Codex members are `gpt-5.6-sol`, `gpt-5.6-luna`, and `gpt-5.6-terra`. Never abbreviate them to `sol` / `luna` / `terra` (the bare names are invalid for a ChatGPT account and are confusing to the user).

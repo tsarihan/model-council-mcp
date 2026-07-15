@@ -99,6 +99,19 @@ console.log('▶ openai-compatible baseURL normalization (vLLM/SGLang/TRT-LLM /v
   check('already /v1 → unchanged (groq path)', openaiBaseURL('https://api.groq.com/openai/v1') === 'https://api.groq.com/openai/v1');
 }
 
+console.log('▶ stripThinkBlocks (reasoning-model <think> leakage)');
+{
+  const { stripThinkBlocks } = await import('../dist/providers/base.js');
+  check('paired <think>…</think> removed', stripThinkBlocks('<think>reasoning here</think>The answer.') === 'The answer.');
+  // The real nemotron-3-super shape: chain-of-thought then a closing tag, no opening tag.
+  check('closing-only tag → keep text after </think>', stripThinkBlocks('We need to answer...\n\n</think>\n\nLower latency because data never leaves.') === 'Lower latency because data never leaves.');
+  check('no think tags → unchanged (trimmed)', stripThinkBlocks('  Just a plain answer.  ') === 'Just a plain answer.');
+  check('case-insensitive tags', stripThinkBlocks('<THINK>x</THINK>Answer') === 'Answer');
+  check('multiline reasoning stripped', stripThinkBlocks('<think>line1\nline2\nline3</think>Final') === 'Final');
+  check('empty string → empty', stripThinkBlocks('') === '');
+  check('unclosed <think> left intact (no answer to salvage)', stripThinkBlocks('<think>cut off mid').startsWith('<think>'));
+}
+
 console.log('▶ persistent state round-trip');
 const dir = mkdtempSync(join(tmpdir(), 'mc-state-'));
 process.env.MODEL_COUNCIL_STATE = join(dir, 'state.json');

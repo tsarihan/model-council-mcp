@@ -24759,6 +24759,15 @@ function loadConfig() {
   };
 }
 
+// src/providers/base.ts
+function stripThinkBlocks(text) {
+  if (!text) return text;
+  let out = text.replace(/<think>[\s\S]*?<\/think>/gi, "");
+  const close = out.toLowerCase().lastIndexOf("</think>");
+  if (close !== -1) out = out.slice(close + "</think>".length);
+  return out.trim();
+}
+
 // src/providers/ollama.ts
 var OllamaProvider = class {
   serverId;
@@ -24812,7 +24821,7 @@ var OllamaProvider = class {
       throw new Error(`Ollama complete failed (${res.status}): ${text}`);
     }
     const data = await res.json();
-    return data.message.content;
+    return stripThinkBlocks(data.message.content);
   }
 };
 
@@ -31480,7 +31489,7 @@ var OpenAICompatibleProvider = class {
       max_tokens: opts.maxTokens ?? 16e3,
       ...opts.jsonMode ? { response_format: { type: "json_object" } } : {}
     });
-    return res.choices[0]?.message?.content ?? "";
+    return stripThinkBlocks(res.choices[0]?.message?.content ?? "");
   }
 };
 
@@ -36020,7 +36029,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.4"
+    version: "0.2.5"
   },
   {
     capabilities: { tools: {} },

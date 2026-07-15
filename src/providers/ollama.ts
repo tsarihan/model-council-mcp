@@ -1,5 +1,5 @@
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
-import { ChatMessage, CompletionOptions, Provider } from './base.js';
+import { ChatMessage, CompletionOptions, Provider, stripThinkBlocks } from './base.js';
 
 interface OllamaModel {
   name: string;
@@ -82,6 +82,6 @@ export class OllamaProvider implements Provider {
     }
 
     const data = (await res.json()) as OllamaChatResponse;
-    return data.message.content;
+    return stripThinkBlocks(data.message.content);
   }
 }

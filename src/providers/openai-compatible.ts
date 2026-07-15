@@ -5,7 +5,7 @@
  */
 import OpenAI from 'openai';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
-import { ChatMessage, CompletionOptions, Provider } from './base.js';
+import { ChatMessage, CompletionOptions, Provider, stripThinkBlocks } from './base.js';
 
 // Known-static model lists for cloud providers that don't enumerate via API
 // (OpenAI's /models endpoint returns many but we surface common ones)
@@ -97,6 +97,6 @@ export class OpenAICompatibleProvider implements Provider {
       ...(opts.jsonMode ? { response_format: { type: 'json_object' } } : {}),
     });
 
-    return res.choices[0]?.message?.content ?? '';
+    return stripThinkBlocks(res.choices[0]?.message?.content ?? '');
   }
 }

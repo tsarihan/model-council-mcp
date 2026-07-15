@@ -5,3 +5,7 @@ dist/
 .DS_Store
 .npm/
 # Note: bundle/server.cjs IS committed (it is the plugin's runtime)
+
+# Local research write-ups (papers, figures, dashboards) — kept out of the repo;
+# these go into a separate paper/post, not the plugin release.
+model-council-paper/

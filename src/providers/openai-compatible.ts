@@ -18,6 +18,17 @@ const GROQ_MODELS = [
   'llama3-8b-8192',
 ];
 
+/**
+ * The OpenAI SDK appends `/models`, `/chat/completions`, etc. to its baseURL, so
+ * the baseURL must already include the API version segment. OpenAI/Groq base
+ * URLs carry `/v1`; self-hosted vLLM/SGLang/TRT-LLM are configured as bare
+ * `host:port`, so append `/v1` when it's missing (they serve at /v1/*).
+ */
+export function openaiBaseURL(baseUrl: string): string {
+  const base = baseUrl.replace(/\/+$/, '');
+  return /\/v\d+$/.test(base) ? base : `${base}/v1`;
+}
+
 export class OpenAICompatibleProvider implements Provider {
   readonly serverId: string;
   readonly config: ServerConfig;
@@ -27,7 +38,7 @@ export class OpenAICompatibleProvider implements Provider {
     this.config = config;
     this.serverId = config.id;
     this.client = new OpenAI({
-      baseURL: config.baseUrl,
+      baseURL: openaiBaseURL(config.baseUrl), // ensure the /v1 segment (self-hosted servers omit it)
       apiKey: config.apiKey ?? 'ollama', // vLLM/SGLang/TRT-LLM ignore the key
     });
   }

@@ -31421,6 +31421,10 @@ var GROQ_MODELS = [
   "llama3-70b-8192",
   "llama3-8b-8192"
 ];
+function openaiBaseURL(baseUrl) {
+  const base = baseUrl.replace(/\/+$/, "");
+  return /\/v\d+$/.test(base) ? base : `${base}/v1`;
+}
 var OpenAICompatibleProvider = class {
   serverId;
   config;
@@ -31429,7 +31433,8 @@ var OpenAICompatibleProvider = class {
     this.config = config2;
     this.serverId = config2.id;
     this.client = new openai_default({
-      baseURL: config2.baseUrl,
+      baseURL: openaiBaseURL(config2.baseUrl),
+      // ensure the /v1 segment (self-hosted servers omit it)
       apiKey: config2.apiKey ?? "ollama"
       // vLLM/SGLang/TRT-LLM ignore the key
     });
@@ -36015,7 +36020,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.3"
+    version: "0.2.4"
   },
   {
     capabilities: { tools: {} },

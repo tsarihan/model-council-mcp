@@ -90,6 +90,15 @@ console.log('▶ per-provider pools drain independently at their own limits');
   check('drain: ollama-cloud pool capped at its own limit (3)', tracker.poolPeak['ollama-cloud'] === 3, `got ${tracker.poolPeak['ollama-cloud']}`);
 }
 
+console.log('▶ openai-compatible baseURL normalization (vLLM/SGLang/TRT-LLM /v1 fix)');
+{
+  const { openaiBaseURL } = await import('../dist/providers/openai-compatible.js');
+  check('bare host:port → append /v1', openaiBaseURL('http://192.168.8.234:30000') === 'http://192.168.8.234:30000/v1');
+  check('trailing slash handled', openaiBaseURL('http://h:30000/') === 'http://h:30000/v1');
+  check('already /v1 → unchanged (openai)', openaiBaseURL('https://api.openai.com/v1') === 'https://api.openai.com/v1');
+  check('already /v1 → unchanged (groq path)', openaiBaseURL('https://api.groq.com/openai/v1') === 'https://api.groq.com/openai/v1');
+}
+
 console.log('▶ persistent state round-trip');
 const dir = mkdtempSync(join(tmpdir(), 'mc-state-'));
 process.env.MODEL_COUNCIL_STATE = join(dir, 'state.json');

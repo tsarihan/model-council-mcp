@@ -462,7 +462,7 @@ This design is informed by *The Mirror Law*, which shows that a learner trained 
 
 ## Privacy & data handling
 
-model-council runs **entirely locally** and stores nothing off your machine.
+model-council runs **entirely locally** and stores nothing off your machine. Full policy: [PRIVACY.md](PRIVACY.md).
 
 - **Where your prompts go.** A question is sent only to the model endpoints you configure: your local Ollama server, any self-hosted vLLM/TRT-LLM/SGLang servers, cloud API providers you supply keys for (OpenAI/Anthropic/Groq), and — for subscription members — your own local `claude` / `codex` CLIs. There is no model-council backend and no telemetry; nothing is sent to the author.
 - **Credentials.** API keys are stored in your client's secure storage (system keychain) and used only to call the provider you gave them for. Subscription members run under **your own** Claude/ChatGPT login via the first-party CLIs; the server strips `ANTHROPIC_*` / `OPENAI_*` / `CODEX_*` keys from those child processes so inference is billed to your subscription, not an API key.

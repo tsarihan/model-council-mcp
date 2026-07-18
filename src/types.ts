@@ -93,6 +93,8 @@ export interface RuntimeConfig {
   poolLimits: Record<PoolKey, number>;
   /** Attempts per completion before giving up on an empty/failed response. Default 3. */
   retries: number;
+  /** Per-attempt wall-clock timeout (ms) for a single completion. Default 120000. */
+  requestTimeoutMs: number;
   /** Default value of the verbose flag for deconflicted results. */
   verbose: boolean;
 }
@@ -113,6 +115,8 @@ export interface IndividualResult {
   mode: 'individual';
   question: string;
   responses: RawResponse[];
+  /** Set when a reconciliation mode fell back to individual (e.g. the judge failed). */
+  note?: string;
 }
 
 export interface ComplementaryItem {

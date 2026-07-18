@@ -10,6 +10,19 @@ export interface CompletionOptions {
   maxTokens?: number;
   /** If true, response MUST be valid JSON */
   jsonMode?: boolean;
+  /** Per-attempt wall-clock timeout (ms). Bounds a hung server/subprocess. */
+  timeoutMs?: number;
+}
+
+/** Default per-attempt completion timeout when a caller supplies none. */
+export const DEFAULT_COMPLETION_TIMEOUT_MS = 120_000;
+
+/** Whether an error looks like a request/subprocess timeout (so callers can skip retrying it). */
+export function isTimeoutError(err: unknown): boolean {
+  if (!err) return false;
+  const name = (err as { name?: string }).name ?? '';
+  if (name === 'TimeoutError' || name === 'AbortError' || name === 'APIConnectionTimeoutError') return true;
+  return /\btimed out\b|\btimeout\b/i.test(String((err as { message?: string }).message ?? err));
 }
 
 /**

@@ -24493,8 +24493,15 @@ function candidatePaths() {
 }
 function isValid2(s2) {
   const o2 = s2;
-  const hasTiers = (p2) => !!p2 && typeof p2.tiers === "object" && p2.tiers !== null;
-  return !!o2 && !!o2.providers && hasTiers(o2.providers.chatgpt) && hasTiers(o2.providers.claude) && hasTiers(o2.providers.ollama) && Array.isArray(o2.curatedCloudModels) && !!o2.defaults;
+  const provOk = (p2) => {
+    const pi = p2;
+    if (!pi || typeof pi.tiers !== "object" || pi.tiers === null) return false;
+    if (pi.models !== void 0 && !(Array.isArray(pi.models) && pi.models.every((m2) => typeof m2 === "string"))) return false;
+    return true;
+  };
+  const d2 = o2?.defaults;
+  const defaultsOk = !!d2 && typeof d2.cloudConcurrency === "number" && typeof d2.apiConcurrency === "number" && typeof d2.localConcurrency === "number";
+  return !!o2 && !!o2.providers && provOk(o2.providers.chatgpt) && provOk(o2.providers.claude) && provOk(o2.providers.ollama) && Array.isArray(o2.curatedCloudModels) && defaultsOk;
 }
 var cached2 = null;
 function loadSubscriptions() {
@@ -24594,9 +24601,16 @@ function parseOpenAICompatibleServers(raw, type) {
     }
     const parts = rest.split(":");
     const host = parts[0];
-    const port = parts[1] ? parseInt(parts[1], 10) : defaultPort;
+    let port = defaultPort;
+    if (parts[1] !== void 0) {
+      const n2 = parseInt(parts[1], 10);
+      port = Number.isInteger(n2) && n2 > 0 && n2 <= 65535 ? n2 : defaultPort;
+    }
     return buildServer(type, name, `http://${host}:${port}`);
   });
+}
+function normalizeUrl(u2) {
+  return /^https?:\/\//i.test(u2) ? u2 : `http://${u2}`;
 }
 function buildServer(type, name, baseUrl) {
   return {
@@ -24606,6 +24620,17 @@ function buildServer(type, name, baseUrl) {
     label: `${type.toUpperCase()} \u203A ${name}  (${baseUrl})`
   };
 }
+var KNOWN_PROVIDERS = /* @__PURE__ */ new Set([
+  "ollama",
+  "openai",
+  "anthropic",
+  "groq",
+  "vllm",
+  "trtllm",
+  "sglang",
+  "claude-cli",
+  "codex-cli"
+]);
 function parseModelId(str2) {
   const colonIdx = str2.indexOf(":");
   if (colonIdx === -1) return null;
@@ -24614,6 +24639,7 @@ function parseModelId(str2) {
   if (!model) return null;
   const slashIdx = providerPart.indexOf("/");
   const provider = slashIdx === -1 ? providerPart : providerPart.substring(0, slashIdx);
+  if (!KNOWN_PROVIDERS.has(provider)) return null;
   const serverId = slashIdx === -1 ? void 0 : providerPart.substring(slashIdx + 1);
   return { provider, serverId, model };
 }
@@ -24653,10 +24679,11 @@ function loadConfig() {
     claude: resolveTier("claude", "CLAUDE_TIER", "pro"),
     ollama: resolveTier("ollama", "OLLAMA_TIER", "pro")
   };
+  const ollamaAddr = envClean("OLLAMA_ADDRESS");
   servers.push({
     id: "ollama",
     type: "ollama",
-    baseUrl: envClean("OLLAMA_ADDRESS") ?? "http://localhost:11434",
+    baseUrl: ollamaAddr ? normalizeUrl(ollamaAddr) : "http://localhost:11434",
     label: "Ollama (local)"
   });
   const openaiKey = envClean("OPENAI_API_KEY");
@@ -24695,7 +24722,7 @@ function loadConfig() {
     ...parseOpenAICompatibleServers(envClean("SGLANG_SERVERS"), "sglang")
   );
   if (tierAllowsCloud("claude", tiers.claude, subs) || envBool("CLAUDE_CLI", false)) {
-    const defModels = subs.providers.claude.models?.join(",") ?? "opus,sonnet";
+    const defModels = (Array.isArray(subs.providers.claude.models) ? subs.providers.claude.models.join(",") : "") || "opus,sonnet";
     const cliModels = (envClean("CLAUDE_CLI_MODELS") ?? defModels).split(",").map((s2) => s2.trim()).filter(Boolean);
     servers.push({
       id: "claude-cli",
@@ -24707,7 +24734,7 @@ function loadConfig() {
     });
   }
   if (tierAllowsCloud("chatgpt", tiers.chatgpt, subs) || envBool("CODEX_CLI", false)) {
-    const defModels = subs.providers.chatgpt.models?.join(",") ?? "default";
+    const defModels = (Array.isArray(subs.providers.chatgpt.models) ? subs.providers.chatgpt.models.join(",") : "") || "default";
     const codexModels = (envClean("CODEX_CLI_MODELS") ?? defModels).split(",").map((s2) => s2.trim()).filter(Boolean);
     servers.push({
       id: "codex-cli",
@@ -24743,6 +24770,7 @@ function loadConfig() {
     localConcurrency: localOverride ?? subs.defaults.localConcurrency,
     poolLimits,
     retries: Math.max(1, envInt("COMPLETION_RETRIES", 3)),
+    requestTimeoutMs: Math.max(1e3, envInt("REQUEST_TIMEOUT_MS", 12e4)),
     verbose: envBool("DECONFLICT_VERBOSE", false)
   };
   return {
@@ -24760,6 +24788,13 @@ function loadConfig() {
 }
 
 // src/providers/base.ts
+var DEFAULT_COMPLETION_TIMEOUT_MS = 12e4;
+function isTimeoutError(err) {
+  if (!err) return false;
+  const name = err.name ?? "";
+  if (name === "TimeoutError" || name === "AbortError" || name === "APIConnectionTimeoutError") return true;
+  return /\btimed out\b|\btimeout\b/i.test(String(err.message ?? err));
+}
 function stripThinkBlocks(text) {
   if (!text) return text;
   let out = text.replace(/<think>[\s\S]*?<\/think>/gi, "");
@@ -24826,7 +24861,9 @@ var OllamaProvider = class {
     }
   }
   async listModels() {
-    const res = await fetch(`${this.config.baseUrl}/api/tags`);
+    const res = await fetch(`${this.config.baseUrl}/api/tags`, {
+      signal: AbortSignal.timeout(3e4)
+    });
     if (!res.ok) throw new Error(`Ollama list failed: ${res.status}`);
     const data = await res.json();
     return (data.models ?? []).map((m2) => ({
@@ -24858,14 +24895,16 @@ var OllamaProvider = class {
     const res = await fetch(`${this.config.baseUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      // Bound a wedged host/model so one member can't stall the whole ask.
+      signal: AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS)
     });
     if (!res.ok) {
       const text = await res.text();
       throw new Error(`Ollama complete failed (${res.status}): ${text}`);
     }
     const data = await res.json();
-    return stripThinkBlocks(data.message.content);
+    return stripThinkBlocks(data?.message?.content ?? "");
   }
 };
 
@@ -31490,8 +31529,11 @@ var OpenAICompatibleProvider = class {
     this.client = new openai_default({
       baseURL: openaiBaseURL(config2.baseUrl),
       // ensure the /v1 segment (self-hosted servers omit it)
-      apiKey: config2.apiKey ?? "ollama"
+      apiKey: config2.apiKey ?? "ollama",
       // vLLM/SGLang/TRT-LLM ignore the key
+      // Retries are handled by completeWithRetry; the SDK's own default of 2
+      // would multiply a hung-server timeout by 3×. Bound each call instead.
+      maxRetries: 0
     });
   }
   /**
@@ -31503,7 +31545,7 @@ var OpenAICompatibleProvider = class {
     const cached3 = this.maxLenCache.get(model);
     if (cached3 !== void 0) return cached3 ?? void 0;
     try {
-      const list = await this.client.models.list();
+      const list = await this.client.models.list({ timeout: 1e4 });
       for (const m2 of list.data) {
         this.maxLenCache.set(m2.id, typeof m2.max_model_len === "number" ? m2.max_model_len : null);
       }
@@ -31534,7 +31576,7 @@ var OpenAICompatibleProvider = class {
       }));
     }
     try {
-      const list = await this.client.models.list();
+      const list = await this.client.models.list({ timeout: 3e4 });
       return list.data.map((m2) => ({
         provider: type,
         serverId: this.serverId === type ? void 0 : this.serverId,
@@ -31547,13 +31589,16 @@ var OpenAICompatibleProvider = class {
   }
   async complete(model, messages, opts = {}) {
     const maxTokens = clampMaxTokens(opts.maxTokens ?? 16e3, await this.maxModelLen(model), messages);
-    const res = await this.client.chat.completions.create({
-      model,
-      messages,
-      temperature: opts.temperature ?? 0.7,
-      max_tokens: maxTokens,
-      ...opts.jsonMode ? { response_format: { type: "json_object" } } : {}
-    });
+    const res = await this.client.chat.completions.create(
+      {
+        model,
+        messages,
+        temperature: opts.temperature ?? 0.7,
+        max_tokens: maxTokens,
+        ...opts.jsonMode ? { response_format: { type: "json_object" } } : {}
+      },
+      { timeout: opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS }
+    );
     return stripThinkBlocks(res.choices[0]?.message?.content ?? "");
   }
 };
@@ -34522,6 +34567,17 @@ Respond with valid JSON only.`.trim() : systemParts || void 0;
 var import_node_child_process = require("node:child_process");
 var DEFAULT_MODELS = ["opus", "sonnet"];
 var DEFAULT_TIMEOUT_MS = 3e5;
+function killTree(child) {
+  try {
+    if (child.pid) process.kill(-child.pid, "SIGKILL");
+    else child.kill("SIGKILL");
+  } catch {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+    }
+  }
+}
 var ClaudeCliProvider = class {
   serverId;
   config;
@@ -34573,7 +34629,8 @@ var ClaudeCliProvider = class {
       systemText
       // replace the default coding-agent persona
     ];
-    const { code, stdout, stderr } = await this.run(args, prompt, DEFAULT_TIMEOUT_MS);
+    const timeoutMs = Math.max(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
+    const { code, stdout, stderr } = await this.run(args, prompt, timeoutMs);
     if (code !== 0) {
       throw new Error(
         `claude CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || "(no stderr)"}`
@@ -34602,14 +34659,17 @@ var ClaudeCliProvider = class {
       delete env.ANTHROPIC_AUTH_TOKEN;
       const child = (0, import_node_child_process.spawn)(this.command, args, {
         env,
-        stdio: ["pipe", "pipe", "pipe"]
+        stdio: ["pipe", "pipe", "pipe"],
+        // Own process group so a timeout reaps any subprocesses claude spawns,
+        // not just the direct child.
+        detached: true
       });
       let stdout = "";
       let stderr = "";
       let settled = false;
       const timer = setTimeout(() => {
         settled = true;
-        child.kill("SIGKILL");
+        killTree(child);
         reject(new Error(`claude CLI timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       child.stdout.setEncoding("utf8");
@@ -34643,6 +34703,17 @@ var import_node_os2 = require("node:os");
 var import_node_path3 = require("node:path");
 var DEFAULT_MODELS2 = ["default"];
 var DEFAULT_TIMEOUT_MS2 = 3e5;
+function killTree2(child) {
+  try {
+    if (child.pid) process.kill(-child.pid, "SIGKILL");
+    else child.kill("SIGKILL");
+  } catch {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+    }
+  }
+}
 var CodexCliProvider = class {
   serverId;
   config;
@@ -34700,7 +34771,8 @@ var CodexCliProvider = class {
       args.push("-m", model);
     }
     try {
-      const { code, stderr } = await this.run(args, prompt, DEFAULT_TIMEOUT_MS2);
+      const timeoutMs = Math.max(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS2, DEFAULT_TIMEOUT_MS2);
+      const { code, stderr } = await this.run(args, prompt, timeoutMs);
       if (code !== 0) {
         throw new Error(
           `codex CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || "(no stderr)"}`
@@ -34712,7 +34784,14 @@ var CodexCliProvider = class {
       } catch {
         out = "";
       }
-      return out.trim();
+      const trimmed = out.trim();
+      if (!trimmed) {
+        const detail = stderr.trim().slice(0, 300);
+        throw new Error(
+          `codex CLI produced no final message${detail ? `: ${detail}` : " (empty output)"}`
+        );
+      }
+      return trimmed;
     } finally {
       try {
         (0, import_node_fs5.rmSync)(dir, { recursive: true, force: true });
@@ -34727,14 +34806,17 @@ var CodexCliProvider = class {
       delete env.CODEX_API_KEY;
       const child = (0, import_node_child_process2.spawn)(this.command, args, {
         env,
-        stdio: ["pipe", "pipe", "pipe"]
+        stdio: ["pipe", "pipe", "pipe"],
+        // Own process group so a timeout can reap codex-spawned sandbox
+        // subprocesses (grandchildren), not just the direct child.
+        detached: true
       });
       let stdout = "";
       let stderr = "";
       let settled = false;
       const timer = setTimeout(() => {
         settled = true;
-        child.kill("SIGKILL");
+        killTree2(child);
         reject(new Error(`codex CLI timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       child.stdout.setEncoding("utf8");
@@ -34870,6 +34952,7 @@ async function completeWithRetry(provider, model, messages, opts, retries) {
       lastErr = new EmptyCompletionError();
     } catch (err) {
       lastErr = err;
+      if (isTimeoutError(err)) break;
     }
     if (attempt < attempts) await sleep3(400 * attempt);
   }
@@ -34887,7 +34970,7 @@ async function queryMembersVarying(promptFor, members, runtime, opts = {}) {
           member.provider,
           member.modelId.model,
           [{ role: "user", content: promptFor(member, i2) }],
-          { maxTokens: runtime.maxTokens, ...opts },
+          { maxTokens: runtime.maxTokens, timeoutMs: runtime.requestTimeoutMs, ...opts },
           runtime.retries
         );
         results[i2] = { modelId: member.modelId, label, response, latencyMs: Date.now() - t0 };
@@ -34963,7 +35046,7 @@ async function categorize(question, responses, judgeModelId, judgeProvider, cc, 
       judgeProvider,
       judgeModelId.model,
       [{ role: "user", content: prompt }],
-      { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens },
+      { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
       cc.retries
     );
   } catch (err) {
@@ -34994,25 +35077,25 @@ async function categorize(question, responses, judgeModelId, judgeProvider, cc, 
   }
   const existingSet = new Set(existingConflictIds);
   let conflictCounter = existingConflictIds.length > 0 ? Math.max(...existingConflictIds.map((id) => parseInt(id.split("-")[1] ?? "0"))) : 0;
-  const conflicting = (parsed.conflicting ?? []).map((c2) => {
+  const conflicting = (Array.isArray(parsed.conflicting) ? parsed.conflicting : []).map((c2) => {
     conflictCounter++;
     const id = `conflict-${conflictCounter}`;
     return {
       id,
-      topic: c2.topic ?? "unknown",
-      positions: (c2.positions ?? []).map((p2) => ({
-        models: p2.models ?? [],
-        position: p2.position ?? ""
+      topic: String(c2?.topic ?? "unknown"),
+      positions: (Array.isArray(c2?.positions) ? c2.positions : []).map((p2) => ({
+        models: Array.isArray(p2?.models) ? p2.models : [],
+        position: String(p2?.position ?? "")
       }))
     };
   });
   return {
     question,
     commonAgreement: parsed.commonAgreement ?? null,
-    complementary: (parsed.complementary ?? []).map((c2) => ({
-      aspect: c2.aspect ?? "",
-      models: c2.models ?? [],
-      insight: c2.insight ?? ""
+    complementary: (Array.isArray(parsed.complementary) ? parsed.complementary : []).map((c2) => ({
+      aspect: String(c2?.aspect ?? ""),
+      models: Array.isArray(c2?.models) ? c2.models : [],
+      insight: String(c2?.insight ?? "")
     })),
     conflicting,
     judgeModel: modelIdLabel(judgeModelId)
@@ -35083,19 +35166,21 @@ For each conflict above, please do ONE of:
 Be concise and direct.`;
 }
 function detectResolutions(previous, newCateg) {
-  const newConflictTopics = new Set(
-    newCateg.conflicting.map((c2) => c2.topic.toLowerCase())
-  );
+  const norm = (s2) => String(s2 ?? "").toLowerCase();
+  const prefix = (s2) => s2.slice(0, 15);
+  const overlaps = (a2, b2) => {
+    const pa = prefix(a2);
+    const pb = prefix(b2);
+    return !!pb && a2.includes(pb) || !!pa && b2.includes(pa);
+  };
+  const newTopics = newCateg.conflicting.map((c2) => norm(c2.topic));
   const resolved = [];
   const remaining = [];
   for (const prev of previous) {
-    const stillConflicted = [...newConflictTopics].some(
-      (t2) => t2.includes(prev.topic.toLowerCase().slice(0, 15)) || prev.topic.toLowerCase().includes(t2.slice(0, 15))
-    );
+    const prevTopic = norm(prev.topic);
+    const stillConflicted = newTopics.some((t2) => overlaps(prevTopic, t2));
     if (stillConflicted) {
-      const updated = newCateg.conflicting.find(
-        (c2) => c2.topic.toLowerCase().includes(prev.topic.toLowerCase().slice(0, 15)) || prev.topic.toLowerCase().includes(c2.topic.toLowerCase().slice(0, 15))
-      );
+      const updated = newCateg.conflicting.find((c2) => overlaps(prevTopic, norm(c2.topic)));
       remaining.push(updated ?? prev);
     } else {
       resolved.push({
@@ -35113,7 +35198,7 @@ async function synthesize(judgeProvider, model, prompt, runtime) {
       judgeProvider,
       model,
       [{ role: "user", content: prompt }],
-      { temperature: 0.3, maxTokens: runtime.maxTokens },
+      { temperature: 0.3, maxTokens: runtime.maxTokens, timeoutMs: runtime.requestTimeoutMs },
       runtime.retries
     );
   } catch {
@@ -35131,7 +35216,11 @@ async function deconflict(input) {
     runtime,
     verbose
   } = input;
-  const cc = { maxTokens: runtime.maxTokens, retries: runtime.retries };
+  const cc = {
+    maxTokens: runtime.maxTokens,
+    retries: runtime.retries,
+    timeoutMs: runtime.requestTimeoutMs
+  };
   const judgeLabel = modelIdLabel(judgeModelId);
   const totalConflicts = initialConflicts.length;
   const verboseFields = verbose ? {
@@ -35313,7 +35402,7 @@ async function poolResponses(question, responses, judgeModelId, judgeProvider, c
       judgeProvider,
       judgeModelId.model,
       [{ role: "user", content: prompt }],
-      { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens },
+      { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
       cc.retries
     );
   } catch (err) {
@@ -35329,10 +35418,10 @@ async function poolResponses(question, responses, judgeModelId, judgeProvider, c
     return { options: [] };
   }
   return {
-    options: (parsed.options ?? []).map((o2) => ({
-      answer: (o2.answer ?? "").trim(),
-      rationale: (o2.rationale ?? "").trim(),
-      models: o2.models ?? []
+    options: (Array.isArray(parsed.options) ? parsed.options : []).map((o2) => ({
+      answer: String(o2?.answer ?? "").trim(),
+      rationale: String(o2?.rationale ?? "").trim(),
+      models: Array.isArray(o2?.models) ? o2.models : []
     })).filter((o2) => o2.answer)
   };
 }
@@ -35370,7 +35459,11 @@ async function runPooled(input) {
     runtime,
     verbose
   } = input;
-  const cc = { maxTokens: runtime.maxTokens, retries: runtime.retries };
+  const cc = {
+    maxTokens: runtime.maxTokens,
+    retries: runtime.retries,
+    timeoutMs: runtime.requestTimeoutMs
+  };
   const initialPool = await poolResponses(
     question,
     initialResponses,
@@ -35493,7 +35586,7 @@ async function buildProsCons(question, digest, initial, defenses, judgeModelId, 
         judgeProvider,
         judgeModelId.model,
         [{ role: "user", content: buildDossierPrompt(question, digest, initial, defenses) }],
-        { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens },
+        { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
         cc.retries
       );
     } catch (err) {
@@ -35561,7 +35654,11 @@ async function runDialectic(input) {
     runtime,
     verbose
   } = input;
-  const cc = { maxTokens: runtime.maxTokens, retries: runtime.retries };
+  const cc = {
+    maxTokens: runtime.maxTokens,
+    retries: runtime.retries,
+    timeoutMs: runtime.requestTimeoutMs
+  };
   const digest = await poolResponses(
     question,
     initialResponses,
@@ -35607,9 +35704,11 @@ function isEmbeddingModel(m2) {
     m2.model
   );
 }
-function selectJudge(judgeModelId, memberIds, allModels) {
+function selectJudge(judgeModelId, memberIds, allModels, erroredLabels = /* @__PURE__ */ new Set()) {
   if (judgeModelId) return judgeModelId;
   if (memberIds.length === 0) return null;
+  const healthy = memberIds.filter((id) => !erroredLabels.has(modelIdLabel(id)));
+  const candidates = healthy.length > 0 ? healthy : memberIds;
   function extractBillions(s2) {
     if (!s2) return 0;
     const m2 = s2.match(/(\d+(?:\.\d+)?)\s*[TtBb]/);
@@ -35617,9 +35716,9 @@ function selectJudge(judgeModelId, memberIds, allModels) {
     const n2 = parseFloat(m2[1]);
     return /[Tt]/.test(m2[0]) ? n2 * 1e3 : n2;
   }
-  let best = memberIds[0];
+  let best = candidates[0];
   let bestB = -1;
-  for (const id of memberIds) {
+  for (const id of candidates) {
     const info = allModels.find(
       (m2) => m2.model === id.model && m2.provider === id.provider
     );
@@ -35687,11 +35786,25 @@ var CouncilOrchestrator = class {
       memberIds = await this.autoDiscoverCouncil();
       autoUsed = memberIds.length > 0;
     }
-    const members = memberIds.flatMap((id) => {
+    const members = [];
+    const dropped = [];
+    for (const id of memberIds) {
       const provider = this.registry.resolve(id);
-      return provider ? [{ modelId: id, provider }] : [];
-    });
+      if (provider) members.push({ modelId: id, provider });
+      else dropped.push(modelIdLabel(id));
+    }
+    if (dropped.length > 0) {
+      process.stderr.write(
+        `[model-council] ${dropped.length} configured member(s) have no available provider and were skipped: ${dropped.join(", ")}
+`
+      );
+    }
     if (members.length === 0) {
+      if (dropped.length > 0) {
+        throw new Error(
+          `Council members are configured but none resolve to an available provider: ${dropped.join(", ")}. Check the provider names / API keys, or reconfigure with configure_council.`
+        );
+      }
       throw new Error(
         autoUsed || this.config.autoCouncil ? "No Ollama chat models found to form a council. Pull a model (e.g. `ollama pull llama3`) or set council models via configure_council." : "Council has no reachable members. Use configure_council or set COUNCIL_MODELS."
       );
@@ -35706,10 +35819,12 @@ var CouncilOrchestrator = class {
       } catch {
       }
     }
+    const erroredLabels = new Set(responses.filter((r2) => r2.error).map((r2) => r2.label));
     const judgeModelId = selectJudge(
       this.config.judgeModelId,
       members.map((m2) => m2.modelId),
-      this.modelCache
+      this.modelCache,
+      erroredLabels
     );
     if (!judgeModelId) {
       throw new Error("No judge model available. Add models to council first.");
@@ -35720,56 +35835,74 @@ var CouncilOrchestrator = class {
         `Judge model provider not found for ${modelIdLabel(judgeModelId)}`
       );
     }
-    const cc = { maxTokens: this.runtime.maxTokens, retries: this.runtime.retries };
-    if (mode === "pooled") {
-      return runPooled({
+    const cc = {
+      maxTokens: this.runtime.maxTokens,
+      retries: this.runtime.retries,
+      timeoutMs: this.runtime.requestTimeoutMs
+    };
+    try {
+      if (mode === "pooled") {
+        return await runPooled({
+          question,
+          initialResponses: responses,
+          members,
+          judgeModelId,
+          judgeProvider,
+          runtime: this.runtime,
+          verbose
+        });
+      }
+      if (mode === "dialectic") {
+        return await runDialectic({
+          question,
+          initialResponses: responses,
+          members,
+          judgeModelId,
+          judgeProvider,
+          runtime: this.runtime,
+          verbose
+        });
+      }
+      const catResult = await categorize(
+        question,
+        responses,
+        judgeModelId,
+        judgeProvider,
+        cc
+      );
+      if (mode === "categorized") {
+        return {
+          mode: "categorized",
+          ...catResult,
+          rawResponses: responses
+        };
+      }
+      return await deconflict({
         question,
         initialResponses: responses,
+        initialConflicts: catResult.conflicting,
+        commonAgreement: catResult.commonAgreement,
+        complementary: catResult.complementary,
+        maxRounds,
         members,
         judgeModelId,
         judgeProvider,
         runtime: this.runtime,
         verbose
       });
-    }
-    if (mode === "dialectic") {
-      return runDialectic({
-        question,
-        initialResponses: responses,
-        members,
-        judgeModelId,
-        judgeProvider,
-        runtime: this.runtime,
-        verbose
-      });
-    }
-    const catResult = await categorize(
-      question,
-      responses,
-      judgeModelId,
-      judgeProvider,
-      cc
-    );
-    if (mode === "categorized") {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `[model-council] ${mode} reconciliation failed; returning individual responses: ${err instanceof Error ? err.stack ?? msg : msg}
+`
+      );
       return {
-        mode: "categorized",
-        ...catResult,
-        rawResponses: responses
+        mode: "individual",
+        question,
+        responses,
+        note: `Reconciliation (${mode} mode, judge ${modelIdLabel(judgeModelId)}) failed \u2014 ${msg}. Returning the council's raw individual responses.`
       };
     }
-    return deconflict({
-      question,
-      initialResponses: responses,
-      initialConflicts: catResult.conflicting,
-      commonAgreement: catResult.commonAgreement,
-      complementary: catResult.complementary,
-      maxRounds,
-      members,
-      judgeModelId,
-      judgeProvider,
-      runtime: this.runtime,
-      verbose
-    });
   }
 };
 
@@ -35920,9 +36053,31 @@ function quotaWarning(report, tiers, subs) {
 }
 
 // src/index.ts
-var appConfig = loadConfig();
-var registry2 = new ProviderRegistry(appConfig.servers);
-var orchestrator = new CouncilOrchestrator(registry2, appConfig.council, appConfig.runtime);
+function boot() {
+  const appConfig2 = loadConfig();
+  const registry3 = new ProviderRegistry(appConfig2.servers);
+  const orchestrator2 = new CouncilOrchestrator(registry3, appConfig2.council, appConfig2.runtime);
+  return { appConfig: appConfig2, registry: registry3, orchestrator: orchestrator2 };
+}
+var booted;
+try {
+  booted = boot();
+} catch (err) {
+  process.stderr.write(`Fatal during model-council boot: ${err instanceof Error ? err.stack ?? err.message : String(err)}
+`);
+  process.exit(1);
+}
+var { appConfig, registry: registry2, orchestrator } = booted;
+try {
+  saveState({
+    env: {
+      ollamaAddress: appConfig.servers.find((s2) => s2.type === "ollama")?.baseUrl,
+      claudeCliPath: appConfig.servers.find((s2) => s2.type === "claude-cli")?.command,
+      codexCliPath: appConfig.servers.find((s2) => s2.type === "codex-cli")?.command
+    }
+  });
+} catch {
+}
 var labelsToMembers = (labels) => labels.flatMap((s2) => {
   if (typeof s2 !== "string") return [];
   const id = parseModelId(s2);
@@ -36094,7 +36249,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.6"
+    version: "0.2.7"
   },
   {
     capabilities: { tools: {} },
@@ -36141,11 +36296,23 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case "configure_council": {
         const input = ConfigureCouncilInput.parse(args ?? {});
         const update = {};
+        const rejected = [];
+        const unavailable = [];
         if (input.models !== void 0) {
-          const members = input.models.flatMap((s2) => {
+          const seen = /* @__PURE__ */ new Set();
+          const members = [];
+          for (const s2 of input.models) {
             const id = parseModelId(s2);
-            return id ? [{ modelId: id }] : [];
-          });
+            if (!id) {
+              rejected.push(s2);
+              continue;
+            }
+            const label = modelIdLabel(id);
+            if (seen.has(label)) continue;
+            seen.add(label);
+            if (!registry2.resolve(id)) unavailable.push(label);
+            members.push({ modelId: id });
+          }
           update.members = members;
         }
         if (input.judge_model !== void 0) {
@@ -36178,7 +36345,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                     responseMode: cfg.responseMode,
                     maxDeconflictRounds: cfg.maxDeconflictRounds,
                     autoCouncil: cfg.autoCouncil
-                  }
+                  },
+                  // Surfaced so a mistyped or keyless member isn't silently ignored.
+                  ...rejected.length ? { rejected: { note: 'Unrecognized model IDs (need "provider:model") \u2014 ignored.', ids: rejected } } : {},
+                  ...unavailable.length ? { unavailable: { note: "Parsed but no provider is registered (check API key / server config / tier). Added but will not answer until available.", ids: unavailable } } : {}
                 },
                 null,
                 2

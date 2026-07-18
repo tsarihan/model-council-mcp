@@ -20,6 +20,8 @@ import { completeWithRetry, EmptyCompletionError } from './query.js';
 export interface CompleteConfig {
   maxTokens: number;
   retries: number;
+  /** Per-attempt wall-clock timeout (ms) for judge calls. */
+  timeoutMs: number;
 }
 
 // ─── Judge prompt ─────────────────────────────────────────────────────────────
@@ -104,7 +106,7 @@ export async function categorize(
       judgeProvider,
       judgeModelId.model,
       [{ role: 'user', content: prompt }],
-      { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens },
+      { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
       cc.retries,
     );
   } catch (err) {
@@ -146,15 +148,18 @@ export async function categorize(
       ? Math.max(...existingConflictIds.map(id => parseInt(id.split('-')[1] ?? '0')))
       : 0;
 
-  const conflicting: ConflictItem[] = (parsed.conflicting ?? []).map(c => {
+  // Judge JSON is untrusted in SHAPE (jsonMode only guarantees parseable JSON, not
+  // that these fields are arrays). Guard every .map with Array.isArray and coerce
+  // topic to a string, so a bare object / scalar can't crash the whole request.
+  const conflicting: ConflictItem[] = (Array.isArray(parsed.conflicting) ? parsed.conflicting : []).map(c => {
     conflictCounter++;
     const id = `conflict-${conflictCounter}`;
     return {
       id,
-      topic: c.topic ?? 'unknown',
-      positions: (c.positions ?? []).map(p => ({
-        models: p.models ?? [],
-        position: p.position ?? '',
+      topic: String(c?.topic ?? 'unknown'),
+      positions: (Array.isArray(c?.positions) ? c.positions : []).map(p => ({
+        models: Array.isArray(p?.models) ? p.models : [],
+        position: String(p?.position ?? ''),
       })) as ConflictPosition[],
     };
   });
@@ -162,10 +167,10 @@ export async function categorize(
   return {
     question,
     commonAgreement: parsed.commonAgreement ?? null,
-    complementary: (parsed.complementary ?? []).map(c => ({
-      aspect: c.aspect ?? '',
-      models: c.models ?? [],
-      insight: c.insight ?? '',
+    complementary: (Array.isArray(parsed.complementary) ? parsed.complementary : []).map(c => ({
+      aspect: String(c?.aspect ?? ''),
+      models: Array.isArray(c?.models) ? c.models : [],
+      insight: String(c?.insight ?? ''),
     })) as ComplementaryItem[],
     conflicting,
     judgeModel: modelIdLabel(judgeModelId),

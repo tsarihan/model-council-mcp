@@ -2,7 +2,7 @@
  * Shared member-query machinery: bounded-concurrency fan-out and
  * retry-on-empty completion.
  */
-import { ChatMessage, CompletionOptions, Provider } from '../providers/base.js';
+import { ChatMessage, CompletionOptions, Provider, isTimeoutError } from '../providers/base.js';
 import { ModelId, PoolKey, RawResponse, RuntimeConfig } from '../types.js';
 import { modelIdLabel } from '../config.js';
 
@@ -98,6 +98,9 @@ export async function completeWithRetry(
       lastErr = new EmptyCompletionError();
     } catch (err) {
       lastErr = err;
+      // A timeout means the server/subprocess is unresponsive; retrying just
+      // multiplies the wall-clock wait (and rarely succeeds), so give up now.
+      if (isTimeoutError(err)) break;
     }
     if (attempt < attempts) await sleep(400 * attempt);
   }
@@ -131,7 +134,7 @@ export async function queryMembersVarying(
           member.provider,
           member.modelId.model,
           [{ role: 'user', content: promptFor(member, i) }],
-          { maxTokens: runtime.maxTokens, ...opts },
+          { maxTokens: runtime.maxTokens, timeoutMs: runtime.requestTimeoutMs, ...opts },
           runtime.retries,
         );
         results[i] = { modelId: member.modelId, label, response, latencyMs: Date.now() - t0 };

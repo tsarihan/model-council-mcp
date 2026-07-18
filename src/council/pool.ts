@@ -85,7 +85,7 @@ export async function poolResponses(
       judgeProvider,
       judgeModelId.model,
       [{ role: 'user', content: prompt }],
-      { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens },
+      { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
       cc.retries,
     );
   } catch (err) {
@@ -104,12 +104,15 @@ export async function poolResponses(
     return { options: [] };
   }
 
+  // Untrusted shape: `options` may not be an array (jsonMode only guarantees
+  // parseable JSON). Guard with Array.isArray so a bare object can't crash pooled
+  // and dialectic modes. (dialectic.ts already guards its own dossier the same way.)
   return {
-    options: (parsed.options ?? [])
+    options: (Array.isArray(parsed.options) ? parsed.options : [])
       .map(o => ({
-        answer: (o.answer ?? '').trim(),
-        rationale: (o.rationale ?? '').trim(),
-        models: o.models ?? [],
+        answer: String(o?.answer ?? '').trim(),
+        rationale: String(o?.rationale ?? '').trim(),
+        models: Array.isArray(o?.models) ? o.models : [],
       }))
       .filter(o => o.answer),
   };
@@ -177,7 +180,9 @@ export async function runPooled(input: PooledInput): Promise<PooledResult> {
     runtime,
     verbose,
   } = input;
-  const cc: CompleteConfig = { maxTokens: runtime.maxTokens, retries: runtime.retries };
+  const cc: CompleteConfig = {
+    maxTokens: runtime.maxTokens, retries: runtime.retries, timeoutMs: runtime.requestTimeoutMs,
+  };
 
   // 1. Judge distils round-0 answers into a neutral pool.
   const initialPool = await poolResponses(

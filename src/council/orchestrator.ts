@@ -19,7 +19,7 @@ import { categorize } from './categorizer.js';
 import { deconflict } from './deconflict.js';
 import { runDialectic } from './dialectic.js';
 import { runPooled } from './pool.js';
-import { queryMembers } from './query.js';
+import { Member, queryMembers } from './query.js';
 
 // ─── Model classification ──────────────────────────────────────────────────────
 
@@ -37,11 +37,18 @@ function selectJudge(
   judgeModelId: ModelId | undefined,
   memberIds: ModelId[],
   allModels: ModelInfo[],
+  erroredLabels: Set<string> = new Set(),
 ): ModelId | null {
   if (judgeModelId) return judgeModelId;
   if (memberIds.length === 0) return null;
 
-  // Auto: pick member with the largest parameter count (by paramSize string)
+  // Prefer members that answered successfully in round 0 — picking a member that
+  // just failed would very likely fail the judge call too (and abort the ask).
+  // Only fall back to the full list if every member errored.
+  const healthy = memberIds.filter(id => !erroredLabels.has(modelIdLabel(id)));
+  const candidates = healthy.length > 0 ? healthy : memberIds;
+
+  // Auto: pick candidate with the largest parameter count (by paramSize string)
   function extractBillions(s: string | undefined): number {
     if (!s) return 0;
     const m = s.match(/(\d+(?:\.\d+)?)\s*[TtBb]/);
@@ -50,10 +57,10 @@ function selectJudge(
     return /[Tt]/.test(m[0]) ? n * 1000 : n; // trillions → billions
   }
 
-  let best = memberIds[0];
+  let best = candidates[0];
   let bestB = -1;
 
-  for (const id of memberIds) {
+  for (const id of candidates) {
     const info = allModels.find(
       m => m.model === id.model && m.provider === id.provider,
     );
@@ -149,12 +156,32 @@ export class CouncilOrchestrator {
     }
 
     // ── Resolve providers for each council member ─────────────────────────
-    const members = memberIds.flatMap(id => {
+    // Members whose provider isn't registered (typo'd name, or a cloud provider
+    // with no API key) are dropped — collect them so the drop isn't silent.
+    const members: Member[] = [];
+    const dropped: string[] = [];
+    for (const id of memberIds) {
       const provider = this.registry.resolve(id);
-      return provider ? [{ modelId: id, provider }] : [];
-    });
+      if (provider) members.push({ modelId: id, provider });
+      else dropped.push(modelIdLabel(id));
+    }
+    if (dropped.length > 0) {
+      process.stderr.write(
+        `[model-council] ${dropped.length} configured member(s) have no available ` +
+        `provider and were skipped: ${dropped.join(', ')}\n`,
+      );
+    }
 
     if (members.length === 0) {
+      if (dropped.length > 0) {
+        // Distinct from the "no Ollama models" case: the user DID configure
+        // members, they just don't resolve — say so instead of misdiagnosing.
+        throw new Error(
+          `Council members are configured but none resolve to an available provider: ` +
+          `${dropped.join(', ')}. Check the provider names / API keys, or reconfigure ` +
+          `with configure_council.`,
+        );
+      }
       throw new Error(
         autoUsed || this.config.autoCouncil
           ? 'No Ollama chat models found to form a council. Pull a model (e.g. `ollama pull llama3`) or set council models via configure_council.'
@@ -181,10 +208,12 @@ export class CouncilOrchestrator {
         /* best-effort — selectJudge will fall back to first member */
       }
     }
+    const erroredLabels = new Set(responses.filter(r => r.error).map(r => r.label));
     const judgeModelId = selectJudge(
       this.config.judgeModelId,
       members.map(m => m.modelId),
       this.modelCache,
+      erroredLabels,
     );
     if (!judgeModelId) {
       throw new Error('No judge model available. Add models to council first.');
@@ -196,66 +225,92 @@ export class CouncilOrchestrator {
       );
     }
 
-    const cc = { maxTokens: this.runtime.maxTokens, retries: this.runtime.retries };
+    const cc = {
+      maxTokens: this.runtime.maxTokens,
+      retries: this.runtime.retries,
+      timeoutMs: this.runtime.requestTimeoutMs,
+    };
 
-    // ── Pooled (Delphi) ────────────────────────────────────────────────────
-    // Neutral, attribution-free reconsideration. Skips categorization entirely.
-    if (mode === 'pooled') {
-      return runPooled({
+    // The judge is itself a council member; a genuine judge failure (unreachable,
+    // rate-limited, quota-exhausted) should NOT discard every member's already-
+    // collected answer. Degrade to individual mode with a note instead of aborting.
+    try {
+      // ── Pooled (Delphi) ──────────────────────────────────────────────────
+      // Neutral, attribution-free reconsideration. Skips categorization entirely.
+      if (mode === 'pooled') {
+        return await runPooled({
+          question,
+          initialResponses: responses,
+          members,
+          judgeModelId,
+          judgeProvider,
+          runtime: this.runtime,
+          verbose,
+        });
+      }
+
+      // ── Dialectic (thesis → antithesis → synthesis) ───────────────────────
+      // Members defend their pick, judge builds pros/cons, members re-select.
+      if (mode === 'dialectic') {
+        return await runDialectic({
+          question,
+          initialResponses: responses,
+          members,
+          judgeModelId,
+          judgeProvider,
+          runtime: this.runtime,
+          verbose,
+        });
+      }
+
+      // ── Categorize ──────────────────────────────────────────────────────
+      const catResult = await categorize(
+        question,
+        responses,
+        judgeModelId,
+        judgeProvider,
+        cc,
+      );
+
+      if (mode === 'categorized') {
+        return {
+          mode: 'categorized',
+          ...catResult,
+          rawResponses: responses,
+        } satisfies CategorizedResult;
+      }
+
+      // ── Deconflicted ────────────────────────────────────────────────────
+      return (await deconflict({
         question,
         initialResponses: responses,
+        initialConflicts: catResult.conflicting,
+        commonAgreement: catResult.commonAgreement,
+        complementary: catResult.complementary,
+        maxRounds,
         members,
         judgeModelId,
         judgeProvider,
         runtime: this.runtime,
         verbose,
-      });
-    }
-
-    // ── Dialectic (thesis → antithesis → synthesis) ─────────────────────────
-    // Members defend their pick, judge builds pros/cons, members re-select.
-    if (mode === 'dialectic') {
-      return runDialectic({
-        question,
-        initialResponses: responses,
-        members,
-        judgeModelId,
-        judgeProvider,
-        runtime: this.runtime,
-        verbose,
-      });
-    }
-
-    // ── Categorize ────────────────────────────────────────────────────────
-    const catResult = await categorize(
-      question,
-      responses,
-      judgeModelId,
-      judgeProvider,
-      cc,
-    );
-
-    if (mode === 'categorized') {
+      })) as DeconflictedResult;
+    } catch (err) {
+      // Degrade to individual so member work isn't discarded — but log the full
+      // error to stderr so a genuine bug (not just a judge outage) stays visible
+      // rather than being silently masked as a "successful" fallback.
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `[model-council] ${mode} reconciliation failed; returning individual responses: ` +
+        `${err instanceof Error ? err.stack ?? msg : msg}\n`,
+      );
       return {
-        mode: 'categorized',
-        ...catResult,
-        rawResponses: responses,
-      } satisfies CategorizedResult;
+        mode: 'individual',
+        question,
+        responses,
+        note:
+          `Reconciliation (${mode} mode, judge ${modelIdLabel(judgeModelId)}) failed — ${msg}. ` +
+          `Returning the council's raw individual responses.`,
+      } satisfies IndividualResult;
     }
-
-    // ── Deconflicted ──────────────────────────────────────────────────────
-    return deconflict({
-      question,
-      initialResponses: responses,
-      initialConflicts: catResult.conflicting,
-      commonAgreement: catResult.commonAgreement,
-      complementary: catResult.complementary,
-      maxRounds,
-      members,
-      judgeModelId,
-      judgeProvider,
-      runtime: this.runtime,
-      verbose,
-    }) as Promise<DeconflictedResult>;
   }
 }

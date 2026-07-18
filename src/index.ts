@@ -28,9 +28,37 @@ import { detectEnvironment, autoPopulatedMembers, quotaWarning } from './detect.
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
-const appConfig = loadConfig();
-const registry = new ProviderRegistry(appConfig.servers);
-const orchestrator = new CouncilOrchestrator(registry, appConfig.council, appConfig.runtime);
+// Boot runs at top-level module evaluation, BEFORE main().catch() is installed,
+// so a throw here would be an uncaught module-eval error (process exits with an
+// opaque stack and no tools are served). Wrap it to fail with a clear stderr line.
+function boot() {
+  const appConfig = loadConfig();
+  const registry = new ProviderRegistry(appConfig.servers);
+  const orchestrator = new CouncilOrchestrator(registry, appConfig.council, appConfig.runtime);
+  return { appConfig, registry, orchestrator };
+}
+let booted: ReturnType<typeof boot>;
+try {
+  booted = boot();
+} catch (err) {
+  process.stderr.write(`Fatal during model-council boot: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
+  process.exit(1);
+}
+const { appConfig, registry, orchestrator } = booted;
+
+// Persist resolved Ollama address / CLI paths so the SessionStart hook can read
+// them — the plugin host doesn't propagate userConfig env to hook processes.
+try {
+  saveState({
+    env: {
+      ollamaAddress: appConfig.servers.find(s => s.type === 'ollama')?.baseUrl,
+      claudeCliPath: appConfig.servers.find(s => s.type === 'claude-cli')?.command,
+      codexCliPath: appConfig.servers.find(s => s.type === 'codex-cli')?.command,
+    },
+  });
+} catch {
+  /* best-effort — a read-only state dir must not break boot */
+}
 
 const labelsToMembers = (labels: unknown[]): CouncilMember[] =>
   labels.flatMap(s => {
@@ -318,7 +346,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.6',
+    version: '0.2.7',
   },
   {
     capabilities: { tools: {} },
@@ -384,11 +412,25 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
         const input = ConfigureCouncilInput.parse(args ?? {});
         const update: Partial<CouncilConfig> = {};
 
+        // Track IDs we couldn't parse (typo / missing "provider:" prefix) or that
+        // parse but have no registered provider, so drops are visible — not silent.
+        const rejected: string[] = [];
+        const unavailable: string[] = [];
         if (input.models !== undefined) {
-          const members = input.models.flatMap(s => {
+          const seen = new Set<string>();
+          const members: CouncilMember[] = [];
+          for (const s of input.models) {
             const id = parseModelId(s);
-            return id ? [{ modelId: id }] : [];
-          });
+            if (!id) {
+              rejected.push(s);
+              continue;
+            }
+            const label = modelIdLabel(id);
+            if (seen.has(label)) continue; // de-dupe: a member listed twice is queried once
+            seen.add(label);
+            if (!registry.resolve(id)) unavailable.push(label);
+            members.push({ modelId: id });
+          }
           update.members = members;
         }
 
@@ -434,6 +476,13 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
                     maxDeconflictRounds: cfg.maxDeconflictRounds,
                     autoCouncil: cfg.autoCouncil,
                   },
+                  // Surfaced so a mistyped or keyless member isn't silently ignored.
+                  ...(rejected.length
+                    ? { rejected: { note: 'Unrecognized model IDs (need "provider:model") — ignored.', ids: rejected } }
+                    : {}),
+                  ...(unavailable.length
+                    ? { unavailable: { note: 'Parsed but no provider is registered (check API key / server config / tier). Added but will not answer until available.', ids: unavailable } }
+                    : {}),
                 },
                 null,
                 2,

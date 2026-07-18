@@ -1,6 +1,7 @@
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
 import {
   ChatMessage, CompletionOptions, Provider, stripThinkBlocks, clampMaxTokens,
+  DEFAULT_COMPLETION_TIMEOUT_MS,
 } from './base.js';
 
 interface OllamaModel {
@@ -71,7 +72,11 @@ export class OllamaProvider implements Provider {
   }
 
   async listModels(): Promise<ModelInfo[]> {
-    const res = await fetch(`${this.config.baseUrl}/api/tags`);
+    // Bounded so an unresponsive Ollama host can't hang list_models / auto-discovery,
+    // but generous enough not to drop a host that's slow to enumerate many models.
+    const res = await fetch(`${this.config.baseUrl}/api/tags`, {
+      signal: AbortSignal.timeout(30_000),
+    });
     if (!res.ok) throw new Error(`Ollama list failed: ${res.status}`);
     const data = (await res.json()) as OllamaListResponse;
 
@@ -109,6 +114,8 @@ export class OllamaProvider implements Provider {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      // Bound a wedged host/model so one member can't stall the whole ask.
+      signal: AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS),
     });
 
     if (!res.ok) {
@@ -117,6 +124,8 @@ export class OllamaProvider implements Provider {
     }
 
     const data = (await res.json()) as OllamaChatResponse;
-    return stripThinkBlocks(data.message.content);
+    // Guard the dereference: a non-Ollama or error-shaped 200 body may lack
+    // `message`, which would otherwise throw an opaque TypeError.
+    return stripThinkBlocks(data?.message?.content ?? '');
   }
 }

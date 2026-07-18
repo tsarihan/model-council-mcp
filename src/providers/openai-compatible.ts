@@ -7,6 +7,7 @@ import OpenAI from 'openai';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
 import {
   ChatMessage, CompletionOptions, Provider, stripThinkBlocks, clampMaxTokens,
+  DEFAULT_COMPLETION_TIMEOUT_MS,
 } from './base.js';
 
 // Known-static model lists for cloud providers that don't enumerate via API
@@ -44,6 +45,9 @@ export class OpenAICompatibleProvider implements Provider {
     this.client = new OpenAI({
       baseURL: openaiBaseURL(config.baseUrl), // ensure the /v1 segment (self-hosted servers omit it)
       apiKey: config.apiKey ?? 'ollama', // vLLM/SGLang/TRT-LLM ignore the key
+      // Retries are handled by completeWithRetry; the SDK's own default of 2
+      // would multiply a hung-server timeout by 3×. Bound each call instead.
+      maxRetries: 0,
     });
   }
 
@@ -56,7 +60,8 @@ export class OpenAICompatibleProvider implements Provider {
     const cached = this.maxLenCache.get(model);
     if (cached !== undefined) return cached ?? undefined;
     try {
-      const list = await this.client.models.list();
+      // Metadata call — keep it short so a wedged server can't stall the ask here.
+      const list = await this.client.models.list({ timeout: 10_000 });
       for (const m of list.data as Array<{ id: string; max_model_len?: number }>) {
         this.maxLenCache.set(m.id, typeof m.max_model_len === 'number' ? m.max_model_len : null);
       }
@@ -96,7 +101,8 @@ export class OpenAICompatibleProvider implements Provider {
     }
 
     try {
-      const list = await this.client.models.list();
+      // Generous enough not to drop a slow-enumerating server, still bounded.
+      const list = await this.client.models.list({ timeout: 30_000 });
       return list.data.map(m => ({
         provider: type as ProviderType,
         serverId: this.serverId === type ? undefined : this.serverId,
@@ -116,13 +122,16 @@ export class OpenAICompatibleProvider implements Provider {
     // Clamp to the server's advertised context so a large default max_tokens
     // (e.g. 16000) doesn't get hard-rejected by servers like vLLM.
     const maxTokens = clampMaxTokens(opts.maxTokens ?? 16000, await this.maxModelLen(model), messages);
-    const res = await this.client.chat.completions.create({
-      model,
-      messages,
-      temperature: opts.temperature ?? 0.7,
-      max_tokens: maxTokens,
-      ...(opts.jsonMode ? { response_format: { type: 'json_object' } } : {}),
-    });
+    const res = await this.client.chat.completions.create(
+      {
+        model,
+        messages,
+        temperature: opts.temperature ?? 0.7,
+        max_tokens: maxTokens,
+        ...(opts.jsonMode ? { response_format: { type: 'json_object' } } : {}),
+      },
+      { timeout: opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS },
+    );
 
     return stripThinkBlocks(res.choices[0]?.message?.content ?? '');
   }

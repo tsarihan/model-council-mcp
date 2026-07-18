@@ -16,6 +16,11 @@ export interface CouncilState {
   members?: string[];
   /** Reference-data version the user was last welcomed for. */
   welcomedVersion?: string;
+  /**
+   * Resolved runtime paths, persisted so the SessionStart hook can read them —
+   * the plugin host does NOT pass userConfig-derived env vars to hook processes.
+   */
+  env?: { ollamaAddress?: string; claudeCliPath?: string; codexCliPath?: string };
 }
 
 const STATE_VERSION = 1;

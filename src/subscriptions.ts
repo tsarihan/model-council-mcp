@@ -103,12 +103,27 @@ function candidatePaths(): string[] {
 
 function isValid(s: unknown): s is Subscriptions {
   const o = s as Partial<Subscriptions> | null;
-  const hasTiers = (p: unknown): boolean =>
-    !!p && typeof (p as ProviderInfo).tiers === 'object' && (p as ProviderInfo).tiers !== null;
+  // A provider must have a tiers object AND (if present) a string[] models field.
+  // Validating `models` here is what stops a structurally-valid but wrong-typed
+  // file (e.g. "models": "opus") from reaching config.ts's `.join()` and crashing
+  // boot — instead it falls through to the EMBEDDED copy below.
+  const provOk = (p: unknown): boolean => {
+    const pi = p as ProviderInfo | null;
+    if (!pi || typeof pi.tiers !== 'object' || pi.tiers === null) return false;
+    if (pi.models !== undefined &&
+        !(Array.isArray(pi.models) && pi.models.every(m => typeof m === 'string'))) return false;
+    return true;
+  };
+  const d = o?.defaults as Subscriptions['defaults'] | undefined;
+  const defaultsOk =
+    !!d &&
+    typeof d.cloudConcurrency === 'number' &&
+    typeof d.apiConcurrency === 'number' &&
+    typeof d.localConcurrency === 'number';
   return (
     !!o && !!o.providers &&
-    hasTiers(o.providers.chatgpt) && hasTiers(o.providers.claude) && hasTiers(o.providers.ollama) &&
-    Array.isArray(o.curatedCloudModels) && !!o.defaults
+    provOk(o.providers.chatgpt) && provOk(o.providers.claude) && provOk(o.providers.ollama) &&
+    Array.isArray(o.curatedCloudModels) && defaultsOk
   );
 }
 

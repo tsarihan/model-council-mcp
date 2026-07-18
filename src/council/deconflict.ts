@@ -68,26 +68,29 @@ function detectResolutions(
   previous: ConflictItem[],
   newCateg: Awaited<ReturnType<typeof categorize>>,
 ): { resolved: ConflictItem[]; remaining: ConflictItem[] } {
-  const newConflictTopics = new Set(
-    newCateg.conflicting.map(c => c.topic.toLowerCase()),
-  );
+  // Coerce every topic to a lowercase string (a judge can emit a non-string
+  // topic) and only match on non-empty prefixes — an empty topic prefix would
+  // otherwise substring-match every conflict and corrupt resolution detection.
+  const norm = (s: unknown): string => String(s ?? '').toLowerCase();
+  const prefix = (s: string): string => s.slice(0, 15);
+  const overlaps = (a: string, b: string): boolean => {
+    const pa = prefix(a);
+    const pb = prefix(b);
+    return (!!pb && a.includes(pb)) || (!!pa && b.includes(pa));
+  };
+  const newTopics = newCateg.conflicting.map(c => norm(c.topic));
 
   const resolved: ConflictItem[] = [];
   const remaining: ConflictItem[] = [];
 
   for (const prev of previous) {
+    const prevTopic = norm(prev.topic);
     // A conflict is resolved if the judge no longer lists a conflict on this topic
-    const stillConflicted = [...newConflictTopics].some(t =>
-      t.includes(prev.topic.toLowerCase().slice(0, 15)) ||
-      prev.topic.toLowerCase().includes(t.slice(0, 15)),
-    );
+    const stillConflicted = newTopics.some(t => overlaps(prevTopic, t));
 
     if (stillConflicted) {
       // Update with the judge's refreshed positions
-      const updated = newCateg.conflicting.find(c =>
-        c.topic.toLowerCase().includes(prev.topic.toLowerCase().slice(0, 15)) ||
-        prev.topic.toLowerCase().includes(c.topic.toLowerCase().slice(0, 15)),
-      );
+      const updated = newCateg.conflicting.find(c => overlaps(prevTopic, norm(c.topic)));
       remaining.push(updated ?? prev);
     } else {
       resolved.push({
@@ -114,7 +117,7 @@ async function synthesize(
       judgeProvider,
       model,
       [{ role: 'user', content: prompt }],
-      { temperature: 0.3, maxTokens: runtime.maxTokens },
+      { temperature: 0.3, maxTokens: runtime.maxTokens, timeoutMs: runtime.requestTimeoutMs },
       runtime.retries,
     );
   } catch {
@@ -155,7 +158,9 @@ export async function deconflict(
     verbose,
   } = input;
 
-  const cc = { maxTokens: runtime.maxTokens, retries: runtime.retries };
+  const cc = {
+    maxTokens: runtime.maxTokens, retries: runtime.retries, timeoutMs: runtime.requestTimeoutMs,
+  };
   const judgeLabel = modelIdLabel(judgeModelId);
   const totalConflicts = initialConflicts.length;
 

@@ -31,6 +31,20 @@ interface RunResult {
   stderr: string;
 }
 
+/** SIGKILL the child's whole process group (detached), falling back to the child alone. */
+function killTree(child: { pid?: number; kill: (sig: NodeJS.Signals) => boolean }): void {
+  try {
+    if (child.pid) process.kill(-child.pid, 'SIGKILL');
+    else child.kill('SIGKILL');
+  } catch {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
 export class CodexCliProvider implements Provider {
   readonly serverId: string;
   readonly config: ServerConfig;
@@ -108,7 +122,11 @@ export class CodexCliProvider implements Provider {
     }
 
     try {
-      const { code, stderr } = await this.run(args, prompt, DEFAULT_TIMEOUT_MS);
+      // Codex is a slow reasoning agent; keep DEFAULT_TIMEOUT_MS as a floor so the
+      // generic (shorter) request timeout can't cut off a valid answer, while a
+      // higher REQUEST_TIMEOUT_MS can still raise it. Still bounded (no hang).
+      const timeoutMs = Math.max(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
+      const { code, stderr } = await this.run(args, prompt, timeoutMs);
       if (code !== 0) {
         throw new Error(
           `codex CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || '(no stderr)'}`,
@@ -120,7 +138,16 @@ export class CodexCliProvider implements Provider {
       } catch {
         out = '';
       }
-      return out.trim();
+      const trimmed = out.trim();
+      if (!trimmed) {
+        // Exit 0 but no final message written — surface the CLI's own stderr
+        // diagnostic instead of a bare "empty response after retries".
+        const detail = stderr.trim().slice(0, 300);
+        throw new Error(
+          `codex CLI produced no final message${detail ? `: ${detail}` : ' (empty output)'}`,
+        );
+      }
+      return trimmed;
     } finally {
       try {
         rmSync(dir, { recursive: true, force: true });
@@ -144,6 +171,9 @@ export class CodexCliProvider implements Provider {
       const child = spawn(this.command, args, {
         env,
         stdio: ['pipe', 'pipe', 'pipe'],
+        // Own process group so a timeout can reap codex-spawned sandbox
+        // subprocesses (grandchildren), not just the direct child.
+        detached: true,
       });
 
       let stdout = '';
@@ -152,7 +182,7 @@ export class CodexCliProvider implements Provider {
 
       const timer = setTimeout(() => {
         settled = true;
-        child.kill('SIGKILL');
+        killTree(child);
         reject(new Error(`codex CLI timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 

@@ -11,7 +11,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 
-const clean = (v) => (v && v.trim() && !v.includes('${') ? v.trim() : undefined);
+const clean = (v) =>
+  (typeof v === 'string' && v.trim() && !v.includes('${') ? v.trim() : undefined);
 
 function statePath() {
   const override = clean(process.env.MODEL_COUNCIL_STATE);
@@ -20,12 +21,13 @@ function statePath() {
   return join(base, 'model-council', 'state.json');
 }
 
-function memberCount() {
+/** Read the persisted state once (member count + resolved env the hook can't get from userConfig). */
+function readState() {
   try {
     const s = JSON.parse(readFileSync(statePath(), 'utf8'));
-    return Array.isArray(s.members) ? s.members.length : null;
+    return s && typeof s === 'object' ? s : {};
   } catch {
-    return null;
+    return {};
   }
 }
 
@@ -40,8 +42,7 @@ function cliInstalled(cmd) {
   });
 }
 
-async function ollamaLocalCount() {
-  const url = clean(process.env.OLLAMA_ADDRESS) ?? 'http://localhost:11434';
+async function ollamaLocalCount(url) {
   try {
     const r = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(3000) });
     if (!r.ok) return null;
@@ -53,14 +54,19 @@ async function ollamaLocalCount() {
 }
 
 async function main() {
-  const claudeCmd = clean(process.env.CLAUDE_CLI_PATH) ?? 'claude';
-  const codexCmd = clean(process.env.CODEX_CLI_PATH) ?? 'codex';
+  // userConfig env isn't passed to hook processes, so fall back to the paths the
+  // server persisted to state (env), then the plain defaults.
+  const state = readState();
+  const sEnv = (state && typeof state.env === 'object' && state.env) || {};
+  const claudeCmd = clean(process.env.CLAUDE_CLI_PATH) ?? clean(sEnv.claudeCliPath) ?? 'claude';
+  const codexCmd = clean(process.env.CODEX_CLI_PATH) ?? clean(sEnv.codexCliPath) ?? 'codex';
+  const ollamaUrl = clean(process.env.OLLAMA_ADDRESS) ?? clean(sEnv.ollamaAddress) ?? 'http://localhost:11434';
   const [claude, codex, ollama] = await Promise.all([
     cliInstalled(claudeCmd),
     cliInstalled(codexCmd),
-    ollamaLocalCount(),
+    ollamaLocalCount(ollamaUrl),
   ]);
-  const n = memberCount();
+  const n = Array.isArray(state.members) ? state.members.length : null;
   const parts = [
     n != null ? `${n}-member council ready` : 'council auto-populates on first use',
     ollama != null ? `Ollama up (${ollama} local)` : 'Ollama offline',

@@ -27,6 +27,20 @@ interface RunResult {
   stderr: string;
 }
 
+/** SIGKILL the child's whole process group (detached), falling back to the child alone. */
+function killTree(child: { pid?: number; kill: (sig: NodeJS.Signals) => boolean }): void {
+  try {
+    if (child.pid) process.kill(-child.pid, 'SIGKILL');
+    else child.kill('SIGKILL');
+  } catch {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
 export class ClaudeCliProvider implements Provider {
   readonly serverId: string;
   readonly config: ServerConfig;
@@ -99,7 +113,11 @@ export class ClaudeCliProvider implements Provider {
       '--system-prompt', systemText, // replace the default coding-agent persona
     ];
 
-    const { code, stdout, stderr } = await this.run(args, prompt, DEFAULT_TIMEOUT_MS);
+    // CLI reasoning agents are legitimately slow; keep DEFAULT_TIMEOUT_MS as a
+    // floor so the (shorter) generic request timeout can't cut off a valid answer,
+    // while a higher REQUEST_TIMEOUT_MS can still raise it. Still bounded (no hang).
+    const timeoutMs = Math.max(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
+    const { code, stdout, stderr } = await this.run(args, prompt, timeoutMs);
     if (code !== 0) {
       throw new Error(
         `claude CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || '(no stderr)'}`,
@@ -138,6 +156,9 @@ export class ClaudeCliProvider implements Provider {
       const child = spawn(this.command, args, {
         env,
         stdio: ['pipe', 'pipe', 'pipe'],
+        // Own process group so a timeout reaps any subprocesses claude spawns,
+        // not just the direct child.
+        detached: true,
       });
 
       let stdout = '';
@@ -146,7 +167,7 @@ export class ClaudeCliProvider implements Provider {
 
       const timer = setTimeout(() => {
         settled = true;
-        child.kill('SIGKILL');
+        killTree(child);
         reject(new Error(`claude CLI timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 

@@ -130,6 +130,46 @@ console.log('▶ clampMaxTokens (fit output to server context / max_model_len)')
   check('estimatePromptTokens grows with length', estimatePromptTokens(huge) > estimatePromptTokens(short));
 }
 
+console.log('▶ isTimeoutError (skip-retry classification)');
+{
+  const { isTimeoutError } = await import('../dist/providers/base.js');
+  check('AbortError → timeout', isTimeoutError(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+  check('TimeoutError → timeout', isTimeoutError(Object.assign(new Error('x'), { name: 'TimeoutError' })));
+  check('message "timed out" → timeout', isTimeoutError(new Error('claude CLI timed out after 120000ms')));
+  check('APIConnectionTimeoutError → timeout', isTimeoutError(Object.assign(new Error('x'), { name: 'APIConnectionTimeoutError' })));
+  check('ordinary error → not timeout', !isTimeoutError(new Error('Ollama complete failed (500)')));
+  check('null → not timeout', !isTimeoutError(null));
+}
+
+console.log('▶ parseModelId provider validation (#4/#11)');
+{
+  const { parseModelId } = await import('../dist/config.js');
+  check('known provider parses', parseModelId('ollama:llama3')?.provider === 'ollama');
+  check('provider/serverId form parses', (() => { const id = parseModelId('vllm/spark:qwen'); return id?.provider === 'vllm' && id?.serverId === 'spark' && id?.model === 'qwen'; })());
+  check('unknown provider rejected', parseModelId('claud:opus') === null);
+  check('no-colon rejected', parseModelId('gpt-4o') === null);
+  check('empty model rejected', parseModelId('ollama:') === null);
+}
+
+console.log('▶ judge-JSON shape guards (categorize/pool do not crash on wrong shape) (#7/#8/#9)');
+{
+  const { categorize } = await import('../dist/council/categorizer.js');
+  const { poolResponses } = await import('../dist/council/pool.js');
+  const judgeId = { provider: 'ollama', model: 'j' };
+  const cc = { maxTokens: 100, retries: 1, timeoutMs: 5000 };
+  const resp = [{ modelId: { provider: 'ollama', model: 'a' }, label: 'ollama:a', response: 'x', latencyMs: 1 }];
+  const fakeJudge = (json) => ({ config: { type: 'ollama' }, serverId: 'ollama', complete: async () => json, listModels: async () => [], ping: async () => true });
+  // Object where an array is expected — must NOT throw, must yield arrays.
+  const bad = await categorize('q', resp, judgeId, fakeJudge('{"conflicting":{"topic":"x"},"complementary":{"aspect":"a"}}'), cc);
+  check('categorize: object-shaped fields → empty arrays, no crash', Array.isArray(bad.conflicting) && bad.conflicting.length === 0 && Array.isArray(bad.complementary));
+  // Non-string topic — must coerce, not crash.
+  const numTopic = await categorize('q', resp, judgeId, fakeJudge('{"conflicting":[{"topic":123,"positions":[{"models":["m"],"position":"p"}]}]}'), cc);
+  check('categorize: non-string topic coerced to string', numTopic.conflicting[0]?.topic === '123');
+  // Pool: options as object → empty, no crash.
+  const badPool = await poolResponses('q', resp, judgeId, fakeJudge('{"options":{"answer":"Rust"}}'), cc);
+  check('poolResponses: object options → empty, no crash', Array.isArray(badPool.options) && badPool.options.length === 0);
+}
+
 console.log('▶ persistent state round-trip');
 const dir = mkdtempSync(join(tmpdir(), 'mc-state-'));
 process.env.MODEL_COUNCIL_STATE = join(dir, 'state.json');

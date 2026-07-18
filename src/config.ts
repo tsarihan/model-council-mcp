@@ -69,9 +69,19 @@ function parseOpenAICompatibleServers(
       // Otherwise "host:port" or "host"
       const parts = rest.split(':');
       const host = parts[0];
-      const port = parts[1] ? parseInt(parts[1], 10) : defaultPort;
+      // Validate the port so a non-numeric value can't produce "http://host:NaN".
+      let port = defaultPort;
+      if (parts[1] !== undefined) {
+        const n = parseInt(parts[1], 10);
+        port = Number.isInteger(n) && n > 0 && n <= 65535 ? n : defaultPort;
+      }
       return buildServer(type, name, `http://${host}:${port}`);
     });
+}
+
+/** Prepend http:// when a URL is missing its scheme (a bare host:port is unusable). */
+function normalizeUrl(u: string): string {
+  return /^https?:\/\//i.test(u) ? u : `http://${u}`;
 }
 
 function buildServer(
@@ -99,6 +109,10 @@ function buildServer(
  *   openai:gpt-4o
  *   vllm/vllm-gpu1:meta-llama/Llama-3-8B
  */
+const KNOWN_PROVIDERS: ReadonlySet<string> = new Set<ProviderType>([
+  'ollama', 'openai', 'anthropic', 'groq', 'vllm', 'trtllm', 'sglang', 'claude-cli', 'codex-cli',
+]);
+
 export function parseModelId(str: string): ModelId | null {
   const colonIdx = str.indexOf(':');
   if (colonIdx === -1) return null;
@@ -108,13 +122,15 @@ export function parseModelId(str: string): ModelId | null {
   if (!model) return null;
 
   const slashIdx = providerPart.indexOf('/');
-  const provider = (
-    slashIdx === -1 ? providerPart : providerPart.substring(0, slashIdx)
-  ) as ProviderType;
+  const provider =
+    slashIdx === -1 ? providerPart : providerPart.substring(0, slashIdx);
+  // Reject unknown/mistyped providers (e.g. "claud:opus") so a typo is caught at
+  // the boundary rather than silently becoming a dead council member.
+  if (!KNOWN_PROVIDERS.has(provider)) return null;
   const serverId =
     slashIdx === -1 ? undefined : providerPart.substring(slashIdx + 1);
 
-  return { provider, serverId, model };
+  return { provider: provider as ProviderType, serverId, model };
 }
 
 export function modelIdLabel(m: ModelId): string {
@@ -172,10 +188,11 @@ export function loadConfig(): AppConfig {
   };
 
   // ── Ollama ────────────────────────────────────────────────────────────────
+  const ollamaAddr = envClean('OLLAMA_ADDRESS');
   servers.push({
     id: 'ollama',
     type: 'ollama',
-    baseUrl: envClean('OLLAMA_ADDRESS') ?? 'http://localhost:11434',
+    baseUrl: ollamaAddr ? normalizeUrl(ollamaAddr) : 'http://localhost:11434',
     label: 'Ollama (local)',
   });
 
@@ -225,7 +242,9 @@ export function loadConfig(): AppConfig {
   // CLAUDE_CLI boolean is set. Registration only makes the provider available;
   // whether its members join the auto-council depends on live login detection.
   if (tierAllowsCloud('claude', tiers.claude, subs) || envBool('CLAUDE_CLI', false)) {
-    const defModels = subs.providers.claude.models?.join(',') ?? 'opus,sonnet';
+    const defModels =
+      (Array.isArray(subs.providers.claude.models) ? subs.providers.claude.models.join(',') : '') ||
+      'opus,sonnet';
     const cliModels = (envClean('CLAUDE_CLI_MODELS') ?? defModels)
       .split(',')
       .map(s => s.trim())
@@ -245,7 +264,9 @@ export function loadConfig(): AppConfig {
   // CODEX_CLI boolean is set. Codex is a coding agent; members answer with a
   // coding-agent flavour.
   if (tierAllowsCloud('chatgpt', tiers.chatgpt, subs) || envBool('CODEX_CLI', false)) {
-    const defModels = subs.providers.chatgpt.models?.join(',') ?? 'default';
+    const defModels =
+      (Array.isArray(subs.providers.chatgpt.models) ? subs.providers.chatgpt.models.join(',') : '') ||
+      'default';
     const codexModels = (envClean('CODEX_CLI_MODELS') ?? defModels)
       .split(',')
       .map(s => s.trim())
@@ -314,6 +335,7 @@ export function loadConfig(): AppConfig {
     localConcurrency: localOverride ?? subs.defaults.localConcurrency,
     poolLimits,
     retries: Math.max(1, envInt('COMPLETION_RETRIES', 3)),
+    requestTimeoutMs: Math.max(1000, envInt('REQUEST_TIMEOUT_MS', 120000)),
     verbose: envBool('DECONFLICT_VERBOSE', false),
   };
 

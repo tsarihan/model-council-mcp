@@ -22,6 +22,7 @@ let curConcurrent = 0;
 let maxConcurrent = 0;
 let lastNumPredict = null;
 let flakyCalls = 0;
+let lastUserPrompt = null;
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
 const MODELS = [
@@ -120,6 +121,7 @@ function chatResponse(body) {
   const lastUser = [...messages].reverse().find(m => m.role === 'user');
   const content = lastUser?.content ?? '';
   const model = body.model ?? 'unknown';
+  lastUserPrompt = content;
 
   // Flaky model: empty on first call, content afterwards (exercises retry-on-empty)
   if (model === 'flaky-empty') {
@@ -227,6 +229,7 @@ const server = http.createServer((req, res) => {
     maxConcurrent = 0;
     flakyCalls = 0;
     lastNumPredict = null;
+    lastUserPrompt = null;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;
@@ -234,7 +237,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'GET' && req.url === '/debug') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ maxConcurrent, lastNumPredict, lastRepollPrompt, lastDefensePrompt, defensePrompts, lastSelectionPrompt }));
+    res.end(JSON.stringify({ maxConcurrent, lastNumPredict, lastRepollPrompt, lastDefensePrompt, defensePrompts, lastSelectionPrompt, lastUserPrompt }));
     return;
   }
 

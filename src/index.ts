@@ -5,8 +5,15 @@
  * Tools exposed:
  *   list_models        — discover available models across all configured providers
  *   configure_council  — set council members, judge, mode, and deconflict rounds
- *   ask_council        — query the council (individual | categorized | deconflicted)
+ *   ask_council        — query the council (individual | categorized | deconflicted | pooled | dialectic)
+ *   ask_council_async  — start a council run in the background, return a job_id
+ *   get_council_result — fetch / list background council runs
  *   get_council_config — inspect current council configuration
+ *   council_status     — detected environment, members, tiers, quota
+ *   setup_council      — set subscription tiers + auto-populate
+ *
+ * ask_council / ask_council_async also accept `context` (inline text) and
+ * `files` (local paths) to attach as labelled context for every member.
  */
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -25,6 +32,8 @@ import { CouncilConfig, CouncilMember, ModelId, ResponseMode, SubscriptionTiers 
 import { loadState, saveState } from './state.js';
 import { loadSubscriptions, validTiers, SubProvider } from './subscriptions.js';
 import { detectEnvironment, autoPopulatedMembers, quotaWarning } from './detect.js';
+import { buildAugmentedQuestion } from './context.js';
+import { JobStore } from './jobs.js';
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
@@ -45,6 +54,7 @@ try {
   process.exit(1);
 }
 const { appConfig, registry, orchestrator } = booted;
+const jobs = new JobStore();
 
 // Persist resolved Ollama address / CLI paths so the SessionStart hook can read
 // them — the plugin host doesn't propagate userConfig env to hook processes.
@@ -58,6 +68,28 @@ try {
   });
 } catch {
   /* best-effort — a read-only state dir must not break boot */
+}
+
+/** Compose context/files into the prompt, then run the council. Shared by the
+ *  synchronous ask_council and the background ask_council_async. */
+async function runCouncil(input: {
+  question: string;
+  mode?: string;
+  max_deconflict_rounds?: number;
+  verbose?: boolean;
+  context?: string;
+  files?: string[];
+}) {
+  const question = await buildAugmentedQuestion(input.question, {
+    context: input.context,
+    files: input.files,
+  });
+  return orchestrator.ask(
+    question,
+    input.mode as ResponseMode | undefined,
+    input.max_deconflict_rounds,
+    input.verbose,
+  );
 }
 
 const labelsToMembers = (labels: unknown[]): CouncilMember[] =>
@@ -188,6 +220,31 @@ const AskCouncilInput = z.object({
       'deconflicted → include the initial categorization and per-round detail; ' +
         'pooled/dialectic → include the initial (round-0/thesis) raw member responses.',
     ),
+  context: z
+    .string()
+    .optional()
+    .describe('Optional background text prepended to the question for every member.'),
+  files: z
+    .array(z.string())
+    .optional()
+    .describe(
+      'Optional local file paths to read and attach as context (each fenced and ' +
+        'labelled). Caps: 256 KB/file, 768 KB total, 20 files.',
+    ),
+});
+
+// Async variant takes the same inputs as ask_council.
+const AskCouncilAsyncInput = AskCouncilInput;
+
+const GetCouncilResultInput = z.object({
+  job_id: z
+    .string()
+    .optional()
+    .describe('Job id returned by ask_council_async. Omit (or set list=true) to list recent jobs.'),
+  list: z
+    .boolean()
+    .optional()
+    .describe('List recent background jobs (metadata only) instead of fetching one.'),
 });
 
 const GetCouncilConfigInput = z.object({});
@@ -299,6 +356,77 @@ const TOOLS = [
             'deconflicted → include the initial categorization and per-round detail; ' +
             'pooled/dialectic → include the initial (round-0/thesis) raw member responses.',
         },
+        context: {
+          type: 'string',
+          description: 'Optional background text prepended to the question for every member.',
+        },
+        files: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Optional local file paths to read and attach as labelled context ' +
+            '(caps: 256 KB/file, 768 KB total, 20 files).',
+        },
+      },
+    },
+  },
+  {
+    name: 'ask_council_async',
+    annotations: { title: 'Ask the council (background)', readOnlyHint: false },
+    description:
+      'Start a council run in the background and return a job_id immediately, so a ' +
+      'long deconfliction/dialectic run (or a slow local model) does not block. Same ' +
+      'inputs as ask_council (mode, context, files, etc.). Poll get_council_result ' +
+      'with the job_id to fetch the answer when ready. Jobs are in-memory and do not ' +
+      'survive a server reload.',
+    inputSchema: {
+      type: 'object' as const,
+      required: ['question'],
+      properties: {
+        question: {
+          type: 'string',
+          description: 'The question or prompt to send to all council members.',
+        },
+        mode: {
+          type: 'string',
+          enum: ['individual', 'categorized', 'deconflicted', 'pooled', 'dialectic'],
+          description: 'Response mode override for this call only.',
+        },
+        max_deconflict_rounds: {
+          type: 'number',
+          description: 'Max deconfliction rounds override for this call only.',
+        },
+        verbose: { type: 'boolean', description: 'Include per-round / raw member detail.' },
+        context: {
+          type: 'string',
+          description: 'Optional background text prepended to the question for every member.',
+        },
+        files: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional local file paths to read and attach as labelled context.',
+        },
+      },
+    },
+  },
+  {
+    name: 'get_council_result',
+    annotations: { title: 'Get background council result', readOnlyHint: true },
+    description:
+      'Fetch a background council run started with ask_council_async. Pass job_id to ' +
+      'get its status (running | done | error) and, when done, the full result. Omit ' +
+      'job_id (or set list=true) to list recent jobs.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        job_id: {
+          type: 'string',
+          description: 'Job id from ask_council_async. Omit to list recent jobs.',
+        },
+        list: {
+          type: 'boolean',
+          description: 'List recent jobs (metadata only) instead of fetching one.',
+        },
       },
     },
   },
@@ -346,7 +474,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.8',
+    version: '0.2.9',
   },
   {
     capabilities: { tools: {} },
@@ -495,12 +623,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // ── ask_council ──────────────────────────────────────────────────────
       case 'ask_council': {
         const input = AskCouncilInput.parse(args ?? {});
-        const result = await orchestrator.ask(
-          input.question,
-          input.mode as ResponseMode | undefined,
-          input.max_deconflict_rounds,
-          input.verbose,
-        );
+        const result = await runCouncil(input);
 
         return {
           content: [
@@ -509,6 +632,67 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
               text: JSON.stringify(result, null, 2),
             },
           ],
+        };
+      }
+
+      // ── ask_council_async ────────────────────────────────────────────────
+      case 'ask_council_async': {
+        const input = AskCouncilAsyncInput.parse(args ?? {});
+        const job = jobs.start(input.question, {
+          mode: (input.mode as string | undefined) ?? orchestrator.getConfig().responseMode,
+          memberCount: orchestrator.getConfig().members.length || undefined,
+        });
+        // Fire-and-forget: run in the background, record the outcome. Never let a
+        // rejection escape (it would be an unhandled promise rejection).
+        runCouncil(input)
+          .then(result => jobs.finish(job.id, result))
+          .catch(err => jobs.fail(job.id, err instanceof Error ? err.message : String(err)));
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  status: 'running',
+                  job_id: job.id,
+                  mode: job.mode,
+                  members: job.memberCount ?? '(auto)',
+                  note: 'Poll get_council_result with this job_id to fetch the answer.',
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }
+
+      // ── get_council_result ───────────────────────────────────────────────
+      case 'get_council_result': {
+        const input = GetCouncilResultInput.parse(args ?? {});
+        if (!input.job_id || input.list) {
+          return {
+            content: [
+              { type: 'text', text: JSON.stringify({ jobs: jobs.list() }, null, 2) },
+            ],
+          };
+        }
+        const job = jobs.get(input.job_id);
+        if (!job) {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            `No such job: ${input.job_id}. Jobs are dropped on server reload; list with get_council_result (no job_id).`,
+          );
+        }
+        const payload =
+          job.status === 'done'
+            ? { status: job.status, job_id: job.id, elapsedMs: (job.finishedAt ?? 0) - job.startedAt, result: job.result }
+            : job.status === 'error'
+              ? { status: job.status, job_id: job.id, error: job.error }
+              : { status: job.status, job_id: job.id, note: 'Still running — poll again shortly.' };
+        return {
+          content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
         };
       }
 

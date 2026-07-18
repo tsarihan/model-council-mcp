@@ -139,8 +139,26 @@ install with the `*_models` options.
 | `pooled` | Delphi-style: members reconsider a neutral, attribution-free pool of answers — divergence is preserved, not averaged away. |
 | `dialectic` | thesis → antithesis → synthesis: members defend their pick, the judge builds a pros/cons dossier, members re-select. |
 
+**Attach context or files.** `ask_council` also takes `context` (inline background
+text) and `files` (local paths, read and fenced as labelled context for every
+member) — e.g. review a snippet of code or a design doc across the whole council:
+
+```
+ask_council(question="What's wrong with this auth flow?", mode="dialectic",
+            files=["src/auth.ts"], context="This is a public SaaS signup path.")
+```
+Caps: 256 KB/file, 768 KB total, 20 files (pass an excerpt via `context` for bigger inputs).
+
+**Run it in the background.** A deconfliction/dialectic run over slow local models
+can take a while — `ask_council_async` returns a `job_id` immediately so you keep
+working, and `get_council_result(job_id)` fetches the answer when ready
+(`get_council_result(list=true)` lists recent jobs). Jobs are in-memory and reset
+on `/reload-plugins`.
+
 Handy tools & commands:
 
+- `ask_council` — ask the council (modes above; `context` / `files` optional).
+- `ask_council_async` / `get_council_result` — background runs + fetch/list.
 - `council_status` — detected environment, current members, tiers, per-provider
   concurrency, quota warning. (`/model-council:status` in the Claude Code plugin.)
 - `setup_council` — pick subscription tiers interactively.
@@ -158,6 +176,8 @@ Handy tools & commands:
 |---|---|
 | Point Ollama at a remote host | `ollama_address` |
 | Give slow local models more time | `request_timeout_ms` (ms; default 120000) |
+| Review a file / add background | `ask_council(files=[…], context="…")` |
+| Not block on a long run | `ask_council_async` → `get_council_result(job_id)` |
 | Cap output length | `max_tokens` (auto-clamped down to each server's context) |
 | Change default answer style | `response_mode` |
 | Pin an exact council | `council_models` (or `configure_council`) |

@@ -3,7 +3,7 @@
  * backend) and drive all 4 tools + 3 response modes via the MCP protocol.
  */
 import { spawn } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -80,8 +80,10 @@ async function main() {
     console.log('\n▶ list tools');
     const tools = await client.listTools();
     const toolNames = tools.tools.map(t => t.name).sort();
-    check('6 tools exposed', toolNames.length === 6, `got ${toolNames.join(',')}`);
+    check('8 tools exposed', toolNames.length === 8, `got ${toolNames.join(',')}`);
     check('has ask_council', toolNames.includes('ask_council'));
+    check('has ask_council_async', toolNames.includes('ask_council_async'));
+    check('has get_council_result', toolNames.includes('get_council_result'));
     check('has configure_council', toolNames.includes('configure_council'));
     check('has list_models', toolNames.includes('list_models'));
     check('has council_status', toolNames.includes('council_status'));
@@ -396,6 +398,77 @@ async function main() {
     check('empty judge → still returns a categorized result', ej.mode === 'categorized', `got mode=${ej.mode}`);
     check('empty judge → no-conflict fallback', Array.isArray(ej.conflicting) && ej.conflicting.length === 0, `conflicting=${JSON.stringify(ej.conflicting)}`);
     check('empty judge → member answers preserved', ej.rawResponses?.length === 2, `got ${ej.rawResponses?.length}`);
+
+    // ── Test: file / context attachment ───────────────────────────────────────
+    console.log('\n▶ ask_council with context + files');
+    await resetMock();
+    await client.callTool({
+      name: 'configure_council',
+      arguments: { models: ['ollama:small-a', 'ollama:small-b'], response_mode: 'individual' },
+    });
+    const ctxDir = mkdtempSync(join(tmpdir(), 'mc-ctx-'));
+    const ctxFile = join(ctxDir, 'snippet.txt');
+    writeFileSync(ctxFile, 'FILE_MARKER_42');
+    try {
+      await client.callTool({
+        name: 'ask_council',
+        arguments: {
+          question: 'Review this.',
+          mode: 'individual',
+          context: 'INLINE_MARKER_7',
+          files: [ctxFile],
+        },
+      });
+      const dbgCtx = await (await fetch(`${MOCK_URL}/debug`)).json();
+      const seen = JSON.stringify(dbgCtx);
+      check('context: inline marker reached members', /INLINE_MARKER_7/.test(seen));
+      check('context: file contents reached members', /FILE_MARKER_42/.test(seen));
+      check('context: file path labelled', /FILE: /.test(seen) && /snippet\.txt/.test(seen));
+      // A missing file is a clear error, not a silent drop.
+      let threw = false;
+      try {
+        await client.callTool({
+          name: 'ask_council',
+          arguments: { question: 'x', files: [join(ctxDir, 'nope.txt')] },
+        });
+      } catch (e) { threw = /not found|unreadable/i.test(String(e?.message ?? e)); }
+      check('context: missing file → error surfaced', threw);
+    } finally {
+      rmSync(ctxDir, { recursive: true, force: true });
+    }
+
+    // ── Test: async / background job flow ─────────────────────────────────────
+    console.log('\n▶ ask_council_async / get_council_result');
+    await resetMock();
+    await client.callTool({
+      name: 'configure_council',
+      arguments: { models: ['ollama:small-a', 'ollama:small-b'], response_mode: 'individual' },
+    });
+    const started = parseToolResult(await client.callTool({
+      name: 'ask_council_async',
+      arguments: { question: 'async test', mode: 'individual' },
+    }));
+    check('async: returns running + job_id', started.status === 'running' && typeof started.job_id === 'string');
+    // Poll until done (bounded).
+    let jobResult = null;
+    for (let i = 0; i < 50 && !jobResult; i++) {
+      const polled = parseToolResult(await client.callTool({
+        name: 'get_council_result', arguments: { job_id: started.job_id },
+      }));
+      if (polled.status === 'done') jobResult = polled;
+      else if (polled.status === 'error') { jobResult = polled; break; }
+      else await new Promise(r => setTimeout(r, 40));
+    }
+    check('async: job completed', jobResult?.status === 'done', `got ${jobResult?.status}: ${jobResult?.error ?? ''}`);
+    check('async: result carries individual responses', jobResult?.result?.responses?.length === 2, `got ${jobResult?.result?.responses?.length}`);
+    check('async: elapsedMs recorded', typeof jobResult?.elapsedMs === 'number');
+    const listed = parseToolResult(await client.callTool({ name: 'get_council_result', arguments: { list: true } }));
+    check('async: job appears in listing', Array.isArray(listed.jobs) && listed.jobs.some(j => j.id === started.job_id));
+    let badJob = false;
+    try {
+      await client.callTool({ name: 'get_council_result', arguments: { job_id: 'does-not-exist' } });
+    } catch (e) { badJob = /No such job/i.test(String(e?.message ?? e)); }
+    check('async: unknown job_id → error', badJob);
 
   } finally {
     await client.close();

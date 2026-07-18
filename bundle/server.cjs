@@ -2984,7 +2984,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve.call(this, root, ref);
+      let _sch = resolve2.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a3 = root.localRefs) === null || _a3 === void 0 ? void 0 : _a3[ref];
         const { schemaId } = this.opts;
@@ -3011,7 +3011,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve(root, ref) {
+    function resolve2(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3642,7 +3642,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve(baseURI, relativeURI, options) {
+    function resolve2(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const resolved = resolveComponent(parse3(baseURI, schemelessOptions), parse3(relativeURI, schemelessOptions), schemelessOptions, true);
       schemelessOptions.skipEscape = true;
@@ -3900,7 +3900,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize,
-      resolve,
+      resolve: resolve2,
       resolveComponent,
       equal,
       serialize,
@@ -8948,7 +8948,7 @@ var require_lib2 = __commonJS({
       let accum = [];
       let accumBytes = 0;
       let abort = false;
-      return new Body.Promise(function(resolve, reject) {
+      return new Body.Promise(function(resolve2, reject) {
         let resTimeout;
         if (_this4.timeout) {
           resTimeout = setTimeout(function() {
@@ -8982,7 +8982,7 @@ var require_lib2 = __commonJS({
           }
           clearTimeout(resTimeout);
           try {
-            resolve(Buffer.concat(accum, accumBytes));
+            resolve2(Buffer.concat(accum, accumBytes));
           } catch (err) {
             reject(new FetchError(`Could not create Buffer from response body for ${_this4.url}: ${err.message}`, "system", err));
           }
@@ -9657,7 +9657,7 @@ var require_lib2 = __commonJS({
         throw new Error("native promise missing, set fetch.Promise to your favorite alternative");
       }
       Body.Promise = fetch4.Promise;
-      return new fetch4.Promise(function(resolve, reject) {
+      return new fetch4.Promise(function(resolve2, reject) {
         const request = new Request5(url, opts);
         const options = getNodeRequestOptions(request);
         const send = (options.protocol === "https:" ? https : http).request;
@@ -9790,7 +9790,7 @@ var require_lib2 = __commonJS({
                   requestOpts.body = void 0;
                   requestOpts.headers.delete("content-length");
                 }
-                resolve(fetch4(new Request5(locationURL, requestOpts)));
+                resolve2(fetch4(new Request5(locationURL, requestOpts)));
                 finalize();
                 return;
             }
@@ -9811,7 +9811,7 @@ var require_lib2 = __commonJS({
           const codings = headers.get("Content-Encoding");
           if (!request.compress || request.method === "HEAD" || codings === null || res.statusCode === 204 || res.statusCode === 304) {
             response = new Response5(body, response_options);
-            resolve(response);
+            resolve2(response);
             return;
           }
           const zlibOptions = {
@@ -9821,7 +9821,7 @@ var require_lib2 = __commonJS({
           if (codings == "gzip" || codings == "x-gzip") {
             body = body.pipe(zlib.createGunzip(zlibOptions));
             response = new Response5(body, response_options);
-            resolve(response);
+            resolve2(response);
             return;
           }
           if (codings == "deflate" || codings == "x-deflate") {
@@ -9833,12 +9833,12 @@ var require_lib2 = __commonJS({
                 body = body.pipe(zlib.createInflateRaw());
               }
               response = new Response5(body, response_options);
-              resolve(response);
+              resolve2(response);
             });
             raw.on("end", function() {
               if (!response) {
                 response = new Response5(body, response_options);
-                resolve(response);
+                resolve2(response);
               }
             });
             return;
@@ -9846,11 +9846,11 @@ var require_lib2 = __commonJS({
           if (codings == "br" && typeof zlib.createBrotliDecompress === "function") {
             body = body.pipe(zlib.createBrotliDecompress());
             response = new Response5(body, response_options);
-            resolve(response);
+            resolve2(response);
             return;
           }
           response = new Response5(body, response_options);
-          resolve(response);
+          resolve2(response);
         });
         writeToStream(req, request);
       });
@@ -23176,7 +23176,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        await new Promise((resolve2) => setTimeout(resolve2, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -23193,7 +23193,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -23271,7 +23271,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve(parseResult.data);
+            resolve2(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -23532,12 +23532,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve, interval);
+      const timeoutId = setTimeout(resolve2, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -24407,12 +24407,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve) => {
+    return new Promise((resolve2) => {
       const json = serializeMessage(message);
       if (this._stdout.write(json)) {
-        resolve();
+        resolve2();
       } else {
-        this._stdout.once("drain", resolve);
+        this._stdout.once("drain", resolve2);
       }
     });
   }
@@ -26342,8 +26342,8 @@ function _addRequestID(value, response) {
 }
 var APIPromise = class _APIPromise extends Promise {
   constructor(responsePromise, parseResponse2 = defaultParseResponse) {
-    super((resolve) => {
-      resolve(null);
+    super((resolve2) => {
+      resolve2(null);
     });
     this.responsePromise = responsePromise;
     this.parseResponse = parseResponse2;
@@ -26918,7 +26918,7 @@ var startsWithSchemeRegexp = /^[a-z][a-z0-9+.-]*:/i;
 var isAbsoluteURL = (url) => {
   return startsWithSchemeRegexp.test(url);
 };
-var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+var sleep = (ms) => new Promise((resolve2) => setTimeout(resolve2, ms));
 var validatePositiveInteger = (name, n2) => {
   if (typeof n2 !== "number" || !Number.isInteger(n2)) {
     throw new OpenAIError(`${name} must be an integer`);
@@ -27351,12 +27351,12 @@ var EventStream = class {
     _EventStream_errored.set(this, false);
     _EventStream_aborted.set(this, false);
     _EventStream_catchingPromiseCreated.set(this, false);
-    __classPrivateFieldSet7(this, _EventStream_connectedPromise, new Promise((resolve, reject) => {
-      __classPrivateFieldSet7(this, _EventStream_resolveConnectedPromise, resolve, "f");
+    __classPrivateFieldSet7(this, _EventStream_connectedPromise, new Promise((resolve2, reject) => {
+      __classPrivateFieldSet7(this, _EventStream_resolveConnectedPromise, resolve2, "f");
       __classPrivateFieldSet7(this, _EventStream_rejectConnectedPromise, reject, "f");
     }), "f");
-    __classPrivateFieldSet7(this, _EventStream_endPromise, new Promise((resolve, reject) => {
-      __classPrivateFieldSet7(this, _EventStream_resolveEndPromise, resolve, "f");
+    __classPrivateFieldSet7(this, _EventStream_endPromise, new Promise((resolve2, reject) => {
+      __classPrivateFieldSet7(this, _EventStream_resolveEndPromise, resolve2, "f");
       __classPrivateFieldSet7(this, _EventStream_rejectEndPromise, reject, "f");
     }), "f");
     __classPrivateFieldGet8(this, _EventStream_connectedPromise, "f").catch(() => {
@@ -27440,11 +27440,11 @@ var EventStream = class {
    *   const message = await stream.emitted('message') // rejects if the stream errors
    */
   emitted(event) {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       __classPrivateFieldSet7(this, _EventStream_catchingPromiseCreated, true, "f");
       if (event !== "error")
         this.once("error", reject);
-      this.once(event, resolve);
+      this.once(event, resolve2);
     });
   }
   async done() {
@@ -27597,7 +27597,7 @@ var AssistantStream = class _AssistantStream extends EventStream {
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve, reject) => readQueue.push({ resolve, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve2, reject) => readQueue.push({ resolve: resolve2, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
         }
         const chunk = pushQueue.shift();
         return { value: chunk, done: false };
@@ -29215,7 +29215,7 @@ var ChatCompletionStream = class _ChatCompletionStream extends AbstractChatCompl
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve, reject) => readQueue.push({ resolve, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve2, reject) => readQueue.push({ resolve: resolve2, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
         }
         const chunk = pushQueue.shift();
         return { value: chunk, done: false };
@@ -30866,7 +30866,7 @@ var ResponseStream = class _ResponseStream extends EventStream {
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve, reject) => readQueue.push({ resolve, reject })).then((event2) => event2 ? { value: event2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve2, reject) => readQueue.push({ resolve: resolve2, reject })).then((event2) => event2 ? { value: event2, done: false } : { value: void 0, done: true });
         }
         const event = pushQueue.shift();
         return { value: event, done: false };
@@ -32186,8 +32186,8 @@ async function defaultParseResponse2(props) {
 }
 var APIPromise2 = class _APIPromise extends Promise {
   constructor(responsePromise, parseResponse2 = defaultParseResponse2) {
-    super((resolve) => {
-      resolve(null);
+    super((resolve2) => {
+      resolve2(null);
     });
     this.responsePromise = responsePromise;
     this.parseResponse = parseResponse2;
@@ -32748,7 +32748,7 @@ var startsWithSchemeRegexp2 = new RegExp("^(?:[a-z]+:)?//", "i");
 var isAbsoluteURL2 = (url) => {
   return startsWithSchemeRegexp2.test(url);
 };
-var sleep2 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+var sleep2 = (ms) => new Promise((resolve2) => setTimeout(resolve2, ms));
 var validatePositiveInteger2 = (name, n2) => {
   if (typeof n2 !== "number" || !Number.isInteger(n2)) {
     throw new AnthropicError(`${name} must be an integer`);
@@ -33459,12 +33459,12 @@ var PromptCachingBetaMessageStream = class _PromptCachingBetaMessageStream {
       }
       return this._emit("error", new AnthropicError(String(error2)));
     });
-    __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_connectedPromise, new Promise((resolve, reject) => {
-      __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_resolveConnectedPromise, resolve, "f");
+    __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_connectedPromise, new Promise((resolve2, reject) => {
+      __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_resolveConnectedPromise, resolve2, "f");
       __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_rejectConnectedPromise, reject, "f");
     }), "f");
-    __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_endPromise, new Promise((resolve, reject) => {
-      __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_resolveEndPromise, resolve, "f");
+    __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_endPromise, new Promise((resolve2, reject) => {
+      __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_resolveEndPromise, resolve2, "f");
       __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_rejectEndPromise, reject, "f");
     }), "f");
     __classPrivateFieldGet14(this, _PromptCachingBetaMessageStream_connectedPromise, "f").catch(() => {
@@ -33593,11 +33593,11 @@ var PromptCachingBetaMessageStream = class _PromptCachingBetaMessageStream {
    *   const message = await stream.emitted('message') // rejects if the stream errors
    */
   emitted(event) {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_catchingPromiseCreated, true, "f");
       if (event !== "error")
         this.once("error", reject);
-      this.once(event, resolve);
+      this.once(event, resolve2);
     });
   }
   async done() {
@@ -33824,7 +33824,7 @@ var PromptCachingBetaMessageStream = class _PromptCachingBetaMessageStream {
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve, reject) => readQueue.push({ resolve, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve2, reject) => readQueue.push({ resolve: resolve2, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
         }
         const chunk = pushQueue.shift();
         return { value: chunk, done: false };
@@ -33978,12 +33978,12 @@ var MessageStream = class _MessageStream {
       }
       return this._emit("error", new AnthropicError(String(error2)));
     });
-    __classPrivateFieldSet13(this, _MessageStream_connectedPromise, new Promise((resolve, reject) => {
-      __classPrivateFieldSet13(this, _MessageStream_resolveConnectedPromise, resolve, "f");
+    __classPrivateFieldSet13(this, _MessageStream_connectedPromise, new Promise((resolve2, reject) => {
+      __classPrivateFieldSet13(this, _MessageStream_resolveConnectedPromise, resolve2, "f");
       __classPrivateFieldSet13(this, _MessageStream_rejectConnectedPromise, reject, "f");
     }), "f");
-    __classPrivateFieldSet13(this, _MessageStream_endPromise, new Promise((resolve, reject) => {
-      __classPrivateFieldSet13(this, _MessageStream_resolveEndPromise, resolve, "f");
+    __classPrivateFieldSet13(this, _MessageStream_endPromise, new Promise((resolve2, reject) => {
+      __classPrivateFieldSet13(this, _MessageStream_resolveEndPromise, resolve2, "f");
       __classPrivateFieldSet13(this, _MessageStream_rejectEndPromise, reject, "f");
     }), "f");
     __classPrivateFieldGet15(this, _MessageStream_connectedPromise, "f").catch(() => {
@@ -34112,11 +34112,11 @@ var MessageStream = class _MessageStream {
    *   const message = await stream.emitted('message') // rejects if the stream errors
    */
   emitted(event) {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       __classPrivateFieldSet13(this, _MessageStream_catchingPromiseCreated, true, "f");
       if (event !== "error")
         this.once("error", reject);
-      this.once(event, resolve);
+      this.once(event, resolve2);
     });
   }
   async done() {
@@ -34343,7 +34343,7 @@ var MessageStream = class _MessageStream {
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve, reject) => readQueue.push({ resolve, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve2, reject) => readQueue.push({ resolve: resolve2, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
         }
         const chunk = pushQueue.shift();
         return { value: chunk, done: false };
@@ -34653,7 +34653,7 @@ var ClaudeCliProvider = class {
     return result;
   }
   run(args, input, timeoutMs) {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       const env = { ...process.env };
       delete env.ANTHROPIC_API_KEY;
       delete env.ANTHROPIC_AUTH_TOKEN;
@@ -34688,7 +34688,7 @@ var ClaudeCliProvider = class {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve({ code: code ?? 1, stdout, stderr });
+        resolve2({ code: code ?? 1, stdout, stderr });
       });
       if (input !== void 0) child.stdin.write(input);
       child.stdin.end();
@@ -34800,7 +34800,7 @@ var CodexCliProvider = class {
     }
   }
   run(args, input, timeoutMs) {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       const env = { ...process.env };
       delete env.OPENAI_API_KEY;
       delete env.CODEX_API_KEY;
@@ -34835,7 +34835,7 @@ var CodexCliProvider = class {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve({ code: code ?? 1, stdout, stderr });
+        resolve2({ code: code ?? 1, stdout, stderr });
       });
       if (input !== void 0) child.stdin.write(input);
       child.stdin.end();
@@ -34929,7 +34929,7 @@ var EmptyCompletionError = class extends Error {
     this.name = "EmptyCompletionError";
   }
 };
-var sleep3 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+var sleep3 = (ms) => new Promise((resolve2) => setTimeout(resolve2, ms));
 async function pooled(tasks, limit2) {
   if (tasks.length === 0) return;
   const width = limit2 && limit2 > 0 ? Math.min(limit2, tasks.length) : tasks.length;
@@ -35910,7 +35910,7 @@ var CouncilOrchestrator = class {
 var import_node_child_process3 = require("node:child_process");
 var isCloudModel = (m2) => m2.endsWith(":cloud") || m2.endsWith("-cloud");
 function runCli(command, args, opts = { timeoutMs: 8e3 }) {
-  return new Promise((resolve) => {
+  return new Promise((resolve2) => {
     const env = { ...process.env };
     if (opts.stripKeys === "anthropic") {
       delete env.ANTHROPIC_API_KEY;
@@ -35924,7 +35924,7 @@ function runCli(command, args, opts = { timeoutMs: 8e3 }) {
     try {
       child = (0, import_node_child_process3.spawn)(command, args, { env, stdio: ["pipe", "pipe", "pipe"] });
     } catch {
-      resolve({ code: 127, stdout: "", stderr: "spawn failed" });
+      resolve2({ code: 127, stdout: "", stderr: "spawn failed" });
       return;
     }
     let stdout = "", stderr = "", settled = false;
@@ -35932,7 +35932,7 @@ function runCli(command, args, opts = { timeoutMs: 8e3 }) {
       if (!settled) {
         settled = true;
         clearTimeout(timer);
-        resolve(r2);
+        resolve2(r2);
       }
     };
     const timer = setTimeout(() => {
@@ -35956,8 +35956,8 @@ function runCli(command, args, opts = { timeoutMs: 8e3 }) {
 }
 async function withTimeout(p2, ms, fallback) {
   let timer;
-  const t2 = new Promise((resolve) => {
-    timer = setTimeout(() => resolve(fallback), ms);
+  const t2 = new Promise((resolve2) => {
+    timer = setTimeout(() => resolve2(fallback), ms);
   });
   try {
     return await Promise.race([p2, t2]);
@@ -36052,6 +36052,114 @@ function quotaWarning(report, tiers, subs) {
   return `The council includes ${paid.join(", ")} members \u2014 asking it consumes your ${paid.length > 1 ? "quotas" : "quota"}. Remove any you don't want with configure_council (or /model-council:setup) to reduce usage.`;
 }
 
+// src/context.ts
+var import_promises = require("node:fs/promises");
+var import_node_path4 = require("node:path");
+var MAX_FILE_BYTES = 256 * 1024;
+var MAX_TOTAL_BYTES = 768 * 1024;
+var MAX_FILES = 20;
+async function buildAugmentedQuestion(question, input) {
+  const blocks = [];
+  const inline = input.context?.trim();
+  if (inline) {
+    blocks.push(`----- CONTEXT -----
+${inline}`);
+  }
+  const files = input.files ?? [];
+  if (files.length > MAX_FILES) {
+    throw new Error(`Too many files attached (${files.length}); the limit is ${MAX_FILES}.`);
+  }
+  let total = 0;
+  for (const raw of files) {
+    if (typeof raw !== "string" || !raw.trim()) continue;
+    const path = (0, import_node_path4.resolve)(raw);
+    let info;
+    try {
+      info = await (0, import_promises.stat)(path);
+    } catch {
+      throw new Error(`Attached file not found or unreadable: ${raw}`);
+    }
+    if (!info.isFile()) {
+      throw new Error(`Attached path is not a file: ${raw}`);
+    }
+    if (info.size > MAX_FILE_BYTES) {
+      throw new Error(
+        `Attached file too large: ${raw} (${Math.round(info.size / 1024)} KB > ${Math.round(MAX_FILE_BYTES / 1024)} KB limit). Trim it or pass an excerpt via "context".`
+      );
+    }
+    total += info.size;
+    if (total > MAX_TOTAL_BYTES) {
+      throw new Error(
+        `Attached files exceed the combined ${Math.round(MAX_TOTAL_BYTES / 1024)} KB limit. Attach fewer/smaller files.`
+      );
+    }
+    let body;
+    try {
+      body = await (0, import_promises.readFile)(path, "utf8");
+    } catch {
+      throw new Error(`Could not read attached file as UTF-8 text: ${raw}`);
+    }
+    blocks.push(`----- FILE: ${raw} -----
+${body}`);
+  }
+  if (blocks.length === 0) return question;
+  return `${blocks.join("\n\n")}
+
+----- QUESTION -----
+${question}`;
+}
+
+// src/jobs.ts
+var import_node_crypto = require("node:crypto");
+var MAX_JOBS = 50;
+var QUESTION_PREVIEW = 200;
+var JobStore = class {
+  jobs = /* @__PURE__ */ new Map();
+  /** Register a running job and return its record (id is a UUID). */
+  start(question, meta) {
+    const job = {
+      id: (0, import_node_crypto.randomUUID)(),
+      status: "running",
+      question: question.slice(0, QUESTION_PREVIEW),
+      mode: meta.mode,
+      memberCount: meta.memberCount,
+      startedAt: Date.now()
+    };
+    this.jobs.set(job.id, job);
+    this.evict();
+    return job;
+  }
+  finish(id, result) {
+    const job = this.jobs.get(id);
+    if (!job) return;
+    job.status = "done";
+    job.result = result;
+    job.finishedAt = Date.now();
+  }
+  fail(id, error2) {
+    const job = this.jobs.get(id);
+    if (!job) return;
+    job.status = "error";
+    job.error = error2;
+    job.finishedAt = Date.now();
+  }
+  get(id) {
+    return this.jobs.get(id);
+  }
+  /** Recent jobs, newest first (metadata only — no result payloads). */
+  list() {
+    return [...this.jobs.values()].sort((a2, b2) => b2.startedAt - a2.startedAt).map(({ result, ...meta }) => meta);
+  }
+  /** Drop the oldest finished jobs once over the cap (keep running ones). */
+  evict() {
+    if (this.jobs.size <= MAX_JOBS) return;
+    const removable = [...this.jobs.values()].filter((j2) => j2.status !== "running").sort((a2, b2) => a2.startedAt - b2.startedAt);
+    while (this.jobs.size > MAX_JOBS && removable.length) {
+      this.jobs.delete(removable.shift().id);
+    }
+  }
+};
+
 // src/index.ts
 function boot() {
   const appConfig2 = loadConfig();
@@ -36068,6 +36176,7 @@ try {
   process.exit(1);
 }
 var { appConfig, registry: registry2, orchestrator } = booted;
+var jobs = new JobStore();
 try {
   saveState({
     env: {
@@ -36077,6 +36186,18 @@ try {
     }
   });
 } catch {
+}
+async function runCouncil(input) {
+  const question = await buildAugmentedQuestion(input.question, {
+    context: input.context,
+    files: input.files
+  });
+  return orchestrator.ask(
+    question,
+    input.mode,
+    input.max_deconflict_rounds,
+    input.verbose
+  );
 }
 var labelsToMembers = (labels) => labels.flatMap((s2) => {
   if (typeof s2 !== "string") return [];
@@ -36137,7 +36258,16 @@ var AskCouncilInput = external_exports.object({
   max_deconflict_rounds: external_exports.number().int().min(1).max(10).optional().describe("Override max deconfliction rounds for this call only."),
   verbose: external_exports.boolean().optional().describe(
     "deconflicted \u2192 include the initial categorization and per-round detail; pooled/dialectic \u2192 include the initial (round-0/thesis) raw member responses."
+  ),
+  context: external_exports.string().optional().describe("Optional background text prepended to the question for every member."),
+  files: external_exports.array(external_exports.string()).optional().describe(
+    "Optional local file paths to read and attach as context (each fenced and labelled). Caps: 256 KB/file, 768 KB total, 20 files."
   )
+});
+var AskCouncilAsyncInput = AskCouncilInput;
+var GetCouncilResultInput = external_exports.object({
+  job_id: external_exports.string().optional().describe("Job id returned by ask_council_async. Omit (or set list=true) to list recent jobs."),
+  list: external_exports.boolean().optional().describe("List recent background jobs (metadata only) instead of fetching one.")
 });
 var GetCouncilConfigInput = external_exports.object({});
 var SetupCouncilInput = external_exports.object({
@@ -36216,6 +36346,67 @@ var TOOLS = [
         verbose: {
           type: "boolean",
           description: "deconflicted \u2192 include the initial categorization and per-round detail; pooled/dialectic \u2192 include the initial (round-0/thesis) raw member responses."
+        },
+        context: {
+          type: "string",
+          description: "Optional background text prepended to the question for every member."
+        },
+        files: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional local file paths to read and attach as labelled context (caps: 256 KB/file, 768 KB total, 20 files)."
+        }
+      }
+    }
+  },
+  {
+    name: "ask_council_async",
+    annotations: { title: "Ask the council (background)", readOnlyHint: false },
+    description: "Start a council run in the background and return a job_id immediately, so a long deconfliction/dialectic run (or a slow local model) does not block. Same inputs as ask_council (mode, context, files, etc.). Poll get_council_result with the job_id to fetch the answer when ready. Jobs are in-memory and do not survive a server reload.",
+    inputSchema: {
+      type: "object",
+      required: ["question"],
+      properties: {
+        question: {
+          type: "string",
+          description: "The question or prompt to send to all council members."
+        },
+        mode: {
+          type: "string",
+          enum: ["individual", "categorized", "deconflicted", "pooled", "dialectic"],
+          description: "Response mode override for this call only."
+        },
+        max_deconflict_rounds: {
+          type: "number",
+          description: "Max deconfliction rounds override for this call only."
+        },
+        verbose: { type: "boolean", description: "Include per-round / raw member detail." },
+        context: {
+          type: "string",
+          description: "Optional background text prepended to the question for every member."
+        },
+        files: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional local file paths to read and attach as labelled context."
+        }
+      }
+    }
+  },
+  {
+    name: "get_council_result",
+    annotations: { title: "Get background council result", readOnlyHint: true },
+    description: "Fetch a background council run started with ask_council_async. Pass job_id to get its status (running | done | error) and, when done, the full result. Omit job_id (or set list=true) to list recent jobs.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        job_id: {
+          type: "string",
+          description: "Job id from ask_council_async. Omit to list recent jobs."
+        },
+        list: {
+          type: "boolean",
+          description: "List recent jobs (metadata only) instead of fetching one."
         }
       }
     }
@@ -36249,7 +36440,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.8"
+    version: "0.2.9"
   },
   {
     capabilities: { tools: {} },
@@ -36360,12 +36551,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       // ── ask_council ──────────────────────────────────────────────────────
       case "ask_council": {
         const input = AskCouncilInput.parse(args ?? {});
-        const result = await orchestrator.ask(
-          input.question,
-          input.mode,
-          input.max_deconflict_rounds,
-          input.verbose
-        );
+        const result = await runCouncil(input);
         return {
           content: [
             {
@@ -36373,6 +36559,55 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
               text: JSON.stringify(result, null, 2)
             }
           ]
+        };
+      }
+      // ── ask_council_async ────────────────────────────────────────────────
+      case "ask_council_async": {
+        const input = AskCouncilAsyncInput.parse(args ?? {});
+        const job = jobs.start(input.question, {
+          mode: input.mode ?? orchestrator.getConfig().responseMode,
+          memberCount: orchestrator.getConfig().members.length || void 0
+        });
+        runCouncil(input).then((result) => jobs.finish(job.id, result)).catch((err) => jobs.fail(job.id, err instanceof Error ? err.message : String(err)));
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  status: "running",
+                  job_id: job.id,
+                  mode: job.mode,
+                  members: job.memberCount ?? "(auto)",
+                  note: "Poll get_council_result with this job_id to fetch the answer."
+                },
+                null,
+                2
+              )
+            }
+          ]
+        };
+      }
+      // ── get_council_result ───────────────────────────────────────────────
+      case "get_council_result": {
+        const input = GetCouncilResultInput.parse(args ?? {});
+        if (!input.job_id || input.list) {
+          return {
+            content: [
+              { type: "text", text: JSON.stringify({ jobs: jobs.list() }, null, 2) }
+            ]
+          };
+        }
+        const job = jobs.get(input.job_id);
+        if (!job) {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            `No such job: ${input.job_id}. Jobs are dropped on server reload; list with get_council_result (no job_id).`
+          );
+        }
+        const payload = job.status === "done" ? { status: job.status, job_id: job.id, elapsedMs: (job.finishedAt ?? 0) - job.startedAt, result: job.result } : job.status === "error" ? { status: job.status, job_id: job.id, error: job.error } : { status: job.status, job_id: job.id, note: "Still running \u2014 poll again shortly." };
+        return {
+          content: [{ type: "text", text: JSON.stringify(payload, null, 2) }]
         };
       }
       // ── get_council_config ───────────────────────────────────────────────

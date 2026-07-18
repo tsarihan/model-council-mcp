@@ -10,6 +10,16 @@ An MCP server that routes a question to a **council** of AI models — local (Ol
 | `pooled` | **Delphi-style** — judge distils all answers into a neutral, deduplicated pool (no counts, no attribution, no ranking); members reconsider against it and answer freshly. No winner is forced, so genuine divergence is **preserved** rather than collapsed by social proof |
 | `dialectic` | **Thesis → antithesis → synthesis** — members defend their initial pick and argue why the alternatives aren't better; the judge compiles a balanced **pros/cons dossier** per option; members then re-select a ranked top-3 having weighed both sides |
 
+## Example use cases
+
+- **High-stakes technical decision** — `ask_council(..., mode="dialectic")` to see each option argued for *and* against before a synthesized, ranked recommendation (attach the relevant file with `files=[…]`).
+- **Reduce single-model bias** — `mode="pooled"` (Delphi) so a minority-but-correct answer is *preserved* instead of averaged away by the loudest model.
+- **Spot disagreement fast** — `mode="categorized"` to have a judge sort answers into agreement, complementary insight, and genuine conflict.
+- **Code / design review across models** — attach a file (`files=["src/auth.ts"]`) and ask the whole council to critique it; use `context` to add constraints ("must be OWASP-clean").
+- **Local-only, offline second opinions** — fan a prompt across every model you already run in Ollama; no cloud, no API keys.
+- **Mix your subscriptions** — put Claude (Opus/Sonnet/Haiku) and ChatGPT (via Codex) side by side on the same question, billed to plans you already pay for.
+- **Long runs without blocking** — kick off a deconfliction over slow local models with `ask_council_async`, keep working, then `get_council_result(job_id)`.
+
 ---
 
 ## Install as a Claude Code plugin (recommended)
@@ -265,6 +275,17 @@ Send a question to the full council.
 
 `mode` and `max_deconflict_rounds` override the configured defaults for this call only. In `deconflicted` mode, set `"verbose": true` to include the initial categorization, every member's per-round responses, and the round-by-round re-categorization alongside the final synthesis. In `pooled` mode, `"verbose": true` adds the initial (round-0) raw member responses.
 
+**Attach context / files.** Add `"context"` (inline background text) and/or `"files"` (an array of local file paths). Files are read from disk and fenced with a `----- FILE: <path> -----` header so every member sees them as labelled context alongside the question. Caps: 256 KB/file, 768 KB total, 20 files — for anything larger, pass an excerpt via `context`. A missing/oversized/binary file returns a clear error rather than being silently dropped.
+
+```json
+{
+  "question": "What's wrong with this auth flow?",
+  "mode": "dialectic",
+  "files": ["src/auth.ts"],
+  "context": "Public SaaS signup path; must be OWASP-clean."
+}
+```
+
 #### Individual result
 
 ```json
@@ -375,6 +396,22 @@ Where `pooled` is deliberately *neutral*, `dialectic` is deliberately *adversari
 
 ---
 
+### `ask_council_async`
+
+Same inputs as `ask_council` (including `context` / `files`), but starts the run in the **background** and returns a `job_id` immediately — so a long deconfliction/dialectic run, or a council with slow local models, doesn't block you.
+
+```json
+{ "status": "running", "job_id": "6f2c…", "mode": "dialectic", "members": 8 }
+```
+
+### `get_council_result`
+
+Fetch a background run by `job_id` (status `running` → `done`/`error`, with the full result when done), or omit `job_id` (or pass `"list": true`) to list recent jobs. Jobs live in memory and are dropped on server reload.
+
+```json
+{ "status": "done", "job_id": "6f2c…", "elapsedMs": 48210, "result": { "mode": "dialectic", … } }
+```
+
 ### `get_council_config`
 
 Returns current council settings plus all configured provider connections and the full env-var reference.
@@ -457,6 +494,21 @@ This design is informed by *The Mirror Law*, which shows that a learner trained 
   note   = {Preprint}
 }
 ```
+
+---
+
+## FAQ
+
+**How is this different from `claude-council` (hex/claude-council)?**
+They solve different problems. `claude-council` gives Claude Code the opinions of *other* cloud coding agents (Gemini, GPT/Codex, Grok, Perplexity) with a rich coding-workflow UX (roles, vision, tmux streaming). **model-council** convenes a panel across your **own** infrastructure — local **Ollama**, self-hosted **vLLM / SGLang / TensorRT-LLM**, *and* your Claude + ChatGPT subscriptions — and reconciles it with decision-theoretic modes (Delphi **pooled**, **dialectic**, scored **deconfliction**), not just side-by-side + debate. Concretely, only model-council: (a) runs fully **local / offline / private**, (b) auto-discovers self-hosted models and their **context windows**, and (c) puts **Claude itself** on the panel. It also ships as a **standalone MCP server**, so it works in Claude Desktop and any MCP client, not only Claude Code.
+
+**Do I need API keys?** No. Local Ollama and self-hosted servers need none; Claude and ChatGPT members run under your existing subscriptions via the first-party `claude` / `codex` CLIs. API keys are only for the optional OpenAI/Anthropic/Groq cloud members.
+
+**Does it work in Cowork / claude.ai?** No — it executes your local `claude`/`codex` CLIs and reaches localhost/LAN model servers, which cloud-hosted surfaces can't do. Use it in **Claude Code** (plugin) or **Claude Desktop** (standalone MCP).
+
+**Can it review a file, or run without blocking?** Yes — `ask_council` takes `context` / `files`, and `ask_council_async` + `get_council_result` run a council in the background and fetch the result when ready.
+
+**What does "judge" mean?** Categorized / deconflicted / pooled / dialectic modes use one member as the judge that groups, re-questions, or distils the others. It's auto-selected as the largest member; override with `judge_model`.
 
 ---
 

@@ -1,5 +1,7 @@
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
-import { ChatMessage, CompletionOptions, Provider, stripThinkBlocks } from './base.js';
+import {
+  ChatMessage, CompletionOptions, Provider, stripThinkBlocks, clampMaxTokens,
+} from './base.js';
 
 interface OllamaModel {
   name: string;
@@ -21,10 +23,40 @@ interface OllamaChatResponse {
 export class OllamaProvider implements Provider {
   readonly serverId: string;
   readonly config: ServerConfig;
+  /** Per-model advertised context length (from /api/show); null = unknown. */
+  private ctxLenCache = new Map<string, number | null>();
 
   constructor(config: ServerConfig) {
     this.config = config;
     this.serverId = config.id;
+  }
+
+  /**
+   * The model's advertised context length from /api/show (`model_info` holds an
+   * arch-prefixed `*.context_length`). Cached per model; undefined when unknown
+   * (e.g. Ollama cloud models) so callers skip clamping.
+   */
+  private async modelContextLen(model: string): Promise<number | undefined> {
+    const cached = this.ctxLenCache.get(model);
+    if (cached !== undefined) return cached ?? undefined;
+    let len: number | null = null;
+    try {
+      const res = await fetch(`${this.config.baseUrl}/api/show`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) {
+        const info = ((await res.json()) as { model_info?: Record<string, unknown> }).model_info ?? {};
+        const key = Object.keys(info).find(k => k.endsWith('.context_length'));
+        if (key && typeof info[key] === 'number') len = info[key] as number;
+      }
+    } catch {
+      /* unreachable → leave unknown, no clamp */
+    }
+    this.ctxLenCache.set(model, len);
+    return len ?? undefined;
   }
 
   async ping(): Promise<boolean> {
@@ -59,13 +91,16 @@ export class OllamaProvider implements Provider {
     messages: ChatMessage[],
     opts: CompletionOptions = {},
   ): Promise<string> {
+    const numPredict = clampMaxTokens(
+      opts.maxTokens ?? 16000, await this.modelContextLen(model), messages,
+    );
     const body = {
       model,
       messages,
       stream: false,
       options: {
         temperature: opts.temperature ?? 0.7,
-        num_predict: opts.maxTokens ?? 16000,
+        num_predict: numPredict,
       },
       ...(opts.jsonMode ? { format: 'json' } : {}),
     };

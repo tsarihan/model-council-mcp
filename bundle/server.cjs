@@ -24767,14 +24767,53 @@ function stripThinkBlocks(text) {
   if (close !== -1) out = out.slice(close + "</think>".length);
   return out.trim();
 }
+function estimatePromptTokens(messages) {
+  const chars = messages.reduce((n2, m2) => n2 + (m2.content?.length ?? 0), 0);
+  return Math.ceil(chars / 3) + 4 * messages.length;
+}
+function clampMaxTokens(requested, maxModelLen, messages) {
+  if (!maxModelLen || maxModelLen <= 0) return requested;
+  const MIN_OUTPUT = 16;
+  const budget = maxModelLen - estimatePromptTokens(messages) - 64;
+  if (budget < MIN_OUTPUT) return MIN_OUTPUT;
+  return Math.min(requested, budget);
+}
 
 // src/providers/ollama.ts
 var OllamaProvider = class {
   serverId;
   config;
+  /** Per-model advertised context length (from /api/show); null = unknown. */
+  ctxLenCache = /* @__PURE__ */ new Map();
   constructor(config2) {
     this.config = config2;
     this.serverId = config2.id;
+  }
+  /**
+   * The model's advertised context length from /api/show (`model_info` holds an
+   * arch-prefixed `*.context_length`). Cached per model; undefined when unknown
+   * (e.g. Ollama cloud models) so callers skip clamping.
+   */
+  async modelContextLen(model) {
+    const cached3 = this.ctxLenCache.get(model);
+    if (cached3 !== void 0) return cached3 ?? void 0;
+    let len = null;
+    try {
+      const res = await fetch(`${this.config.baseUrl}/api/show`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model }),
+        signal: AbortSignal.timeout(5e3)
+      });
+      if (res.ok) {
+        const info = (await res.json()).model_info ?? {};
+        const key = Object.keys(info).find((k2) => k2.endsWith(".context_length"));
+        if (key && typeof info[key] === "number") len = info[key];
+      }
+    } catch {
+    }
+    this.ctxLenCache.set(model, len);
+    return len ?? void 0;
   }
   async ping() {
     try {
@@ -24801,13 +24840,18 @@ var OllamaProvider = class {
     }));
   }
   async complete(model, messages, opts = {}) {
+    const numPredict = clampMaxTokens(
+      opts.maxTokens ?? 16e3,
+      await this.modelContextLen(model),
+      messages
+    );
     const body = {
       model,
       messages,
       stream: false,
       options: {
         temperature: opts.temperature ?? 0.7,
-        num_predict: opts.maxTokens ?? 16e3
+        num_predict: numPredict
       },
       ...opts.jsonMode ? { format: "json" } : {}
     };
@@ -31438,6 +31482,8 @@ var OpenAICompatibleProvider = class {
   serverId;
   config;
   client;
+  /** Per-model advertised context window (max_model_len); null = not advertised. */
+  maxLenCache = /* @__PURE__ */ new Map();
   constructor(config2) {
     this.config = config2;
     this.serverId = config2.id;
@@ -31447,6 +31493,24 @@ var OpenAICompatibleProvider = class {
       apiKey: config2.apiKey ?? "ollama"
       // vLLM/SGLang/TRT-LLM ignore the key
     });
+  }
+  /**
+   * The server's advertised context window for `model`, from /v1/models
+   * (vLLM and SGLang expose `max_model_len`; others omit it). Cached per model;
+   * returns undefined when unknown so callers skip clamping.
+   */
+  async maxModelLen(model) {
+    const cached3 = this.maxLenCache.get(model);
+    if (cached3 !== void 0) return cached3 ?? void 0;
+    try {
+      const list = await this.client.models.list();
+      for (const m2 of list.data) {
+        this.maxLenCache.set(m2.id, typeof m2.max_model_len === "number" ? m2.max_model_len : null);
+      }
+    } catch {
+    }
+    if (!this.maxLenCache.has(model)) this.maxLenCache.set(model, null);
+    return this.maxLenCache.get(model) ?? void 0;
   }
   async ping() {
     try {
@@ -31482,11 +31546,12 @@ var OpenAICompatibleProvider = class {
     }
   }
   async complete(model, messages, opts = {}) {
+    const maxTokens = clampMaxTokens(opts.maxTokens ?? 16e3, await this.maxModelLen(model), messages);
     const res = await this.client.chat.completions.create({
       model,
       messages,
       temperature: opts.temperature ?? 0.7,
-      max_tokens: opts.maxTokens ?? 16e3,
+      max_tokens: maxTokens,
       ...opts.jsonMode ? { response_format: { type: "json_object" } } : {}
     });
     return stripThinkBlocks(res.choices[0]?.message?.content ?? "");
@@ -36029,7 +36094,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.5"
+    version: "0.2.6"
   },
   {
     capabilities: { tools: {} },

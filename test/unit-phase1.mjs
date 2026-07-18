@@ -112,6 +112,24 @@ console.log('▶ stripThinkBlocks (reasoning-model <think> leakage)');
   check('unclosed <think> left intact (no answer to salvage)', stripThinkBlocks('<think>cut off mid').startsWith('<think>'));
 }
 
+console.log('▶ clampMaxTokens (fit output to server context / max_model_len)');
+{
+  const { clampMaxTokens, estimatePromptTokens } = await import('../dist/providers/base.js');
+  const short = [{ role: 'user', content: 'hi' }];
+  check('no advertised context → unchanged', clampMaxTokens(16000, undefined, short) === 16000);
+  check('zero/invalid context → unchanged', clampMaxTokens(16000, 0, short) === 16000);
+  // vLLM failure case: 16000 requested, context 8192 → clamp below 8192 (the actual 400 we hit).
+  check('requested > context → clamped under context', (() => { const c = clampMaxTokens(16000, 8192, short); return c < 8192 && c > 0; })());
+  // SGLang case: context 4096 → clamp under 4096.
+  check('context 4096 → clamped under 4096', clampMaxTokens(16000, 4096, short) < 4096);
+  check('requested < context → unchanged', clampMaxTokens(2000, 32768, short) === 2000);
+  check('reserves room for the prompt', clampMaxTokens(16000, 8192, short) <= 8192 - estimatePromptTokens(short));
+  // Prompt nearly fills context → floor to a small positive output, never negative.
+  const huge = [{ role: 'user', content: 'x'.repeat(30000) }];
+  check('prompt ~ context → floored to positive min', clampMaxTokens(16000, 4096, huge) === 16);
+  check('estimatePromptTokens grows with length', estimatePromptTokens(huge) > estimatePromptTokens(short));
+}
+
 console.log('▶ persistent state round-trip');
 const dir = mkdtempSync(join(tmpdir(), 'mc-state-'));
 process.env.MODEL_COUNCIL_STATE = join(dir, 'state.json');

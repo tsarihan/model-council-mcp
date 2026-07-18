@@ -30,6 +30,34 @@ export function stripThinkBlocks(text: string): string {
   return out.trim();
 }
 
+/**
+ * Rough prompt-token estimate without a client-side tokenizer. Uses chars/3
+ * (English averages ~4 chars/token) so it slightly OVER-estimates the prompt —
+ * that makes the output budget conservative, which is the safe direction.
+ */
+export function estimatePromptTokens(messages: ChatMessage[]): number {
+  const chars = messages.reduce((n, m) => n + (m.content?.length ?? 0), 0);
+  return Math.ceil(chars / 3) + 4 * messages.length; // + small per-message chat-template overhead
+}
+
+/**
+ * Clamp requested output tokens so prompt + output fit the server's advertised
+ * context window. vLLM (and some others) hard-reject when max_tokens exceeds
+ * max_model_len; this keeps every request valid. When the server advertises no
+ * context length (maxModelLen undefined), the request is returned unchanged.
+ */
+export function clampMaxTokens(
+  requested: number,
+  maxModelLen: number | undefined,
+  messages: ChatMessage[],
+): number {
+  if (!maxModelLen || maxModelLen <= 0) return requested;
+  const MIN_OUTPUT = 16;
+  const budget = maxModelLen - estimatePromptTokens(messages) - 64; // reserve prompt + headroom
+  if (budget < MIN_OUTPUT) return MIN_OUTPUT;
+  return Math.min(requested, budget);
+}
+
 export interface Provider {
   readonly serverId: string;
   readonly config: ServerConfig;

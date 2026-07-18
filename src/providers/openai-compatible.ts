@@ -5,7 +5,9 @@
  */
 import OpenAI from 'openai';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
-import { ChatMessage, CompletionOptions, Provider, stripThinkBlocks } from './base.js';
+import {
+  ChatMessage, CompletionOptions, Provider, stripThinkBlocks, clampMaxTokens,
+} from './base.js';
 
 // Known-static model lists for cloud providers that don't enumerate via API
 // (OpenAI's /models endpoint returns many but we surface common ones)
@@ -33,6 +35,8 @@ export class OpenAICompatibleProvider implements Provider {
   readonly serverId: string;
   readonly config: ServerConfig;
   private client: OpenAI;
+  /** Per-model advertised context window (max_model_len); null = not advertised. */
+  private maxLenCache = new Map<string, number | null>();
 
   constructor(config: ServerConfig) {
     this.config = config;
@@ -41,6 +45,26 @@ export class OpenAICompatibleProvider implements Provider {
       baseURL: openaiBaseURL(config.baseUrl), // ensure the /v1 segment (self-hosted servers omit it)
       apiKey: config.apiKey ?? 'ollama', // vLLM/SGLang/TRT-LLM ignore the key
     });
+  }
+
+  /**
+   * The server's advertised context window for `model`, from /v1/models
+   * (vLLM and SGLang expose `max_model_len`; others omit it). Cached per model;
+   * returns undefined when unknown so callers skip clamping.
+   */
+  private async maxModelLen(model: string): Promise<number | undefined> {
+    const cached = this.maxLenCache.get(model);
+    if (cached !== undefined) return cached ?? undefined;
+    try {
+      const list = await this.client.models.list();
+      for (const m of list.data as Array<{ id: string; max_model_len?: number }>) {
+        this.maxLenCache.set(m.id, typeof m.max_model_len === 'number' ? m.max_model_len : null);
+      }
+    } catch {
+      /* unreachable / rate-limited → leave unknown, no clamp */
+    }
+    if (!this.maxLenCache.has(model)) this.maxLenCache.set(model, null);
+    return this.maxLenCache.get(model) ?? undefined;
   }
 
   async ping(): Promise<boolean> {
@@ -89,11 +113,14 @@ export class OpenAICompatibleProvider implements Provider {
     messages: ChatMessage[],
     opts: CompletionOptions = {},
   ): Promise<string> {
+    // Clamp to the server's advertised context so a large default max_tokens
+    // (e.g. 16000) doesn't get hard-rejected by servers like vLLM.
+    const maxTokens = clampMaxTokens(opts.maxTokens ?? 16000, await this.maxModelLen(model), messages);
     const res = await this.client.chat.completions.create({
       model,
       messages,
       temperature: opts.temperature ?? 0.7,
-      max_tokens: opts.maxTokens ?? 16000,
+      max_tokens: maxTokens,
       ...(opts.jsonMode ? { response_format: { type: 'json_object' } } : {}),
     });
 

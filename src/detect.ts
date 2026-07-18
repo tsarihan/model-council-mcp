@@ -114,9 +114,13 @@ async function detectClaude(): Promise<EnvReport['claude']> {
   // config (so it does NOT load — and recurse into — this very plugin), and no
   // session persistence. Without --strict-mcp-config this would boot a nested
   // model-council and cascade.
+  // Pin --model exactly like the completion path (claude-cli.ts) does. Without it
+  // the probe inherits the CLI's configured default model for this directory — which
+  // may be a non-Claude model (e.g. a local Ollama model set via /model), making a
+  // perfectly logged-in CLI look "not usable". haiku is the cheapest always-valid alias.
   const probe = await runCli(
     cmd,
-    ['-p', 'Reply with the single word READY', '--output-format', 'text',
+    ['-p', 'Reply with the single word READY', '--model', 'haiku', '--output-format', 'text',
       '--tools', '', '--strict-mcp-config', '--no-session-persistence'],
     { timeoutMs: 20000, stripKeys: 'anthropic' },
   );

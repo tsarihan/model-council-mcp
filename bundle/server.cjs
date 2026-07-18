@@ -36000,6 +36000,8 @@ async function detectClaude() {
     [
       "-p",
       "Reply with the single word READY",
+      "--model",
+      "haiku",
       "--output-format",
       "text",
       "--tools",
@@ -36440,7 +36442,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.9"
+    version: "0.2.10"
   },
   {
     capabilities: { tools: {} },

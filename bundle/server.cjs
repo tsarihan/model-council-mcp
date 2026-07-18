@@ -36249,7 +36249,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.7"
+    version: "0.2.8"
   },
   {
     capabilities: { tools: {} },
@@ -36446,6 +36446,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                     CLOUD_CONCURRENCY: "Optional override: caps ALL cloud pools (overrides per-tier limits). Unset = tiers drive it.",
                     LOCAL_CONCURRENCY: "Max concurrent local requests (default: 1; 0 = unlimited)",
                     COMPLETION_RETRIES: "Attempts per completion before giving up on empty/error (default: 3)",
+                    REQUEST_TIMEOUT_MS: "Per-completion wall-clock timeout in ms (default: 120000). Raise for slow local models; CLI providers keep a 300s floor.",
                     DECONFLICT_VERBOSE: "true \u2192 deconflicted results include per-round detail by default"
                   }
                 },

@@ -20,6 +20,7 @@
         "CLOUD_CONCURRENCY": "${user_config.cloud_concurrency}",
         "LOCAL_CONCURRENCY": "${user_config.local_concurrency}",
         "COMPLETION_RETRIES": "${user_config.completion_retries}",
+        "REQUEST_TIMEOUT_MS": "${user_config.request_timeout_ms}",
         "DECONFLICT_VERBOSE": "${user_config.deconflict_verbose}",
         "CLAUDE_CLI": "${user_config.claude_cli}",
         "CLAUDE_CLI_MODELS": "${user_config.claude_cli_models}",

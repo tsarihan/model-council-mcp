@@ -152,18 +152,19 @@ Caps: 256 KB/file, 768 KB total, 20 files (pass an excerpt via `context` for big
 **Ask a vision question.** Add `images` (local png/jpg/jpeg/gif/webp paths) and the
 plugin auto-detects which configured members can actually see — Ollama via its
 `/api/show` capabilities, self-hosted/cloud OpenAI-compatible and Anthropic
-members via a real probe request, `claude-cli`/`codex-cli` never (no image path
-through that CLI subprocess). **Only vision-capable members are queried**; the
-rest are skipped and reported in the result's `visionRouting`:
+members via a real probe request, `codex-cli` via its native `-i` image flag,
+`claude-cli` via a narrowly-scoped, permission-enforced `Read` (the CLI has no
+image flag, so the image goes to a fresh temp dir and the model reads it from
+there — nothing else is loosened). **Only vision-capable members are queried**;
+the rest are skipped and reported in the result's `visionRouting`:
 
 ```
 ask_council(question="What does this chart show?", images=["/Users/me/chart.png"])
 ```
-Caps: 8 MB/image, 24 MB total, 6 images. In practice, local vision-capable models
-vary a lot in reading accuracy on dense text/screenshots — the routing/format is
-guaranteed correct, but double-check answers on anything text-heavy, or use a
-stronger vision model (a cloud API key, or a dedicated vision-tuned local model)
-for higher-fidelity reads.
+Caps: 8 MB/image, 24 MB total, 6 images. In practice, small local vision models
+vary a lot in reading accuracy on dense text/screenshots (they may engage with
+the image but misread specifics); Claude/ChatGPT (`claude-cli`/`codex-cli`) and
+a properly-sized self-hosted vision model both read fine text accurately.
 
 **Run it in the background.** A deconfliction/dialectic run over slow local models
 can take a while — `ask_council_async` returns a `job_id` immediately so you keep

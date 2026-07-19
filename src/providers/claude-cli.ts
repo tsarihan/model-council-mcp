@@ -8,18 +8,41 @@
  * it is NOT the (prohibited) reuse of a subscription OAuth token against the raw
  * API.
  *
- * The nested call is locked down: all tools are disabled (`--tools ""`), MCP is
- * restricted (`--strict-mcp-config` with no config, avoiding recursion back into
- * this plugin), sessions aren't persisted, and — crucially — ANTHROPIC_API_KEY
- * and ANTHROPIC_AUTH_TOKEN are stripped from the child environment, because the
- * CLI silently prefers an API key over the subscription when one is present.
+ * The nested call is locked down: all tools are disabled by default (`--tools
+ * ""`), MCP is restricted (`--strict-mcp-config` with no config, avoiding
+ * recursion back into this plugin), sessions aren't persisted, and —
+ * crucially — ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN are stripped from the
+ * child environment, because the CLI silently prefers an API key over the
+ * subscription when one is present.
+ *
+ * Vision (images): the CLI has no `--image` flag, so an attached image is
+ * written to a fresh, uniquely-named temp directory and the invocation is
+ * loosened for THAT CALL ONLY to `--tools Read --add-dir <thatTempDir>` — the
+ * single narrowest tool needed to view a file, scoped to a directory
+ * containing nothing but the image(s). `--add-dir` is an enforced permission
+ * boundary, not advisory: a Read attempt outside the granted directory is
+ * denied by the CLI itself (verified empirically — it surfaces as a
+ * `permission_denials` entry, not a refusal the model could talk itself out
+ * of). Every other property of the lockdown (no MCP, no other tools, no
+ * session persistence) is unchanged. Calls with no images keep the original
+ * `--tools ""` — nothing is loosened unless there's an image to show it.
  */
 import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { ChatImage, ChatMessage, CompletionOptions, Provider } from './base.js';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
-import { ChatMessage, CompletionOptions, Provider } from './base.js';
 
 const DEFAULT_MODELS = ['opus', 'sonnet'];
 const DEFAULT_TIMEOUT_MS = 300_000;
+
+const MIME_EXT: Record<ChatImage['mimeType'], string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+};
 
 interface RunResult {
   code: number;
@@ -73,14 +96,13 @@ export class ClaudeCliProvider implements Provider {
   }
 
   /**
-   * Always false: `complete()` flattens the conversation into a single text
-   * prompt piped over stdin (`-p`), with no image-attachment flag in this
-   * locked-down invocation (`--tools ''`, `--strict-mcp-config`). The
-   * underlying Claude models ARE vision-capable, but this CLI subprocess path
-   * has no route to hand them an image, so the honest answer here is no.
+   * True: the underlying Claude models are vision-capable, and `complete()`
+   * gives the CLI a real (permission-enforced) way to view an attached image
+   * — see the file header. Uniform across opus/sonnet/haiku; the mechanism is
+   * CLI-invocation-level, not model-level.
    */
   async supportsVision(): Promise<boolean> {
-    return false;
+    return true;
   }
 
   async complete(
@@ -93,64 +115,101 @@ export class ClaudeCliProvider implements Provider {
       .map(m => m.content)
       .join('\n\n');
 
-    // Flatten the conversation into a single prompt (passed via stdin to avoid
-    // argv length limits on large judge prompts).
-    const prompt = messages
-      .filter(m => m.role !== 'system')
-      .map(m => (m.role === 'assistant' ? `Assistant: ${m.content}` : m.content))
-      .join('\n\n');
-
-    // Replace Claude Code's default (coding-agent) system prompt with a neutral
-    // council-member persona so `claude-cli:*` members behave like a plain model
-    // — matching the `anthropic:*` API provider rather than the CLI's harness.
-    const base =
-      'You are a member of a model council. Answer the question directly, ' +
-      'neutrally, and concisely. Do not use tools or ask follow-up questions.';
-    const systemText = [
-      base,
-      systemParts,
-      opts.jsonMode ? 'Respond with valid JSON only.' : '',
-    ]
-      .filter(Boolean)
-      .join('\n\n');
-
-    const args = [
-      '-p',
-      '--model', model,
-      '--output-format', 'json',
-      '--tools', '',            // disable all built-in tools
-      '--strict-mcp-config',    // no MCP servers (no recursion into this plugin)
-      '--no-session-persistence',
-      '--system-prompt', systemText, // replace the default coding-agent persona
-    ];
-
-    // CLI reasoning agents are legitimately slow; keep DEFAULT_TIMEOUT_MS as a
-    // floor so the (shorter) generic request timeout can't cut off a valid answer,
-    // while a higher REQUEST_TIMEOUT_MS can still raise it. Still bounded (no hang).
-    const timeoutMs = Math.max(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
-    const { code, stdout, stderr } = await this.run(args, prompt, timeoutMs);
-    if (code !== 0) {
-      throw new Error(
-        `claude CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || '(no stderr)'}`,
-      );
+    // Images are attached only on a user message; the orchestrator only routes
+    // here at all when supportsVision() was confirmed for this member.
+    const images = messages.find(m => m.role === 'user' && m.images?.length)?.images ?? [];
+    let imageDir: string | undefined;
+    let imagePaths: string[] = [];
+    if (images.length > 0) {
+      imageDir = mkdtempSync(join(tmpdir(), 'claude-council-img-'));
+      imagePaths = images.map((img, i) => {
+        const path = join(imageDir!, `image-${i}.${MIME_EXT[img.mimeType]}`);
+        writeFileSync(path, Buffer.from(img.base64, 'base64'));
+        return path;
+      });
     }
 
-    let parsed: { result?: unknown; is_error?: unknown };
     try {
-      parsed = JSON.parse(stdout);
-    } catch {
-      throw new Error(
-        `claude CLI returned non-JSON output: ${stdout.trim().slice(0, 300)}`,
-      );
+      // Flatten the conversation into a single prompt (passed via stdin to avoid
+      // argv length limits on large judge prompts). When images are attached,
+      // append an explicit instruction naming their paths — the model has no
+      // other way to know they exist.
+      const imageNote = imagePaths.length
+        ? `\n\n(${imagePaths.length} image(s) are attached. Read each one with the ` +
+          `Read tool before answering: ${imagePaths.join(', ')})`
+        : '';
+      const prompt = messages
+        .filter(m => m.role !== 'system')
+        .map(m => (m.role === 'assistant' ? `Assistant: ${m.content}` : m.content))
+        .join('\n\n') + imageNote;
+
+      // Replace Claude Code's default (coding-agent) system prompt with a neutral
+      // council-member persona so `claude-cli:*` members behave like a plain model
+      // — matching the `anthropic:*` API provider rather than the CLI's harness.
+      const base =
+        'You are a member of a model council. Answer the question directly, ' +
+        'neutrally, and concisely. ' +
+        (imagePaths.length
+          ? 'Use the Read tool only to view the attached image(s); do not use it for anything else, and do not ask follow-up questions.'
+          : 'Do not use tools or ask follow-up questions.');
+      const systemText = [
+        base,
+        systemParts,
+        opts.jsonMode ? 'Respond with valid JSON only.' : '',
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+
+      const args = [
+        '-p',
+        '--model', model,
+        '--output-format', 'json',
+        // No images: fully locked down (no tools at all). With images: the
+        // single narrowest tool needed (Read), scoped to a directory holding
+        // nothing but the image(s) — see the file header for why this is safe.
+        '--tools', imagePaths.length ? 'Read' : '',
+        ...(imageDir ? ['--add-dir', imageDir] : []),
+        '--strict-mcp-config',    // no MCP servers (no recursion into this plugin)
+        '--no-session-persistence',
+        '--system-prompt', systemText, // replace the default coding-agent persona
+      ];
+
+      // CLI reasoning agents are legitimately slow; keep DEFAULT_TIMEOUT_MS as a
+      // floor so the (shorter) generic request timeout can't cut off a valid answer,
+      // while a higher REQUEST_TIMEOUT_MS can still raise it. Still bounded (no hang).
+      const timeoutMs = Math.max(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
+      const { code, stdout, stderr } = await this.run(args, prompt, timeoutMs);
+      if (code !== 0) {
+        throw new Error(
+          `claude CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || '(no stderr)'}`,
+        );
+      }
+
+      let parsed: { result?: unknown; is_error?: unknown };
+      try {
+        parsed = JSON.parse(stdout);
+      } catch {
+        throw new Error(
+          `claude CLI returned non-JSON output: ${stdout.trim().slice(0, 300)}`,
+        );
+      }
+      const result = typeof parsed.result === 'string' ? parsed.result : '';
+      // The CLI can report failures (rate limit, max turns) with exit 0 + is_error.
+      if (parsed.is_error === true) {
+        throw new Error(
+          `claude CLI reported an error: ${result.slice(0, 300) || '(no detail)'}`,
+        );
+      }
+      return result;
+    } finally {
+      if (imageDir) {
+        try {
+          rmSync(imageDir, { recursive: true, force: true });
+        } catch {
+          /* best-effort cleanup */
+        }
+      }
     }
-    const result = typeof parsed.result === 'string' ? parsed.result : '';
-    // The CLI can report failures (rate limit, max turns) with exit 0 + is_error.
-    if (parsed.is_error === true) {
-      throw new Error(
-        `claude CLI reported an error: ${result.slice(0, 300) || '(no detail)'}`,
-      );
-    }
-    return result;
   }
 
   private run(

@@ -14,16 +14,28 @@
  * are stripped from the child env so the ChatGPT subscription login is used.
  *
  * Note: Codex is a coding agent, so members answer with a coding-agent flavor.
+ *
+ * Vision (images): unlike claude-cli, `codex exec` has a first-party
+ * `-i/--image <FILE>...` flag — no tool-loosening workaround needed. Each
+ * attached image is written into the same per-call temp dir already used for
+ * the isolated working directory, then passed via `-i`.
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ChatImage, ChatMessage, CompletionOptions, Provider } from './base.js';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
-import { ChatMessage, CompletionOptions, Provider } from './base.js';
 
 const DEFAULT_MODELS = ['default'];
 const DEFAULT_TIMEOUT_MS = 300_000;
+
+const MIME_EXT: Record<ChatImage['mimeType'], string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+};
 
 interface RunResult {
   code: number;
@@ -76,13 +88,9 @@ export class CodexCliProvider implements Provider {
     }));
   }
 
-  /**
-   * Always false: `complete()` flattens the conversation into a single text
-   * prompt (`codex exec`), with no image-attachment path in this locked-down,
-   * read-only-sandboxed invocation. Same rationale as ClaudeCliProvider.
-   */
+  /** True: `codex exec` has a first-party `-i/--image` flag (see file header). */
   async supportsVision(): Promise<boolean> {
-    return false;
+    return true;
   }
 
   async complete(
@@ -129,6 +137,15 @@ export class CodexCliProvider implements Provider {
     if (model && model !== 'default') {
       args.push('-m', model);
     }
+    // Images are attached only on a user message; the orchestrator only routes
+    // here at all when supportsVision() was confirmed for this member. Written
+    // into the same per-call temp dir (cleaned up in the finally below).
+    const images = messages.find(m => m.role === 'user' && m.images?.length)?.images ?? [];
+    images.forEach((img, i) => {
+      const path = join(dir, `image-${i}.${MIME_EXT[img.mimeType]}`);
+      writeFileSync(path, Buffer.from(img.base64, 'base64'));
+      args.push('-i', path);
+    });
 
     try {
       // Codex is a slow reasoning agent; keep DEFAULT_TIMEOUT_MS as a floor so the

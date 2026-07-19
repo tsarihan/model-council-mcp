@@ -565,6 +565,26 @@ async function main() {
     await cliClient.callTool({ name: 'configure_council', arguments: { models: ['claude-cli:erroring'], response_mode: 'individual' } });
     const errRes = parseToolResult(await cliClient.callTool({ name: 'ask_council', arguments: { question: 'x', mode: 'individual' } }));
     check('claude-cli: is_error surfaced as member error', !!errRes.responses?.[0]?.error && !errRes.responses?.[0]?.response, JSON.stringify(errRes.responses?.[0]));
+
+    // Vision: image is written to a fresh temp dir and read back via the
+    // Read-tool-workaround (see claude-cli.ts header) — asserts the tool was
+    // narrowed to exactly "Read" (not left fully open) and the mock could
+    // genuinely open the file at the path the provider named in the prompt.
+    await cliClient.callTool({ name: 'configure_council', arguments: { models: ['claude-cli:opus'], response_mode: 'individual' } });
+    const cliImgDir = mkdtempSync(join(tmpdir(), 'mc-cliimg-'));
+    const cliImgPath = join(cliImgDir, 'shot.png');
+    writeFileSync(cliImgPath, Buffer.from('CLAUDE_CLI_IMAGE_BYTES_557'));
+    try {
+      const cliVis = parseToolResult(await cliClient.callTool({
+        name: 'ask_council', arguments: { question: 'describe this', mode: 'individual', images: [cliImgPath] },
+      }));
+      check('claude-cli vision: visionRouting queried opus', cliVis.visionRouting?.queriedVisionModels?.includes('claude-cli:opus'), JSON.stringify(cliVis.visionRouting));
+      const visResp = cliVis.responses?.[0]?.response ?? '';
+      check('claude-cli vision: tool narrowed to Read only (not fully open)', /tools=read\b/.test(visResp), visResp);
+      check('claude-cli vision: mock genuinely read the image bytes at the given path', /read:OK\(/.test(visResp) && !/DENIED|MISSING/.test(visResp), visResp);
+    } finally {
+      rmSync(cliImgDir, { recursive: true, force: true });
+    }
   } finally {
     await cliClient.close();
   }
@@ -605,6 +625,24 @@ async function main() {
     check('codex-cli: CODEX_API_KEY stripped', cx.responses?.every(r => /ckey=unset/.test(r.response ?? '')));
     check('codex-cli: read-only sandbox', cx.responses?.every(r => /sandbox=read-only/.test(r.response ?? '')));
     check('codex-cli: prompt reached the CLI via stdin', cx.responses?.every(r => /hi codex/.test(r.response ?? '')));
+
+    // Vision: codex has a first-party -i/--image flag (no workaround needed) —
+    // asserts the provider actually wrote real image bytes at the path it
+    // passed, and the mock (standing in for the real CLI) could read them back.
+    await codexClient.callTool({ name: 'configure_council', arguments: { models: ['codex-cli:default'], response_mode: 'individual' } });
+    const cxImgDir = mkdtempSync(join(tmpdir(), 'mc-codeximg-'));
+    const cxImgPath = join(cxImgDir, 'shot.jpg');
+    writeFileSync(cxImgPath, Buffer.from('CODEX_CLI_IMAGE_BYTES_991'));
+    try {
+      const cxVis = parseToolResult(await codexClient.callTool({
+        name: 'ask_council', arguments: { question: 'describe this', mode: 'individual', images: [cxImgPath] },
+      }));
+      check('codex-cli vision: visionRouting queried default', cxVis.visionRouting?.queriedVisionModels?.includes('codex-cli:default'), JSON.stringify(cxVis.visionRouting));
+      const cxVisResp = cxVis.responses?.[0]?.response ?? '';
+      check('codex-cli vision: -i flag carried a real, readable image file', /images:OK\(/.test(cxVisResp) && !/MISSING/.test(cxVisResp), cxVisResp);
+    } finally {
+      rmSync(cxImgDir, { recursive: true, force: true });
+    }
   } finally {
     await codexClient.close();
   }

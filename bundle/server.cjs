@@ -34713,8 +34713,17 @@ Respond with valid JSON only.`.trim() : systemParts || void 0;
 
 // src/providers/claude-cli.ts
 var import_node_child_process = require("node:child_process");
+var import_node_fs5 = require("node:fs");
+var import_node_os2 = require("node:os");
+var import_node_path3 = require("node:path");
 var DEFAULT_MODELS = ["opus", "sonnet"];
 var DEFAULT_TIMEOUT_MS = 3e5;
+var MIME_EXT = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp"
+};
 function killTree(child) {
   try {
     if (child.pid) process.kill(-child.pid, "SIGKILL");
@@ -34753,62 +34762,87 @@ var ClaudeCliProvider = class {
     }));
   }
   /**
-   * Always false: `complete()` flattens the conversation into a single text
-   * prompt piped over stdin (`-p`), with no image-attachment flag in this
-   * locked-down invocation (`--tools ''`, `--strict-mcp-config`). The
-   * underlying Claude models ARE vision-capable, but this CLI subprocess path
-   * has no route to hand them an image, so the honest answer here is no.
+   * True: the underlying Claude models are vision-capable, and `complete()`
+   * gives the CLI a real (permission-enforced) way to view an attached image
+   * — see the file header. Uniform across opus/sonnet/haiku; the mechanism is
+   * CLI-invocation-level, not model-level.
    */
   async supportsVision() {
-    return false;
+    return true;
   }
   async complete(model, messages, opts = {}) {
     const systemParts = messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n");
-    const prompt = messages.filter((m2) => m2.role !== "system").map((m2) => m2.role === "assistant" ? `Assistant: ${m2.content}` : m2.content).join("\n\n");
-    const base = "You are a member of a model council. Answer the question directly, neutrally, and concisely. Do not use tools or ask follow-up questions.";
-    const systemText = [
-      base,
-      systemParts,
-      opts.jsonMode ? "Respond with valid JSON only." : ""
-    ].filter(Boolean).join("\n\n");
-    const args = [
-      "-p",
-      "--model",
-      model,
-      "--output-format",
-      "json",
-      "--tools",
-      "",
-      // disable all built-in tools
-      "--strict-mcp-config",
-      // no MCP servers (no recursion into this plugin)
-      "--no-session-persistence",
-      "--system-prompt",
-      systemText
-      // replace the default coding-agent persona
-    ];
-    const timeoutMs = Math.max(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
-    const { code, stdout, stderr } = await this.run(args, prompt, timeoutMs);
-    if (code !== 0) {
-      throw new Error(
-        `claude CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || "(no stderr)"}`
-      );
+    const images = messages.find((m2) => m2.role === "user" && m2.images?.length)?.images ?? [];
+    let imageDir;
+    let imagePaths = [];
+    if (images.length > 0) {
+      imageDir = (0, import_node_fs5.mkdtempSync)((0, import_node_path3.join)((0, import_node_os2.tmpdir)(), "claude-council-img-"));
+      imagePaths = images.map((img, i2) => {
+        const path = (0, import_node_path3.join)(imageDir, `image-${i2}.${MIME_EXT[img.mimeType]}`);
+        (0, import_node_fs5.writeFileSync)(path, Buffer.from(img.base64, "base64"));
+        return path;
+      });
     }
-    let parsed;
     try {
-      parsed = JSON.parse(stdout);
-    } catch {
-      throw new Error(
-        `claude CLI returned non-JSON output: ${stdout.trim().slice(0, 300)}`
-      );
+      const imageNote = imagePaths.length ? `
+
+(${imagePaths.length} image(s) are attached. Read each one with the Read tool before answering: ${imagePaths.join(", ")})` : "";
+      const prompt = messages.filter((m2) => m2.role !== "system").map((m2) => m2.role === "assistant" ? `Assistant: ${m2.content}` : m2.content).join("\n\n") + imageNote;
+      const base = "You are a member of a model council. Answer the question directly, neutrally, and concisely. " + (imagePaths.length ? "Use the Read tool only to view the attached image(s); do not use it for anything else, and do not ask follow-up questions." : "Do not use tools or ask follow-up questions.");
+      const systemText = [
+        base,
+        systemParts,
+        opts.jsonMode ? "Respond with valid JSON only." : ""
+      ].filter(Boolean).join("\n\n");
+      const args = [
+        "-p",
+        "--model",
+        model,
+        "--output-format",
+        "json",
+        // No images: fully locked down (no tools at all). With images: the
+        // single narrowest tool needed (Read), scoped to a directory holding
+        // nothing but the image(s) — see the file header for why this is safe.
+        "--tools",
+        imagePaths.length ? "Read" : "",
+        ...imageDir ? ["--add-dir", imageDir] : [],
+        "--strict-mcp-config",
+        // no MCP servers (no recursion into this plugin)
+        "--no-session-persistence",
+        "--system-prompt",
+        systemText
+        // replace the default coding-agent persona
+      ];
+      const timeoutMs = Math.max(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
+      const { code, stdout, stderr } = await this.run(args, prompt, timeoutMs);
+      if (code !== 0) {
+        throw new Error(
+          `claude CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || "(no stderr)"}`
+        );
+      }
+      let parsed;
+      try {
+        parsed = JSON.parse(stdout);
+      } catch {
+        throw new Error(
+          `claude CLI returned non-JSON output: ${stdout.trim().slice(0, 300)}`
+        );
+      }
+      const result = typeof parsed.result === "string" ? parsed.result : "";
+      if (parsed.is_error === true) {
+        throw new Error(
+          `claude CLI reported an error: ${result.slice(0, 300) || "(no detail)"}`
+        );
+      }
+      return result;
+    } finally {
+      if (imageDir) {
+        try {
+          (0, import_node_fs5.rmSync)(imageDir, { recursive: true, force: true });
+        } catch {
+        }
+      }
     }
-    const result = typeof parsed.result === "string" ? parsed.result : "";
-    if (parsed.is_error === true) {
-      throw new Error(
-        `claude CLI reported an error: ${result.slice(0, 300) || "(no detail)"}`
-      );
-    }
-    return result;
   }
   run(args, input, timeoutMs) {
     return new Promise((resolve3, reject) => {
@@ -34856,11 +34890,17 @@ var ClaudeCliProvider = class {
 
 // src/providers/codex-cli.ts
 var import_node_child_process2 = require("node:child_process");
-var import_node_fs5 = require("node:fs");
-var import_node_os2 = require("node:os");
-var import_node_path3 = require("node:path");
+var import_node_fs6 = require("node:fs");
+var import_node_os3 = require("node:os");
+var import_node_path4 = require("node:path");
 var DEFAULT_MODELS2 = ["default"];
 var DEFAULT_TIMEOUT_MS2 = 3e5;
+var MIME_EXT2 = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp"
+};
 function killTree2(child) {
   try {
     if (child.pid) process.kill(-child.pid, "SIGKILL");
@@ -34898,13 +34938,9 @@ var CodexCliProvider = class {
       label: `Codex ${m2} (ChatGPT subscription)`
     }));
   }
-  /**
-   * Always false: `complete()` flattens the conversation into a single text
-   * prompt (`codex exec`), with no image-attachment path in this locked-down,
-   * read-only-sandboxed invocation. Same rationale as ClaudeCliProvider.
-   */
+  /** True: `codex exec` has a first-party `-i/--image` flag (see file header). */
   async supportsVision() {
-    return false;
+    return true;
   }
   async complete(model, messages, opts = {}) {
     const systemParts = messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n");
@@ -34916,8 +34952,8 @@ var CodexCliProvider = class {
       opts.jsonMode ? "Respond with valid JSON only." : "",
       convo
     ].filter(Boolean).join("\n\n");
-    const dir = (0, import_node_fs5.mkdtempSync)((0, import_node_path3.join)((0, import_node_os2.tmpdir)(), "codex-council-"));
-    const outFile = (0, import_node_path3.join)(dir, "out.txt");
+    const dir = (0, import_node_fs6.mkdtempSync)((0, import_node_path4.join)((0, import_node_os3.tmpdir)(), "codex-council-"));
+    const outFile = (0, import_node_path4.join)(dir, "out.txt");
     const args = [
       "exec",
       "--sandbox",
@@ -34936,6 +34972,12 @@ var CodexCliProvider = class {
     if (model && model !== "default") {
       args.push("-m", model);
     }
+    const images = messages.find((m2) => m2.role === "user" && m2.images?.length)?.images ?? [];
+    images.forEach((img, i2) => {
+      const path = (0, import_node_path4.join)(dir, `image-${i2}.${MIME_EXT2[img.mimeType]}`);
+      (0, import_node_fs6.writeFileSync)(path, Buffer.from(img.base64, "base64"));
+      args.push("-i", path);
+    });
     try {
       const timeoutMs = Math.max(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS2, DEFAULT_TIMEOUT_MS2);
       const { code, stderr } = await this.run(args, prompt, timeoutMs);
@@ -34946,7 +34988,7 @@ var CodexCliProvider = class {
       }
       let out = "";
       try {
-        out = (0, import_node_fs5.readFileSync)(outFile, "utf8");
+        out = (0, import_node_fs6.readFileSync)(outFile, "utf8");
       } catch {
         out = "";
       }
@@ -34960,7 +35002,7 @@ var CodexCliProvider = class {
       return trimmed;
     } finally {
       try {
-        (0, import_node_fs5.rmSync)(dir, { recursive: true, force: true });
+        (0, import_node_fs6.rmSync)(dir, { recursive: true, force: true });
       } catch {
       }
     }
@@ -36265,7 +36307,7 @@ function quotaWarning(report, tiers, subs) {
 
 // src/context.ts
 var import_promises = require("node:fs/promises");
-var import_node_path4 = require("node:path");
+var import_node_path5 = require("node:path");
 var MAX_FILE_BYTES = 256 * 1024;
 var MAX_TOTAL_BYTES = 768 * 1024;
 var MAX_FILES = 20;
@@ -36284,8 +36326,8 @@ ${inline}`);
   let total = 0;
   for (const raw of files) {
     if (typeof raw !== "string" || !raw.trim()) continue;
-    const path = (0, import_node_path4.resolve)(raw);
-    if (IMAGE_EXTENSIONS.has((0, import_node_path4.extname)(path).toLowerCase())) {
+    const path = (0, import_node_path5.resolve)(raw);
+    if (IMAGE_EXTENSIONS.has((0, import_node_path5.extname)(path).toLowerCase())) {
       throw new Error(
         `${raw} looks like an image \u2014 "files" reads text and would send garbled data. Use the "images" parameter instead.`
       );
@@ -36328,7 +36370,7 @@ ${question}`;
 
 // src/images.ts
 var import_promises2 = require("node:fs/promises");
-var import_node_path5 = require("node:path");
+var import_node_path6 = require("node:path");
 var MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 var MAX_TOTAL_IMAGE_BYTES = 24 * 1024 * 1024;
 var MAX_IMAGES = 6;
@@ -36348,8 +36390,8 @@ async function loadImages(paths) {
   let total = 0;
   for (const raw of paths) {
     if (typeof raw !== "string" || !raw.trim()) continue;
-    const path = (0, import_node_path5.resolve)(raw);
-    const ext = (0, import_node_path5.extname)(path).toLowerCase();
+    const path = (0, import_node_path6.resolve)(raw);
+    const ext = (0, import_node_path6.extname)(path).toLowerCase();
     const mimeType = EXT_TO_MIME[ext];
     if (!mimeType) {
       throw new Error(
@@ -36728,7 +36770,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.11"
+    version: "0.2.12"
   },
   {
     capabilities: { tools: {} },

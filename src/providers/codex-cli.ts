@@ -76,6 +76,15 @@ export class CodexCliProvider implements Provider {
     }));
   }
 
+  /**
+   * Always false: `complete()` flattens the conversation into a single text
+   * prompt (`codex exec`), with no image-attachment path in this locked-down,
+   * read-only-sandboxed invocation. Same rationale as ClaudeCliProvider.
+   */
+  async supportsVision(): Promise<boolean> {
+    return false;
+  }
+
   async complete(
     model: string,
     messages: ChatMessage[],

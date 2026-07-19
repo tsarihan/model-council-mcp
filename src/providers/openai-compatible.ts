@@ -7,7 +7,7 @@ import OpenAI from 'openai';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
 import {
   ChatMessage, CompletionOptions, Provider, stripThinkBlocks, clampMaxTokens,
-  DEFAULT_COMPLETION_TIMEOUT_MS,
+  DEFAULT_COMPLETION_TIMEOUT_MS, PROBE_IMAGE_BASE64, isTimeoutError,
 } from './base.js';
 
 // Known-static model lists for cloud providers that don't enumerate via API
@@ -32,12 +32,40 @@ export function openaiBaseURL(baseUrl: string): string {
   return /\/v\d+$/.test(base) ? base : `${base}/v1`;
 }
 
+/**
+ * Build OpenAI's wire message shape: a message with images becomes multipart
+ * content (a text part + one image_url part per image, each a `data:` URI); a
+ * message with no images keeps the plain string form other servers expect.
+ * Exported so the shape can be asserted directly in unit tests.
+ */
+export function toOpenAIMessages(
+  messages: ChatMessage[],
+): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
+  return messages.map(m => {
+    if (m.role === 'user' && m.images?.length) {
+      return {
+        role: 'user',
+        content: [
+          { type: 'text', text: m.content },
+          ...m.images.map(img => ({
+            type: 'image_url' as const,
+            image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
+          })),
+        ],
+      };
+    }
+    return { role: m.role, content: m.content } as OpenAI.Chat.Completions.ChatCompletionMessageParam;
+  });
+}
+
 export class OpenAICompatibleProvider implements Provider {
   readonly serverId: string;
   readonly config: ServerConfig;
   private client: OpenAI;
   /** Per-model advertised context window (max_model_len); null = not advertised. */
   private maxLenCache = new Map<string, number | null>();
+  /** Per-model vision-probe result. Only definitive answers are cached (see supportsVision). */
+  private visionCache = new Map<string, boolean>();
 
   constructor(config: ServerConfig) {
     this.config = config;
@@ -70,6 +98,53 @@ export class OpenAICompatibleProvider implements Provider {
     }
     if (!this.maxLenCache.has(model)) this.maxLenCache.set(model, null);
     return this.maxLenCache.get(model) ?? undefined;
+  }
+
+  /**
+   * Functional probe: no OpenAI-compatible endpoint (self-hosted or cloud)
+   * advertises vision support via /v1/models, so the only generic way to find
+   * out is to send a real request with an image part and see whether it's
+   * accepted. Cost is negligible (max_tokens: 1, a 32×32 test image).
+   *
+   * Only a DEFINITIVE answer is cached: a clean 200 (true) or a 4xx that
+   * rejects the request (false — the server validated and refused the image
+   * part). A timeout/connection error is transient — it returns false for
+   * this call only, without poisoning the cache, so a wedged server doesn't
+   * permanently mislabel a vision-capable model as text-only.
+   *
+   * Caveat: this proves the endpoint ACCEPTS an image, not that the model
+   * meaningfully attends to it — some servers accept and silently ignore
+   * unsupported content parts. It is the best available generic signal.
+   */
+  async supportsVision(model: string): Promise<boolean> {
+    const cached = this.visionCache.get(model);
+    if (cached !== undefined) return cached;
+    try {
+      await this.client.chat.completions.create(
+        {
+          model,
+          max_tokens: 1,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: '.' },
+                { type: 'image_url', image_url: { url: `data:image/png;base64,${PROBE_IMAGE_BASE64}` } },
+              ],
+            },
+          ],
+        },
+        { timeout: 15_000 },
+      );
+      this.visionCache.set(model, true);
+      return true;
+    } catch (err) {
+      if (isTimeoutError(err)) return false; // transient — don't cache
+      const status = (err as { status?: number }).status;
+      if (typeof status === 'number' && status >= 500) return false; // server error — don't cache
+      this.visionCache.set(model, false); // 4xx (or unrecognized shape) → definitive rejection
+      return false;
+    }
   }
 
   async ping(): Promise<boolean> {
@@ -122,10 +197,11 @@ export class OpenAICompatibleProvider implements Provider {
     // Clamp to the server's advertised context so a large default max_tokens
     // (e.g. 16000) doesn't get hard-rejected by servers like vLLM.
     const maxTokens = clampMaxTokens(opts.maxTokens ?? 16000, await this.maxModelLen(model), messages);
+    const wireMessages = toOpenAIMessages(messages);
     const res = await this.client.chat.completions.create(
       {
         model,
-        messages,
+        messages: wireMessages,
         temperature: opts.temperature ?? 0.7,
         max_tokens: maxTokens,
         ...(opts.jsonMode ? { response_format: { type: 'json_object' } } : {}),

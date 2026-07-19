@@ -8,11 +8,16 @@
  * can tell attachments apart from the question.
  */
 import { readFile, stat } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { extname, resolve } from 'node:path';
 
 export const MAX_FILE_BYTES = 256 * 1024; // 256 KB per file
 export const MAX_TOTAL_BYTES = 768 * 1024; // 768 KB across all files
 export const MAX_FILES = 20;
+
+/** Binary image extensions are rejected here — read as UTF-8 they become
+ *  mojibake sent to every member. Use the `images` parameter instead, which
+ *  base64-encodes them and routes only to vision-capable members. */
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.tif']);
 
 export interface ContextInput {
   context?: string; // inline background text
@@ -44,6 +49,11 @@ export async function buildAugmentedQuestion(
   for (const raw of files) {
     if (typeof raw !== 'string' || !raw.trim()) continue;
     const path = resolve(raw);
+    if (IMAGE_EXTENSIONS.has(extname(path).toLowerCase())) {
+      throw new Error(
+        `${raw} looks like an image — "files" reads text and would send garbled data. Use the "images" parameter instead.`,
+      );
+    }
     let info;
     try {
       info = await stat(path);

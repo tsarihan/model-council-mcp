@@ -2,7 +2,7 @@
  * Shared member-query machinery: bounded-concurrency fan-out and
  * retry-on-empty completion.
  */
-import { ChatMessage, CompletionOptions, Provider, isTimeoutError } from '../providers/base.js';
+import { ChatImage, ChatMessage, CompletionOptions, Provider, isTimeoutError } from '../providers/base.js';
 import { ModelId, PoolKey, RawResponse, RuntimeConfig } from '../types.js';
 import { modelIdLabel } from '../config.js';
 
@@ -119,6 +119,7 @@ export async function queryMembersVarying(
   members: Member[],
   runtime: RuntimeConfig,
   opts: CompletionOptions = {},
+  images?: ChatImage[],
 ): Promise<RawResponse[]> {
   const results: RawResponse[] = new Array(members.length);
   // Group tasks into per-provider pools so each subscription's concurrency
@@ -130,10 +131,15 @@ export async function queryMembersVarying(
       const label = modelIdLabel(member.modelId);
       const t0 = Date.now();
       try {
+        const userMessage: ChatMessage = {
+          role: 'user',
+          content: promptFor(member, i),
+          ...(images?.length ? { images } : {}),
+        };
         const response = await completeWithRetry(
           member.provider,
           member.modelId.model,
-          [{ role: 'user', content: promptFor(member, i) }],
+          [userMessage],
           { maxTokens: runtime.maxTokens, timeoutMs: runtime.requestTimeoutMs, ...opts },
           runtime.retries,
         );
@@ -172,6 +178,7 @@ export async function queryMembers(
   members: Member[],
   runtime: RuntimeConfig,
   opts: CompletionOptions = {},
+  images?: ChatImage[],
 ): Promise<RawResponse[]> {
-  return queryMembersVarying(() => question, members, runtime, opts);
+  return queryMembersVarying(() => question, members, runtime, opts, images);
 }

@@ -4,6 +4,13 @@ import {
   DEFAULT_COMPLETION_TIMEOUT_MS,
 } from './base.js';
 
+/** What we read out of a single /api/show call — cached together so context
+ *  length and vision capability never need two separate round trips. */
+interface ShowInfo {
+  ctxLen: number | null;
+  vision: boolean;
+}
+
 interface OllamaModel {
   name: string;
   details?: {
@@ -21,11 +28,31 @@ interface OllamaChatResponse {
   message: { content: string };
 }
 
+interface OllamaWireMessage {
+  role: string;
+  content: string;
+  images?: string[];
+}
+
+/**
+ * Build Ollama's wire message shape: images are a sibling `images` array of
+ * bare base64 strings (NOT `data:` URIs, and NOT nested inside `content`) —
+ * getting this wrong is exactly the "garbled data" failure mode. Exported so
+ * the shape can be asserted directly in unit tests without a live server.
+ */
+export function toOllamaMessages(messages: ChatMessage[]): OllamaWireMessage[] {
+  return messages.map(m => ({
+    role: m.role,
+    content: m.content,
+    ...(m.images?.length ? { images: m.images.map(img => img.base64) } : {}),
+  }));
+}
+
 export class OllamaProvider implements Provider {
   readonly serverId: string;
   readonly config: ServerConfig;
-  /** Per-model advertised context length (from /api/show); null = unknown. */
-  private ctxLenCache = new Map<string, number | null>();
+  /** Per-model /api/show result (context length + vision capability); undefined = not yet fetched. */
+  private showCache = new Map<string, ShowInfo>();
 
   constructor(config: ServerConfig) {
     this.config = config;
@@ -33,31 +60,53 @@ export class OllamaProvider implements Provider {
   }
 
   /**
-   * The model's advertised context length from /api/show (`model_info` holds an
-   * arch-prefixed `*.context_length`). Cached per model; undefined when unknown
-   * (e.g. Ollama cloud models) so callers skip clamping.
+   * Fetch and cache /api/show for `model` once, extracting both the advertised
+   * context length (`model_info`'s arch-prefixed `*.context_length`) and the
+   * `capabilities` array (vision support shows up as `"vision"`). A transient
+   * failure (unreachable host) is NOT cached, so a network blip doesn't
+   * permanently mislabel a model — it's simply retried on the next call.
+   */
+  private async fetchShow(model: string): Promise<ShowInfo> {
+    const cached = this.showCache.get(model);
+    if (cached) return cached;
+    const res = await fetch(`${this.config.baseUrl}/api/show`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`Ollama /api/show failed (${res.status})`);
+    const data = (await res.json()) as {
+      model_info?: Record<string, unknown>;
+      capabilities?: unknown;
+    };
+    const info = data.model_info ?? {};
+    const key = Object.keys(info).find(k => k.endsWith('.context_length'));
+    const ctxLen = key && typeof info[key] === 'number' ? (info[key] as number) : null;
+    const vision = Array.isArray(data.capabilities) && data.capabilities.includes('vision');
+    const result: ShowInfo = { ctxLen, vision };
+    this.showCache.set(model, result);
+    return result;
+  }
+
+  /**
+   * The model's advertised context length. Undefined when unknown (e.g. Ollama
+   * cloud models, or the host is unreachable) so callers skip clamping.
    */
   private async modelContextLen(model: string): Promise<number | undefined> {
-    const cached = this.ctxLenCache.get(model);
-    if (cached !== undefined) return cached ?? undefined;
-    let len: number | null = null;
     try {
-      const res = await fetch(`${this.config.baseUrl}/api/show`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model }),
-        signal: AbortSignal.timeout(5000),
-      });
-      if (res.ok) {
-        const info = ((await res.json()) as { model_info?: Record<string, unknown> }).model_info ?? {};
-        const key = Object.keys(info).find(k => k.endsWith('.context_length'));
-        if (key && typeof info[key] === 'number') len = info[key] as number;
-      }
+      return (await this.fetchShow(model)).ctxLen ?? undefined;
     } catch {
-      /* unreachable → leave unknown, no clamp */
+      return undefined; // unreachable → leave unknown, no clamp
     }
-    this.ctxLenCache.set(model, len);
-    return len ?? undefined;
+  }
+
+  async supportsVision(model: string): Promise<boolean> {
+    try {
+      return (await this.fetchShow(model)).vision;
+    } catch {
+      return false; // unreachable → treat as not vision-capable for this call only
+    }
   }
 
   async ping(): Promise<boolean> {
@@ -99,9 +148,10 @@ export class OllamaProvider implements Provider {
     const numPredict = clampMaxTokens(
       opts.maxTokens ?? 16000, await this.modelContextLen(model), messages,
     );
+    const wireMessages = toOllamaMessages(messages);
     const body = {
       model,
-      messages,
+      messages: wireMessages,
       stream: false,
       options: {
         temperature: opts.temperature ?? 0.7,

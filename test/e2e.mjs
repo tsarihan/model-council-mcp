@@ -93,7 +93,7 @@ async function main() {
     // ── Test: list_models ─────────────────────────────────────────────────────
     console.log('\n▶ list_models');
     const lm = parseToolResult(await client.callTool({ name: 'list_models', arguments: {} }));
-    check('lists all 5 models (incl. cloud + embedding)', lm.total === 5, `got ${lm.total}`);
+    check('lists all 6 models (incl. cloud, embedding, vision)', lm.total === 6, `got ${lm.total}`);
     check('big-judge present', lm.models.some(m => m.model === 'big-judge'));
     check('cloud model present', lm.models.some(m => m.model === 'kimi-k2:cloud'));
     check('embedding model present in list', lm.models.some(m => m.model === 'bge-m3'));
@@ -264,14 +264,14 @@ async function main() {
       name: 'ask_council', arguments: { question: 'auto test' },
     }));
     const autoLabels = autoInd.responses.map(r => r.label);
-    check('auto-council: 4 chat members (5 models − 1 embedding)', autoInd.responses.length === 4, `got ${autoInd.responses.length}: ${autoLabels.join(',')}`);
+    check('auto-council: 5 chat members (6 models − 1 embedding)', autoInd.responses.length === 5, `got ${autoInd.responses.length}: ${autoLabels.join(',')}`);
     check('auto-council includes :cloud model', autoLabels.includes('ollama:kimi-k2:cloud'));
     check('auto-council EXCLUDES embedding model', !autoLabels.some(l => l.includes('bge-m3')));
 
     // get_council_config reflects auto membership
     const autoCfg = parseToolResult(await client.callTool({ name: 'get_council_config', arguments: {} }));
     check('config reports auto source', /auto/i.test(autoCfg.council?.membershipSource ?? ''), autoCfg.council?.membershipSource);
-    check('config auto members = 4', autoCfg.council?.members?.length === 4, `got ${autoCfg.council?.members?.length}`);
+    check('config auto members = 5', autoCfg.council?.members?.length === 5, `got ${autoCfg.council?.members?.length}`);
 
     // auto-council categorized → judge auto-picks the 1T cloud model (tests T→B parsing)
     await resetMock();
@@ -435,6 +435,56 @@ async function main() {
       check('context: missing file → error surfaced', threw);
     } finally {
       rmSync(ctxDir, { recursive: true, force: true });
+    }
+
+    // ── Test: ask_council with images (vision auto-detection + routing) ───────
+    console.log('\n▶ ask_council with images (vision routing)');
+    const imgDir = mkdtempSync(join(tmpdir(), 'mc-img-'));
+    const imgFile = join(imgDir, 'photo.png');
+    // loadImages only reads+base64-encodes bytes (it doesn't decode the image),
+    // so arbitrary bytes with a .png extension are enough to exercise the path.
+    writeFileSync(imgFile, Buffer.from('FAKE_IMAGE_BYTES_9911'));
+    try {
+      await resetMock();
+      await client.callTool({
+        name: 'configure_council',
+        arguments: { models: ['ollama:small-a', 'ollama:vision-a'], response_mode: 'individual' },
+      });
+      const visAsk = parseToolResult(await client.callTool({
+        name: 'ask_council',
+        arguments: { question: "What's in this picture?", mode: 'individual', images: [imgFile] },
+      }));
+      check('vision: only the vision-capable member answered', visAsk.responses?.length === 1, `got ${visAsk.responses?.length}`);
+      check('vision: the vision member is the one queried', visAsk.responses?.[0]?.label === 'ollama:vision-a', visAsk.responses?.[0]?.label);
+      check('vision: visionRouting reports 1 image attached', visAsk.visionRouting?.imagesAttached === 1);
+      check('vision: visionRouting lists the queried vision model', visAsk.visionRouting?.queriedVisionModels?.includes('ollama:vision-a'));
+      check('vision: visionRouting lists the skipped non-vision model', visAsk.visionRouting?.skippedNonVision?.includes('ollama:small-a'));
+
+      // Wire-shape proof: the non-vision member must NEVER receive the image
+      // (a) it wasn't queried at all (asserted above via responses.length===1), and
+      // (b) the vision member's request carried the image in Ollama's correct
+      // shape — a sibling `images` array of bare base64 (no data: prefix).
+      const dbgVision = await (await fetch(`${MOCK_URL}/debug`)).json();
+      const expectedB64 = readFileSync(imgFile).toString('base64');
+      check('vision: image reached the model as a bare base64 sibling array (Ollama shape)',
+        Array.isArray(dbgVision.lastImages) && dbgVision.lastImages[0] === expectedB64 && !dbgVision.lastImages[0].startsWith('data:'));
+
+      // No vision-capable member configured → a clear error, not a silent
+      // text-only fallback that would misrepresent what the council actually saw.
+      await client.callTool({
+        name: 'configure_council',
+        arguments: { models: ['ollama:small-a', 'ollama:small-b'], response_mode: 'individual' },
+      });
+      let visErr = null;
+      try {
+        await client.callTool({
+          name: 'ask_council',
+          arguments: { question: 'x', images: [imgFile] },
+        });
+      } catch (e) { visErr = String(e?.message ?? e); }
+      check('vision: no vision-capable member → clear error (not a silent skip)', /vision-capable/i.test(visErr ?? ''), visErr);
+    } finally {
+      rmSync(imgDir, { recursive: true, force: true });
     }
 
     // ── Test: async / background job flow ─────────────────────────────────────

@@ -286,6 +286,27 @@ Send a question to the full council.
 }
 ```
 
+**Attach images (vision).** Add `"images"` (an array of local png/jpg/jpeg/gif/webp paths) to ask a vision question. Every configured member's vision support is auto-detected and cached — Ollama via `/api/show`'s `capabilities` field, OpenAI-compatible (vLLM/SGLang/TRT-LLM/OpenAI/Groq) and Anthropic via a real functional probe (a tiny test image + `max_tokens: 1`) since none of those advertise it otherwise. **Only the confirmed vision-capable members are queried** — everyone else is skipped for that call, never receiving the image in any form, correct or garbled. `claude-cli`/`codex-cli` members are always excluded: the underlying models are vision-capable, but the locked-down CLI subprocess path (`--tools ''`, read-only sandbox) has no route to attach an image. The routing decision is reported back in `visionRouting`. Caps: 8 MB/image, 24 MB total, 6 images. Passing an image to `"files"` (which reads as UTF-8 text) is rejected with a pointer to use `"images"` instead — that's the one other route to sending a model garbled data.
+
+```json
+{
+  "question": "What's the council verdict shown in this screenshot?",
+  "mode": "individual",
+  "images": ["/Users/me/Desktop/result.png"]
+}
+```
+```json
+{
+  "mode": "individual",
+  "responses": [ { "label": "ollama:llava3", "response": "…" } ],
+  "visionRouting": {
+    "imagesAttached": 1,
+    "queriedVisionModels": ["ollama:llava3"],
+    "skippedNonVision": ["ollama:llama3", "claude-cli:opus"]
+  }
+}
+```
+
 #### Individual result
 
 ```json

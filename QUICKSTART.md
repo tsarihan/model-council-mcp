@@ -149,6 +149,22 @@ ask_council(question="What's wrong with this auth flow?", mode="dialectic",
 ```
 Caps: 256 KB/file, 768 KB total, 20 files (pass an excerpt via `context` for bigger inputs).
 
+**Ask a vision question.** Add `images` (local png/jpg/jpeg/gif/webp paths) and the
+plugin auto-detects which configured members can actually see — Ollama via its
+`/api/show` capabilities, self-hosted/cloud OpenAI-compatible and Anthropic
+members via a real probe request, `claude-cli`/`codex-cli` never (no image path
+through that CLI subprocess). **Only vision-capable members are queried**; the
+rest are skipped and reported in the result's `visionRouting`:
+
+```
+ask_council(question="What does this chart show?", images=["/Users/me/chart.png"])
+```
+Caps: 8 MB/image, 24 MB total, 6 images. In practice, local vision-capable models
+vary a lot in reading accuracy on dense text/screenshots — the routing/format is
+guaranteed correct, but double-check answers on anything text-heavy, or use a
+stronger vision model (a cloud API key, or a dedicated vision-tuned local model)
+for higher-fidelity reads.
+
 **Run it in the background.** A deconfliction/dialectic run over slow local models
 can take a while — `ask_council_async` returns a `job_id` immediately so you keep
 working, and `get_council_result(job_id)` fetches the answer when ready
@@ -157,7 +173,7 @@ on `/reload-plugins`.
 
 Handy tools & commands:
 
-- `ask_council` — ask the council (modes above; `context` / `files` optional).
+- `ask_council` — ask the council (modes above; `context` / `files` / `images` optional).
 - `ask_council_async` / `get_council_result` — background runs + fetch/list.
 - `council_status` — detected environment, current members, tiers, per-provider
   concurrency, quota warning. (`/model-council:status` in the Claude Code plugin.)
@@ -177,6 +193,7 @@ Handy tools & commands:
 | Point Ollama at a remote host | `ollama_address` |
 | Give slow local models more time | `request_timeout_ms` (ms; default 120000) |
 | Review a file / add background | `ask_council(files=[…], context="…")` |
+| Ask about an image | `ask_council(images=[…])` — routed only to vision-capable members |
 | Not block on a long run | `ask_council_async` → `get_council_result(job_id)` |
 | Cap output length | `max_tokens` (auto-clamped down to each server's context) |
 | Change default answer style | `response_mode` |

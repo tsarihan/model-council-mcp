@@ -2,12 +2,14 @@
  * Mock Ollama backend for deterministic end-to-end testing.
  *
  * Emulates:
- *   GET  /api/tags   → model list (small-a 7B, small-b 7B, big-judge 70B)
+ *   GET  /api/tags   → model list (small-a 7B, small-b 7B, big-judge 70B, vision-a 8B, …)
+ *   POST /api/show   → per-model capabilities (vision-a reports "vision"; others don't)
  *   POST /api/chat   → context-aware response:
  *                        • categorization prompt → judge JSON (counter-driven)
  *                        • synthesis prompt      → final answer text
  *                        • deconflict round      → member convergence stance
  *                        • normal question       → member opinion
+ *                      also records the request's `images` array for wire-shape assertions
  *   POST /reset      → reset the categorization counter
  */
 import http from 'node:http';
@@ -33,7 +35,16 @@ const MODELS = [
   { name: 'kimi-k2:cloud', details: { parameter_size: '1T', family: 'kimi' }, size: 0 },
   // Embedding model — must be EXCLUDED from auto-council
   { name: 'bge-m3',    details: { parameter_size: '567M', family: 'bert' }, size: 1_200_000_000 },
+  // Vision-capable model, for vision-routing tests — reports "vision" in /api/show capabilities.
+  { name: 'vision-a',  details: { parameter_size: '8B',  family: 'llava' }, size: 5_000_000_000 },
 ];
+
+// /api/show capabilities per model name — everything not listed reports no vision.
+const CAPABILITIES = {
+  'vision-a': ['completion', 'tools', 'vision'],
+};
+
+let lastImages = null; // last /api/chat request's `images` array on the user message, if any
 
 // Judge categorization responses, indexed by call number.
 function categorizationFor(call) {
@@ -122,6 +133,7 @@ function chatResponse(body) {
   const content = lastUser?.content ?? '';
   const model = body.model ?? 'unknown';
   lastUserPrompt = content;
+  lastImages = lastUser?.images ?? null;
 
   // Flaky model: empty on first call, content afterwards (exercises retry-on-empty)
   if (model === 'flaky-empty') {
@@ -219,6 +231,19 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.method === 'POST' && req.url === '/api/show') {
+    let raw = '';
+    req.on('data', c => (raw += c));
+    req.on('end', () => {
+      let body = {};
+      try { body = JSON.parse(raw); } catch { /* ignore */ }
+      const capabilities = CAPABILITIES[body.model] ?? ['completion'];
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ model_info: {}, capabilities }));
+    });
+    return;
+  }
+
   if (req.method === 'POST' && req.url === '/reset') {
     categorizeCalls = 0;
     poolCalls = 0;
@@ -230,6 +255,7 @@ const server = http.createServer((req, res) => {
     flakyCalls = 0;
     lastNumPredict = null;
     lastUserPrompt = null;
+    lastImages = null;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;
@@ -237,7 +263,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'GET' && req.url === '/debug') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ maxConcurrent, lastNumPredict, lastRepollPrompt, lastDefensePrompt, defensePrompts, lastSelectionPrompt, lastUserPrompt }));
+    res.end(JSON.stringify({ maxConcurrent, lastNumPredict, lastRepollPrompt, lastDefensePrompt, defensePrompts, lastSelectionPrompt, lastUserPrompt, lastImages }));
     return;
   }
 

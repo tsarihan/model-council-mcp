@@ -72,6 +72,17 @@ export class ClaudeCliProvider implements Provider {
     }));
   }
 
+  /**
+   * Always false: `complete()` flattens the conversation into a single text
+   * prompt piped over stdin (`-p`), with no image-attachment flag in this
+   * locked-down invocation (`--tools ''`, `--strict-mcp-config`). The
+   * underlying Claude models ARE vision-capable, but this CLI subprocess path
+   * has no route to hand them an image, so the honest answer here is no.
+   */
+  async supportsVision(): Promise<boolean> {
+    return false;
+  }
+
   async complete(
     model: string,
     messages: ChatMessage[],

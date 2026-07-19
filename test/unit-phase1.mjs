@@ -186,6 +186,99 @@ try {
   delete process.env.MODEL_COUNCIL_STATE;
 }
 
+console.log('▶ per-provider wire format for images (the "wrong format = garbled data" guard)');
+{
+  const { toOllamaMessages } = await import('../dist/providers/ollama.js');
+  const { toOpenAIMessages } = await import('../dist/providers/openai-compatible.js');
+  const { toAnthropicMessages } = await import('../dist/providers/anthropic.js');
+
+  const img = { base64: 'ZmFrZWJhc2U2NA==', mimeType: 'image/png' };
+  const withImage = [{ role: 'user', content: 'describe this', images: [img] }];
+  const withoutImage = [{ role: 'user', content: 'plain question' }];
+
+  // Ollama: images is a SIBLING array of bare base64 strings — never inside content,
+  // never a data: URI (a model expecting this shape would see garbled input otherwise).
+  const ol = toOllamaMessages(withImage);
+  check('ollama: content stays a plain string', ol[0].content === 'describe this');
+  check('ollama: images is a sibling array of bare base64 (no data: prefix)',
+    Array.isArray(ol[0].images) && ol[0].images[0] === img.base64 && !ol[0].images[0].startsWith('data:'));
+  const olNone = toOllamaMessages(withoutImage);
+  check('ollama: no images → no images field', olNone[0].images === undefined);
+
+  // OpenAI-compatible: content becomes an array with a text part + an
+  // image_url part carrying a data: URI (this is the part vLLM/SGLang/OpenAI/Groq
+  // all expect; passing bare base64 here would not be recognized as an image).
+  const oa = toOpenAIMessages(withImage);
+  check('openai: content becomes a multipart array', Array.isArray(oa[0].content));
+  check('openai: has a text part', oa[0].content.some(p => p.type === 'text' && p.text === 'describe this'));
+  const imgPart = oa[0].content.find(p => p.type === 'image_url');
+  check('openai: image_url is a data: URI with the right mime type',
+    imgPart?.image_url?.url === `data:image/png;base64,${img.base64}`);
+  const oaNone = toOpenAIMessages(withoutImage);
+  check('openai: no images → content stays a plain string', oaNone[0].content === 'plain question');
+
+  // Anthropic: content becomes an array of blocks — an image block (base64 +
+  // bare media_type, NOT a data: URI) followed by a text block.
+  const an = toAnthropicMessages(withImage);
+  check('anthropic: content becomes a block array', Array.isArray(an[0].content));
+  const block = an[0].content[0];
+  check('anthropic: image block has bare base64 + correct media_type (no data: prefix)',
+    block.type === 'image' && block.source.type === 'base64' &&
+    block.source.media_type === 'image/png' && block.source.data === img.base64);
+  check('anthropic: text block follows the image block', an[0].content[1].type === 'text' && an[0].content[1].text === 'describe this');
+  const anNone = toAnthropicMessages(withoutImage);
+  check('anthropic: no images → content stays a plain string', anNone[0].content === 'plain question');
+  const anSystem = toAnthropicMessages([{ role: 'system', content: 'sys' }, ...withoutImage]);
+  check('anthropic: system messages are filtered out (handled separately)', anSystem.length === 1 && anSystem[0].role === 'user');
+}
+
+console.log('▶ loadImages validation (src/images.ts)');
+{
+  const { loadImages, MAX_IMAGES } = await import('../dist/images.js');
+  const dir = mkdtempSync(join(tmpdir(), 'mc-img-'));
+  try {
+    check('no paths → empty array, no I/O', (await loadImages(undefined)).length === 0);
+
+    const pngPath = join(dir, 'pic.png');
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(pngPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0]));
+    const loaded = await loadImages([pngPath]);
+    check('valid png loads with correct mimeType + base64', loaded.length === 1 && loaded[0].mimeType === 'image/png' && typeof loaded[0].base64 === 'string' && loaded[0].base64.length > 0);
+
+    let threwMissing = false;
+    try { await loadImages([join(dir, 'nope.png')]); } catch (e) { threwMissing = /not found/i.test(e.message); }
+    check('missing file → clear error', threwMissing);
+
+    let threwExt = false;
+    const txtPath = join(dir, 'notes.txt');
+    writeFileSync(txtPath, 'hello');
+    try { await loadImages([txtPath]); } catch (e) { threwExt = /unsupported image type/i.test(e.message); }
+    check('unsupported extension → clear error', threwExt);
+
+    let threwCount = false;
+    try { await loadImages(Array(MAX_IMAGES + 1).fill(pngPath)); } catch (e) { threwCount = /too many images/i.test(e.message); }
+    check('over the image count cap → clear error', threwCount);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+console.log('▶ context.ts rejects image extensions in "files" (guards the other route to garbled data)');
+{
+  const { buildAugmentedQuestion } = await import('../dist/context.js');
+  const dir = mkdtempSync(join(tmpdir(), 'mc-ctxguard-'));
+  try {
+    const pngPath = join(dir, 'pic.png');
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(pngPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    let threw = false;
+    try { await buildAugmentedQuestion('q', { files: [pngPath] }); } catch (e) { threw = /looks like an image/i.test(e.message); }
+    check('files=[...png] → rejected with a pointer to "images"', threw);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
 console.log('ALL PASSED ✅');

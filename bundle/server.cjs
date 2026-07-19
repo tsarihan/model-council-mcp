@@ -2984,7 +2984,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve2.call(this, root, ref);
+      let _sch = resolve3.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a3 = root.localRefs) === null || _a3 === void 0 ? void 0 : _a3[ref];
         const { schemaId } = this.opts;
@@ -3011,7 +3011,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve2(root, ref) {
+    function resolve3(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3642,7 +3642,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve2(baseURI, relativeURI, options) {
+    function resolve3(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const resolved = resolveComponent(parse3(baseURI, schemelessOptions), parse3(relativeURI, schemelessOptions), schemelessOptions, true);
       schemelessOptions.skipEscape = true;
@@ -3900,7 +3900,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize,
-      resolve: resolve2,
+      resolve: resolve3,
       resolveComponent,
       equal,
       serialize,
@@ -8948,7 +8948,7 @@ var require_lib2 = __commonJS({
       let accum = [];
       let accumBytes = 0;
       let abort = false;
-      return new Body.Promise(function(resolve2, reject) {
+      return new Body.Promise(function(resolve3, reject) {
         let resTimeout;
         if (_this4.timeout) {
           resTimeout = setTimeout(function() {
@@ -8982,7 +8982,7 @@ var require_lib2 = __commonJS({
           }
           clearTimeout(resTimeout);
           try {
-            resolve2(Buffer.concat(accum, accumBytes));
+            resolve3(Buffer.concat(accum, accumBytes));
           } catch (err) {
             reject(new FetchError(`Could not create Buffer from response body for ${_this4.url}: ${err.message}`, "system", err));
           }
@@ -9657,7 +9657,7 @@ var require_lib2 = __commonJS({
         throw new Error("native promise missing, set fetch.Promise to your favorite alternative");
       }
       Body.Promise = fetch4.Promise;
-      return new fetch4.Promise(function(resolve2, reject) {
+      return new fetch4.Promise(function(resolve3, reject) {
         const request = new Request5(url, opts);
         const options = getNodeRequestOptions(request);
         const send = (options.protocol === "https:" ? https : http).request;
@@ -9790,7 +9790,7 @@ var require_lib2 = __commonJS({
                   requestOpts.body = void 0;
                   requestOpts.headers.delete("content-length");
                 }
-                resolve2(fetch4(new Request5(locationURL, requestOpts)));
+                resolve3(fetch4(new Request5(locationURL, requestOpts)));
                 finalize();
                 return;
             }
@@ -9811,7 +9811,7 @@ var require_lib2 = __commonJS({
           const codings = headers.get("Content-Encoding");
           if (!request.compress || request.method === "HEAD" || codings === null || res.statusCode === 204 || res.statusCode === 304) {
             response = new Response5(body, response_options);
-            resolve2(response);
+            resolve3(response);
             return;
           }
           const zlibOptions = {
@@ -9821,7 +9821,7 @@ var require_lib2 = __commonJS({
           if (codings == "gzip" || codings == "x-gzip") {
             body = body.pipe(zlib.createGunzip(zlibOptions));
             response = new Response5(body, response_options);
-            resolve2(response);
+            resolve3(response);
             return;
           }
           if (codings == "deflate" || codings == "x-deflate") {
@@ -9833,12 +9833,12 @@ var require_lib2 = __commonJS({
                 body = body.pipe(zlib.createInflateRaw());
               }
               response = new Response5(body, response_options);
-              resolve2(response);
+              resolve3(response);
             });
             raw.on("end", function() {
               if (!response) {
                 response = new Response5(body, response_options);
-                resolve2(response);
+                resolve3(response);
               }
             });
             return;
@@ -9846,11 +9846,11 @@ var require_lib2 = __commonJS({
           if (codings == "br" && typeof zlib.createBrotliDecompress === "function") {
             body = body.pipe(zlib.createBrotliDecompress());
             response = new Response5(body, response_options);
-            resolve2(response);
+            resolve3(response);
             return;
           }
           response = new Response5(body, response_options);
-          resolve2(response);
+          resolve3(response);
         });
         writeToStream(req, request);
       });
@@ -23176,7 +23176,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve2) => setTimeout(resolve2, pollInterval));
+        await new Promise((resolve3) => setTimeout(resolve3, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -23193,7 +23193,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve3, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -23271,7 +23271,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve2(parseResult.data);
+            resolve3(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -23532,12 +23532,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve3, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve2, interval);
+      const timeoutId = setTimeout(resolve3, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -24407,12 +24407,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve2) => {
+    return new Promise((resolve3) => {
       const json = serializeMessage(message);
       if (this._stdout.write(json)) {
-        resolve2();
+        resolve3();
       } else {
-        this._stdout.once("drain", resolve2);
+        this._stdout.once("drain", resolve3);
       }
     });
   }
@@ -24788,6 +24788,7 @@ function loadConfig() {
 }
 
 // src/providers/base.ts
+var PROBE_IMAGE_BASE64 = "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";
 var DEFAULT_COMPLETION_TIMEOUT_MS = 12e4;
 function isTimeoutError(err) {
   if (!err) return false;
@@ -24815,40 +24816,65 @@ function clampMaxTokens(requested, maxModelLen, messages) {
 }
 
 // src/providers/ollama.ts
+function toOllamaMessages(messages) {
+  return messages.map((m2) => ({
+    role: m2.role,
+    content: m2.content,
+    ...m2.images?.length ? { images: m2.images.map((img) => img.base64) } : {}
+  }));
+}
 var OllamaProvider = class {
   serverId;
   config;
-  /** Per-model advertised context length (from /api/show); null = unknown. */
-  ctxLenCache = /* @__PURE__ */ new Map();
+  /** Per-model /api/show result (context length + vision capability); undefined = not yet fetched. */
+  showCache = /* @__PURE__ */ new Map();
   constructor(config2) {
     this.config = config2;
     this.serverId = config2.id;
   }
   /**
-   * The model's advertised context length from /api/show (`model_info` holds an
-   * arch-prefixed `*.context_length`). Cached per model; undefined when unknown
-   * (e.g. Ollama cloud models) so callers skip clamping.
+   * Fetch and cache /api/show for `model` once, extracting both the advertised
+   * context length (`model_info`'s arch-prefixed `*.context_length`) and the
+   * `capabilities` array (vision support shows up as `"vision"`). A transient
+   * failure (unreachable host) is NOT cached, so a network blip doesn't
+   * permanently mislabel a model — it's simply retried on the next call.
+   */
+  async fetchShow(model) {
+    const cached3 = this.showCache.get(model);
+    if (cached3) return cached3;
+    const res = await fetch(`${this.config.baseUrl}/api/show`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model }),
+      signal: AbortSignal.timeout(5e3)
+    });
+    if (!res.ok) throw new Error(`Ollama /api/show failed (${res.status})`);
+    const data = await res.json();
+    const info = data.model_info ?? {};
+    const key = Object.keys(info).find((k2) => k2.endsWith(".context_length"));
+    const ctxLen = key && typeof info[key] === "number" ? info[key] : null;
+    const vision = Array.isArray(data.capabilities) && data.capabilities.includes("vision");
+    const result = { ctxLen, vision };
+    this.showCache.set(model, result);
+    return result;
+  }
+  /**
+   * The model's advertised context length. Undefined when unknown (e.g. Ollama
+   * cloud models, or the host is unreachable) so callers skip clamping.
    */
   async modelContextLen(model) {
-    const cached3 = this.ctxLenCache.get(model);
-    if (cached3 !== void 0) return cached3 ?? void 0;
-    let len = null;
     try {
-      const res = await fetch(`${this.config.baseUrl}/api/show`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model }),
-        signal: AbortSignal.timeout(5e3)
-      });
-      if (res.ok) {
-        const info = (await res.json()).model_info ?? {};
-        const key = Object.keys(info).find((k2) => k2.endsWith(".context_length"));
-        if (key && typeof info[key] === "number") len = info[key];
-      }
+      return (await this.fetchShow(model)).ctxLen ?? void 0;
     } catch {
+      return void 0;
     }
-    this.ctxLenCache.set(model, len);
-    return len ?? void 0;
+  }
+  async supportsVision(model) {
+    try {
+      return (await this.fetchShow(model)).vision;
+    } catch {
+      return false;
+    }
   }
   async ping() {
     try {
@@ -24882,9 +24908,10 @@ var OllamaProvider = class {
       await this.modelContextLen(model),
       messages
     );
+    const wireMessages = toOllamaMessages(messages);
     const body = {
       model,
-      messages,
+      messages: wireMessages,
       stream: false,
       options: {
         temperature: opts.temperature ?? 0.7,
@@ -26342,8 +26369,8 @@ function _addRequestID(value, response) {
 }
 var APIPromise = class _APIPromise extends Promise {
   constructor(responsePromise, parseResponse2 = defaultParseResponse) {
-    super((resolve2) => {
-      resolve2(null);
+    super((resolve3) => {
+      resolve3(null);
     });
     this.responsePromise = responsePromise;
     this.parseResponse = parseResponse2;
@@ -26918,7 +26945,7 @@ var startsWithSchemeRegexp = /^[a-z][a-z0-9+.-]*:/i;
 var isAbsoluteURL = (url) => {
   return startsWithSchemeRegexp.test(url);
 };
-var sleep = (ms) => new Promise((resolve2) => setTimeout(resolve2, ms));
+var sleep = (ms) => new Promise((resolve3) => setTimeout(resolve3, ms));
 var validatePositiveInteger = (name, n2) => {
   if (typeof n2 !== "number" || !Number.isInteger(n2)) {
     throw new OpenAIError(`${name} must be an integer`);
@@ -27351,12 +27378,12 @@ var EventStream = class {
     _EventStream_errored.set(this, false);
     _EventStream_aborted.set(this, false);
     _EventStream_catchingPromiseCreated.set(this, false);
-    __classPrivateFieldSet7(this, _EventStream_connectedPromise, new Promise((resolve2, reject) => {
-      __classPrivateFieldSet7(this, _EventStream_resolveConnectedPromise, resolve2, "f");
+    __classPrivateFieldSet7(this, _EventStream_connectedPromise, new Promise((resolve3, reject) => {
+      __classPrivateFieldSet7(this, _EventStream_resolveConnectedPromise, resolve3, "f");
       __classPrivateFieldSet7(this, _EventStream_rejectConnectedPromise, reject, "f");
     }), "f");
-    __classPrivateFieldSet7(this, _EventStream_endPromise, new Promise((resolve2, reject) => {
-      __classPrivateFieldSet7(this, _EventStream_resolveEndPromise, resolve2, "f");
+    __classPrivateFieldSet7(this, _EventStream_endPromise, new Promise((resolve3, reject) => {
+      __classPrivateFieldSet7(this, _EventStream_resolveEndPromise, resolve3, "f");
       __classPrivateFieldSet7(this, _EventStream_rejectEndPromise, reject, "f");
     }), "f");
     __classPrivateFieldGet8(this, _EventStream_connectedPromise, "f").catch(() => {
@@ -27440,11 +27467,11 @@ var EventStream = class {
    *   const message = await stream.emitted('message') // rejects if the stream errors
    */
   emitted(event) {
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve3, reject) => {
       __classPrivateFieldSet7(this, _EventStream_catchingPromiseCreated, true, "f");
       if (event !== "error")
         this.once("error", reject);
-      this.once(event, resolve2);
+      this.once(event, resolve3);
     });
   }
   async done() {
@@ -27597,7 +27624,7 @@ var AssistantStream = class _AssistantStream extends EventStream {
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve2, reject) => readQueue.push({ resolve: resolve2, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve3, reject) => readQueue.push({ resolve: resolve3, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
         }
         const chunk = pushQueue.shift();
         return { value: chunk, done: false };
@@ -29215,7 +29242,7 @@ var ChatCompletionStream = class _ChatCompletionStream extends AbstractChatCompl
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve2, reject) => readQueue.push({ resolve: resolve2, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve3, reject) => readQueue.push({ resolve: resolve3, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
         }
         const chunk = pushQueue.shift();
         return { value: chunk, done: false };
@@ -30866,7 +30893,7 @@ var ResponseStream = class _ResponseStream extends EventStream {
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve2, reject) => readQueue.push({ resolve: resolve2, reject })).then((event2) => event2 ? { value: event2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve3, reject) => readQueue.push({ resolve: resolve3, reject })).then((event2) => event2 ? { value: event2, done: false } : { value: void 0, done: true });
         }
         const event = pushQueue.shift();
         return { value: event, done: false };
@@ -31517,12 +31544,31 @@ function openaiBaseURL(baseUrl) {
   const base = baseUrl.replace(/\/+$/, "");
   return /\/v\d+$/.test(base) ? base : `${base}/v1`;
 }
+function toOpenAIMessages(messages) {
+  return messages.map((m2) => {
+    if (m2.role === "user" && m2.images?.length) {
+      return {
+        role: "user",
+        content: [
+          { type: "text", text: m2.content },
+          ...m2.images.map((img) => ({
+            type: "image_url",
+            image_url: { url: `data:${img.mimeType};base64,${img.base64}` }
+          }))
+        ]
+      };
+    }
+    return { role: m2.role, content: m2.content };
+  });
+}
 var OpenAICompatibleProvider = class {
   serverId;
   config;
   client;
   /** Per-model advertised context window (max_model_len); null = not advertised. */
   maxLenCache = /* @__PURE__ */ new Map();
+  /** Per-model vision-probe result. Only definitive answers are cached (see supportsVision). */
+  visionCache = /* @__PURE__ */ new Map();
   constructor(config2) {
     this.config = config2;
     this.serverId = config2.id;
@@ -31553,6 +31599,52 @@ var OpenAICompatibleProvider = class {
     }
     if (!this.maxLenCache.has(model)) this.maxLenCache.set(model, null);
     return this.maxLenCache.get(model) ?? void 0;
+  }
+  /**
+   * Functional probe: no OpenAI-compatible endpoint (self-hosted or cloud)
+   * advertises vision support via /v1/models, so the only generic way to find
+   * out is to send a real request with an image part and see whether it's
+   * accepted. Cost is negligible (max_tokens: 1, a 32×32 test image).
+   *
+   * Only a DEFINITIVE answer is cached: a clean 200 (true) or a 4xx that
+   * rejects the request (false — the server validated and refused the image
+   * part). A timeout/connection error is transient — it returns false for
+   * this call only, without poisoning the cache, so a wedged server doesn't
+   * permanently mislabel a vision-capable model as text-only.
+   *
+   * Caveat: this proves the endpoint ACCEPTS an image, not that the model
+   * meaningfully attends to it — some servers accept and silently ignore
+   * unsupported content parts. It is the best available generic signal.
+   */
+  async supportsVision(model) {
+    const cached3 = this.visionCache.get(model);
+    if (cached3 !== void 0) return cached3;
+    try {
+      await this.client.chat.completions.create(
+        {
+          model,
+          max_tokens: 1,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "." },
+                { type: "image_url", image_url: { url: `data:image/png;base64,${PROBE_IMAGE_BASE64}` } }
+              ]
+            }
+          ]
+        },
+        { timeout: 15e3 }
+      );
+      this.visionCache.set(model, true);
+      return true;
+    } catch (err) {
+      if (isTimeoutError(err)) return false;
+      const status = err.status;
+      if (typeof status === "number" && status >= 500) return false;
+      this.visionCache.set(model, false);
+      return false;
+    }
   }
   async ping() {
     try {
@@ -31589,10 +31681,11 @@ var OpenAICompatibleProvider = class {
   }
   async complete(model, messages, opts = {}) {
     const maxTokens = clampMaxTokens(opts.maxTokens ?? 16e3, await this.maxModelLen(model), messages);
+    const wireMessages = toOpenAIMessages(messages);
     const res = await this.client.chat.completions.create(
       {
         model,
-        messages,
+        messages: wireMessages,
         temperature: opts.temperature ?? 0.7,
         max_tokens: maxTokens,
         ...opts.jsonMode ? { response_format: { type: "json_object" } } : {}
@@ -32186,8 +32279,8 @@ async function defaultParseResponse2(props) {
 }
 var APIPromise2 = class _APIPromise extends Promise {
   constructor(responsePromise, parseResponse2 = defaultParseResponse2) {
-    super((resolve2) => {
-      resolve2(null);
+    super((resolve3) => {
+      resolve3(null);
     });
     this.responsePromise = responsePromise;
     this.parseResponse = parseResponse2;
@@ -32748,7 +32841,7 @@ var startsWithSchemeRegexp2 = new RegExp("^(?:[a-z]+:)?//", "i");
 var isAbsoluteURL2 = (url) => {
   return startsWithSchemeRegexp2.test(url);
 };
-var sleep2 = (ms) => new Promise((resolve2) => setTimeout(resolve2, ms));
+var sleep2 = (ms) => new Promise((resolve3) => setTimeout(resolve3, ms));
 var validatePositiveInteger2 = (name, n2) => {
   if (typeof n2 !== "number" || !Number.isInteger(n2)) {
     throw new AnthropicError(`${name} must be an integer`);
@@ -33459,12 +33552,12 @@ var PromptCachingBetaMessageStream = class _PromptCachingBetaMessageStream {
       }
       return this._emit("error", new AnthropicError(String(error2)));
     });
-    __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_connectedPromise, new Promise((resolve2, reject) => {
-      __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_resolveConnectedPromise, resolve2, "f");
+    __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_connectedPromise, new Promise((resolve3, reject) => {
+      __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_resolveConnectedPromise, resolve3, "f");
       __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_rejectConnectedPromise, reject, "f");
     }), "f");
-    __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_endPromise, new Promise((resolve2, reject) => {
-      __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_resolveEndPromise, resolve2, "f");
+    __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_endPromise, new Promise((resolve3, reject) => {
+      __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_resolveEndPromise, resolve3, "f");
       __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_rejectEndPromise, reject, "f");
     }), "f");
     __classPrivateFieldGet14(this, _PromptCachingBetaMessageStream_connectedPromise, "f").catch(() => {
@@ -33593,11 +33686,11 @@ var PromptCachingBetaMessageStream = class _PromptCachingBetaMessageStream {
    *   const message = await stream.emitted('message') // rejects if the stream errors
    */
   emitted(event) {
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve3, reject) => {
       __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_catchingPromiseCreated, true, "f");
       if (event !== "error")
         this.once("error", reject);
-      this.once(event, resolve2);
+      this.once(event, resolve3);
     });
   }
   async done() {
@@ -33824,7 +33917,7 @@ var PromptCachingBetaMessageStream = class _PromptCachingBetaMessageStream {
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve2, reject) => readQueue.push({ resolve: resolve2, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve3, reject) => readQueue.push({ resolve: resolve3, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
         }
         const chunk = pushQueue.shift();
         return { value: chunk, done: false };
@@ -33978,12 +34071,12 @@ var MessageStream = class _MessageStream {
       }
       return this._emit("error", new AnthropicError(String(error2)));
     });
-    __classPrivateFieldSet13(this, _MessageStream_connectedPromise, new Promise((resolve2, reject) => {
-      __classPrivateFieldSet13(this, _MessageStream_resolveConnectedPromise, resolve2, "f");
+    __classPrivateFieldSet13(this, _MessageStream_connectedPromise, new Promise((resolve3, reject) => {
+      __classPrivateFieldSet13(this, _MessageStream_resolveConnectedPromise, resolve3, "f");
       __classPrivateFieldSet13(this, _MessageStream_rejectConnectedPromise, reject, "f");
     }), "f");
-    __classPrivateFieldSet13(this, _MessageStream_endPromise, new Promise((resolve2, reject) => {
-      __classPrivateFieldSet13(this, _MessageStream_resolveEndPromise, resolve2, "f");
+    __classPrivateFieldSet13(this, _MessageStream_endPromise, new Promise((resolve3, reject) => {
+      __classPrivateFieldSet13(this, _MessageStream_resolveEndPromise, resolve3, "f");
       __classPrivateFieldSet13(this, _MessageStream_rejectEndPromise, reject, "f");
     }), "f");
     __classPrivateFieldGet15(this, _MessageStream_connectedPromise, "f").catch(() => {
@@ -34112,11 +34205,11 @@ var MessageStream = class _MessageStream {
    *   const message = await stream.emitted('message') // rejects if the stream errors
    */
   emitted(event) {
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve3, reject) => {
       __classPrivateFieldSet13(this, _MessageStream_catchingPromiseCreated, true, "f");
       if (event !== "error")
         this.once("error", reject);
-      this.once(event, resolve2);
+      this.once(event, resolve3);
     });
   }
   async done() {
@@ -34343,7 +34436,7 @@ var MessageStream = class _MessageStream {
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve2, reject) => readQueue.push({ resolve: resolve2, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve3, reject) => readQueue.push({ resolve: resolve3, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
         }
         const chunk = pushQueue.shift();
         return { value: chunk, done: false };
@@ -34521,10 +34614,29 @@ var ANTHROPIC_MODELS = [
   { id: "claude-sonnet-4-0", label: "Claude Sonnet 4.0" },
   { id: "claude-haiku-4-0", label: "Claude Haiku 4.0" }
 ];
+function toAnthropicMessages(messages) {
+  return messages.filter((m2) => m2.role !== "system").map((m2) => {
+    if (m2.role === "user" && m2.images?.length) {
+      return {
+        role: "user",
+        content: [
+          ...m2.images.map((img) => ({
+            type: "image",
+            source: { type: "base64", media_type: img.mimeType, data: img.base64 }
+          })),
+          { type: "text", text: m2.content }
+        ]
+      };
+    }
+    return { role: m2.role, content: m2.content };
+  });
+}
 var AnthropicProvider = class {
   serverId = "anthropic";
   config;
   client;
+  /** Per-model vision-probe result. Only definitive answers are cached (see supportsVision). */
+  visionCache = /* @__PURE__ */ new Map();
   constructor(config2) {
     this.config = config2;
     this.client = new sdk_default({ apiKey: config2.apiKey });
@@ -34546,9 +34658,45 @@ var AnthropicProvider = class {
       label: m2.label
     }));
   }
+  /**
+   * Functional probe (the Anthropic API has no capability-listing endpoint):
+   * send a 1-token request with an image block and see whether it's accepted.
+   * Every current Claude model is vision-capable, so this should always
+   * resolve true — but it stays a real probe rather than a hardcoded list, for
+   * consistency with the other providers and to stay correct if that changes.
+   * Only a definitive answer (200 or a 4xx rejection) is cached; a transient
+   * failure (timeout/5xx) returns false for this call only.
+   */
+  async supportsVision(model) {
+    const cached3 = this.visionCache.get(model);
+    if (cached3 !== void 0) return cached3;
+    try {
+      await this.client.messages.create({
+        model,
+        max_tokens: 1,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "image", source: { type: "base64", media_type: "image/png", data: PROBE_IMAGE_BASE64 } },
+              { type: "text", text: "." }
+            ]
+          }
+        ]
+      });
+      this.visionCache.set(model, true);
+      return true;
+    } catch (err) {
+      if (isTimeoutError(err)) return false;
+      const status = err.status;
+      if (typeof status === "number" && status >= 500) return false;
+      this.visionCache.set(model, false);
+      return false;
+    }
+  }
   async complete(model, messages, opts = {}) {
     const systemParts = messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n");
-    const userMessages = messages.filter((m2) => m2.role !== "system").map((m2) => ({ role: m2.role, content: m2.content }));
+    const userMessages = toAnthropicMessages(messages);
     const systemText = opts.jsonMode ? `${systemParts}
 
 Respond with valid JSON only.`.trim() : systemParts || void 0;
@@ -34604,6 +34752,16 @@ var ClaudeCliProvider = class {
       label: `Claude ${m2} (subscription)`
     }));
   }
+  /**
+   * Always false: `complete()` flattens the conversation into a single text
+   * prompt piped over stdin (`-p`), with no image-attachment flag in this
+   * locked-down invocation (`--tools ''`, `--strict-mcp-config`). The
+   * underlying Claude models ARE vision-capable, but this CLI subprocess path
+   * has no route to hand them an image, so the honest answer here is no.
+   */
+  async supportsVision() {
+    return false;
+  }
   async complete(model, messages, opts = {}) {
     const systemParts = messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n");
     const prompt = messages.filter((m2) => m2.role !== "system").map((m2) => m2.role === "assistant" ? `Assistant: ${m2.content}` : m2.content).join("\n\n");
@@ -34653,7 +34811,7 @@ var ClaudeCliProvider = class {
     return result;
   }
   run(args, input, timeoutMs) {
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve3, reject) => {
       const env = { ...process.env };
       delete env.ANTHROPIC_API_KEY;
       delete env.ANTHROPIC_AUTH_TOKEN;
@@ -34688,7 +34846,7 @@ var ClaudeCliProvider = class {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve2({ code: code ?? 1, stdout, stderr });
+        resolve3({ code: code ?? 1, stdout, stderr });
       });
       if (input !== void 0) child.stdin.write(input);
       child.stdin.end();
@@ -34739,6 +34897,14 @@ var CodexCliProvider = class {
       model: m2,
       label: `Codex ${m2} (ChatGPT subscription)`
     }));
+  }
+  /**
+   * Always false: `complete()` flattens the conversation into a single text
+   * prompt (`codex exec`), with no image-attachment path in this locked-down,
+   * read-only-sandboxed invocation. Same rationale as ClaudeCliProvider.
+   */
+  async supportsVision() {
+    return false;
   }
   async complete(model, messages, opts = {}) {
     const systemParts = messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n");
@@ -34800,7 +34966,7 @@ var CodexCliProvider = class {
     }
   }
   run(args, input, timeoutMs) {
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve3, reject) => {
       const env = { ...process.env };
       delete env.OPENAI_API_KEY;
       delete env.CODEX_API_KEY;
@@ -34835,7 +35001,7 @@ var CodexCliProvider = class {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve2({ code: code ?? 1, stdout, stderr });
+        resolve3({ code: code ?? 1, stdout, stderr });
       });
       if (input !== void 0) child.stdin.write(input);
       child.stdin.end();
@@ -34929,7 +35095,7 @@ var EmptyCompletionError = class extends Error {
     this.name = "EmptyCompletionError";
   }
 };
-var sleep3 = (ms) => new Promise((resolve2) => setTimeout(resolve2, ms));
+var sleep3 = (ms) => new Promise((resolve3) => setTimeout(resolve3, ms));
 async function pooled(tasks, limit2) {
   if (tasks.length === 0) return;
   const width = limit2 && limit2 > 0 ? Math.min(limit2, tasks.length) : tasks.length;
@@ -34958,7 +35124,7 @@ async function completeWithRetry(provider, model, messages, opts, retries) {
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
-async function queryMembersVarying(promptFor, members, runtime, opts = {}) {
+async function queryMembersVarying(promptFor, members, runtime, opts = {}, images) {
   const results = new Array(members.length);
   const buckets = /* @__PURE__ */ new Map();
   members.forEach((member, i2) => {
@@ -34966,10 +35132,15 @@ async function queryMembersVarying(promptFor, members, runtime, opts = {}) {
       const label = modelIdLabel(member.modelId);
       const t0 = Date.now();
       try {
+        const userMessage = {
+          role: "user",
+          content: promptFor(member, i2),
+          ...images?.length ? { images } : {}
+        };
         const response = await completeWithRetry(
           member.provider,
           member.modelId.model,
-          [{ role: "user", content: promptFor(member, i2) }],
+          [userMessage],
           { maxTokens: runtime.maxTokens, timeoutMs: runtime.requestTimeoutMs, ...opts },
           runtime.retries
         );
@@ -34994,8 +35165,8 @@ async function queryMembersVarying(promptFor, members, runtime, opts = {}) {
   );
   return results;
 }
-async function queryMembers(question, members, runtime, opts = {}) {
-  return queryMembersVarying(() => question, members, runtime, opts);
+async function queryMembers(question, members, runtime, opts = {}, images) {
+  return queryMembersVarying(() => question, members, runtime, opts, images);
 }
 
 // src/council/categorizer.ts
@@ -35776,7 +35947,7 @@ var CouncilOrchestrator = class {
     return this.modelCache.filter((m2) => m2.provider === "ollama" && !isEmbeddingModel(m2)).map((m2) => ({ provider: "ollama", serverId: m2.serverId, model: m2.model }));
   }
   /** Ask the council and return a result in the configured (or overridden) mode */
-  async ask(question, modeOverride, maxRoundsOverride, verboseOverride) {
+  async ask(question, modeOverride, maxRoundsOverride, verboseOverride, images) {
     const mode = modeOverride ?? this.config.responseMode;
     const maxRounds = maxRoundsOverride ?? this.config.maxDeconflictRounds;
     const verbose = verboseOverride ?? this.runtime.verbose;
@@ -35809,9 +35980,37 @@ var CouncilOrchestrator = class {
         autoUsed || this.config.autoCouncil ? "No Ollama chat models found to form a council. Pull a model (e.g. `ollama pull llama3`) or set council models via configure_council." : "Council has no reachable members. Use configure_council or set COUNCIL_MODELS."
       );
     }
-    const responses = await queryMembers(question, members, this.runtime);
+    let queryTargets = members;
+    let visionRouting;
+    if (images && images.length > 0) {
+      const checked = await Promise.all(
+        members.map(async (m2) => ({
+          member: m2,
+          vision: await m2.provider.supportsVision(m2.modelId.model).catch(() => false)
+        }))
+      );
+      const visionMembers = checked.filter((c2) => c2.vision).map((c2) => c2.member);
+      const skippedNonVision = checked.filter((c2) => !c2.vision).map((c2) => modelIdLabel(c2.member.modelId));
+      if (visionMembers.length === 0) {
+        throw new Error(
+          `${images.length} image(s) attached, but none of the ${members.length} configured council member(s) are vision-capable: ${members.map((m2) => modelIdLabel(m2.modelId)).join(", ")}. Add a vision-capable model with configure_council, or ask without images.`
+        );
+      }
+      queryTargets = visionMembers;
+      visionRouting = {
+        imagesAttached: images.length,
+        queriedVisionModels: visionMembers.map((m2) => modelIdLabel(m2.modelId)),
+        skippedNonVision
+      };
+    }
+    const responses = await queryMembers(question, queryTargets, this.runtime, {}, images);
     if (mode === "individual") {
-      return { mode: "individual", question, responses };
+      return {
+        mode: "individual",
+        question,
+        responses,
+        ...visionRouting ? { visionRouting } : {}
+      };
     }
     if (!this.config.judgeModelId && this.modelCache.length === 0) {
       try {
@@ -35822,7 +36021,10 @@ var CouncilOrchestrator = class {
     const erroredLabels = new Set(responses.filter((r2) => r2.error).map((r2) => r2.label));
     const judgeModelId = selectJudge(
       this.config.judgeModelId,
-      members.map((m2) => m2.modelId),
+      // queryTargets, not members: candidates must actually have a response
+      // (when images filtered the council to a vision-capable subset, the
+      // skipped members never ran and would otherwise be eligible for judge).
+      queryTargets.map((m2) => m2.modelId),
       this.modelCache,
       erroredLabels
     );
@@ -35842,26 +36044,30 @@ var CouncilOrchestrator = class {
     };
     try {
       if (mode === "pooled") {
-        return await runPooled({
+        const pooled2 = await runPooled({
           question,
           initialResponses: responses,
-          members,
+          // queryTargets: reconsideration re-questions the same members that
+          // answered round 0 — a vision-skipped member never saw the question.
+          members: queryTargets,
           judgeModelId,
           judgeProvider,
           runtime: this.runtime,
           verbose
         });
+        return visionRouting ? { ...pooled2, visionRouting } : pooled2;
       }
       if (mode === "dialectic") {
-        return await runDialectic({
+        const dialectic = await runDialectic({
           question,
           initialResponses: responses,
-          members,
+          members: queryTargets,
           judgeModelId,
           judgeProvider,
           runtime: this.runtime,
           verbose
         });
+        return visionRouting ? { ...dialectic, visionRouting } : dialectic;
       }
       const catResult = await categorize(
         question,
@@ -35874,22 +36080,24 @@ var CouncilOrchestrator = class {
         return {
           mode: "categorized",
           ...catResult,
-          rawResponses: responses
+          rawResponses: responses,
+          ...visionRouting ? { visionRouting } : {}
         };
       }
-      return await deconflict({
+      const dec = await deconflict({
         question,
         initialResponses: responses,
         initialConflicts: catResult.conflicting,
         commonAgreement: catResult.commonAgreement,
         complementary: catResult.complementary,
         maxRounds,
-        members,
+        members: queryTargets,
         judgeModelId,
         judgeProvider,
         runtime: this.runtime,
         verbose
       });
+      return visionRouting ? { ...dec, visionRouting } : dec;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(
@@ -35900,7 +36108,8 @@ var CouncilOrchestrator = class {
         mode: "individual",
         question,
         responses,
-        note: `Reconciliation (${mode} mode, judge ${modelIdLabel(judgeModelId)}) failed \u2014 ${msg}. Returning the council's raw individual responses.`
+        note: `Reconciliation (${mode} mode, judge ${modelIdLabel(judgeModelId)}) failed \u2014 ${msg}. Returning the council's raw individual responses.`,
+        ...visionRouting ? { visionRouting } : {}
       };
     }
   }
@@ -35910,7 +36119,7 @@ var CouncilOrchestrator = class {
 var import_node_child_process3 = require("node:child_process");
 var isCloudModel = (m2) => m2.endsWith(":cloud") || m2.endsWith("-cloud");
 function runCli(command, args, opts = { timeoutMs: 8e3 }) {
-  return new Promise((resolve2) => {
+  return new Promise((resolve3) => {
     const env = { ...process.env };
     if (opts.stripKeys === "anthropic") {
       delete env.ANTHROPIC_API_KEY;
@@ -35924,7 +36133,7 @@ function runCli(command, args, opts = { timeoutMs: 8e3 }) {
     try {
       child = (0, import_node_child_process3.spawn)(command, args, { env, stdio: ["pipe", "pipe", "pipe"] });
     } catch {
-      resolve2({ code: 127, stdout: "", stderr: "spawn failed" });
+      resolve3({ code: 127, stdout: "", stderr: "spawn failed" });
       return;
     }
     let stdout = "", stderr = "", settled = false;
@@ -35932,7 +36141,7 @@ function runCli(command, args, opts = { timeoutMs: 8e3 }) {
       if (!settled) {
         settled = true;
         clearTimeout(timer);
-        resolve2(r2);
+        resolve3(r2);
       }
     };
     const timer = setTimeout(() => {
@@ -35956,8 +36165,8 @@ function runCli(command, args, opts = { timeoutMs: 8e3 }) {
 }
 async function withTimeout(p2, ms, fallback) {
   let timer;
-  const t2 = new Promise((resolve2) => {
-    timer = setTimeout(() => resolve2(fallback), ms);
+  const t2 = new Promise((resolve3) => {
+    timer = setTimeout(() => resolve3(fallback), ms);
   });
   try {
     return await Promise.race([p2, t2]);
@@ -36060,6 +36269,7 @@ var import_node_path4 = require("node:path");
 var MAX_FILE_BYTES = 256 * 1024;
 var MAX_TOTAL_BYTES = 768 * 1024;
 var MAX_FILES = 20;
+var IMAGE_EXTENSIONS = /* @__PURE__ */ new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif"]);
 async function buildAugmentedQuestion(question, input) {
   const blocks = [];
   const inline = input.context?.trim();
@@ -36075,6 +36285,11 @@ ${inline}`);
   for (const raw of files) {
     if (typeof raw !== "string" || !raw.trim()) continue;
     const path = (0, import_node_path4.resolve)(raw);
+    if (IMAGE_EXTENSIONS.has((0, import_node_path4.extname)(path).toLowerCase())) {
+      throw new Error(
+        `${raw} looks like an image \u2014 "files" reads text and would send garbled data. Use the "images" parameter instead.`
+      );
+    }
     let info;
     try {
       info = await (0, import_promises.stat)(path);
@@ -36109,6 +36324,62 @@ ${body}`);
 
 ----- QUESTION -----
 ${question}`;
+}
+
+// src/images.ts
+var import_promises2 = require("node:fs/promises");
+var import_node_path5 = require("node:path");
+var MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+var MAX_TOTAL_IMAGE_BYTES = 24 * 1024 * 1024;
+var MAX_IMAGES = 6;
+var EXT_TO_MIME = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp"
+};
+async function loadImages(paths) {
+  if (!paths?.length) return [];
+  if (paths.length > MAX_IMAGES) {
+    throw new Error(`Too many images attached (${paths.length}); the limit is ${MAX_IMAGES}.`);
+  }
+  const out = [];
+  let total = 0;
+  for (const raw of paths) {
+    if (typeof raw !== "string" || !raw.trim()) continue;
+    const path = (0, import_node_path5.resolve)(raw);
+    const ext = (0, import_node_path5.extname)(path).toLowerCase();
+    const mimeType = EXT_TO_MIME[ext];
+    if (!mimeType) {
+      throw new Error(
+        `Unsupported image type: ${raw} (supported: ${Object.keys(EXT_TO_MIME).join(", ")}).`
+      );
+    }
+    let info;
+    try {
+      info = await (0, import_promises2.stat)(path);
+    } catch {
+      throw new Error(`Attached image not found or unreadable: ${raw}`);
+    }
+    if (!info.isFile()) {
+      throw new Error(`Attached path is not a file: ${raw}`);
+    }
+    if (info.size > MAX_IMAGE_BYTES) {
+      throw new Error(
+        `Attached image too large: ${raw} (${Math.round(info.size / 1024)} KB > ${Math.round(MAX_IMAGE_BYTES / 1024)} KB limit).`
+      );
+    }
+    total += info.size;
+    if (total > MAX_TOTAL_IMAGE_BYTES) {
+      throw new Error(
+        `Attached images exceed the combined ${Math.round(MAX_TOTAL_IMAGE_BYTES / (1024 * 1024))} MB limit. Attach fewer/smaller images.`
+      );
+    }
+    const buf = await (0, import_promises2.readFile)(path);
+    out.push({ base64: buf.toString("base64"), mimeType });
+  }
+  return out;
 }
 
 // src/jobs.ts
@@ -36194,11 +36465,13 @@ async function runCouncil(input) {
     context: input.context,
     files: input.files
   });
+  const images = await loadImages(input.images);
   return orchestrator.ask(
     question,
     input.mode,
     input.max_deconflict_rounds,
-    input.verbose
+    input.verbose,
+    images.length ? images : void 0
   );
 }
 var labelsToMembers = (labels) => labels.flatMap((s2) => {
@@ -36263,7 +36536,10 @@ var AskCouncilInput = external_exports.object({
   ),
   context: external_exports.string().optional().describe("Optional background text prepended to the question for every member."),
   files: external_exports.array(external_exports.string()).optional().describe(
-    "Optional local file paths to read and attach as context (each fenced and labelled). Caps: 256 KB/file, 768 KB total, 20 files."
+    'Optional local file paths to read and attach as context (each fenced and labelled). Caps: 256 KB/file, 768 KB total, 20 files. Text files only \u2014 use "images" for pictures.'
+  ),
+  images: external_exports.array(external_exports.string()).optional().describe(
+    "Optional local image paths (png/jpg/jpeg/gif/webp). Auto-detected vision-capable council members are queried with the image(s); members without vision support are automatically skipped for this call (see visionRouting in the result). Caps: 8 MB/image, 24 MB total, 6 images."
   )
 });
 var AskCouncilAsyncInput = AskCouncilInput;
@@ -36327,7 +36603,7 @@ var TOOLS = [
   {
     name: "ask_council",
     annotations: { title: "Ask the council", readOnlyHint: false },
-    description: "Send a question to the model council and get a structured response. Mode: individual (each model answers separately), categorized (judge groups responses into agreement/complementary/conflicting), deconflicted (iterative loop \u2014 judge orchestrates re-questioning until conflicts resolve, returns a deconfliction score 0\u2013100%), pooled (Delphi-style \u2014 members reconsider against a neutral, deduplicated, attribution-free pool of answers; no winner is forced, so genuine divergence is preserved), or dialectic (thesis/antithesis/synthesis \u2014 members defend their pick and critique the rest, the judge compiles a pros/cons dossier per option, then members re-select a ranked top-3).",
+    description: "Send a question to the model council and get a structured response. Mode: individual (each model answers separately), categorized (judge groups responses into agreement/complementary/conflicting), deconflicted (iterative loop \u2014 judge orchestrates re-questioning until conflicts resolve, returns a deconfliction score 0\u2013100%), pooled (Delphi-style \u2014 members reconsider against a neutral, deduplicated, attribution-free pool of answers; no winner is forced, so genuine divergence is preserved), or dialectic (thesis/antithesis/synthesis \u2014 members defend their pick and critique the rest, the judge compiles a pros/cons dossier per option, then members re-select a ranked top-3). Attach images to ask a vision question \u2014 only auto-detected vision-capable members are queried; the rest are skipped and reported in visionRouting.",
     inputSchema: {
       type: "object",
       required: ["question"],
@@ -36356,7 +36632,12 @@ var TOOLS = [
         files: {
           type: "array",
           items: { type: "string" },
-          description: "Optional local file paths to read and attach as labelled context (caps: 256 KB/file, 768 KB total, 20 files)."
+          description: 'Optional local file paths to read and attach as labelled context (caps: 256 KB/file, 768 KB total, 20 files). Text only \u2014 use "images" for pictures.'
+        },
+        images: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional local image paths (png/jpg/jpeg/gif/webp). Auto-detected vision-capable council members are queried with the image(s); members without vision support are automatically skipped for this call (see visionRouting in the result). Caps: 8 MB/image, 24 MB total, 6 images."
         }
       }
     }
@@ -36391,6 +36672,11 @@ var TOOLS = [
           type: "array",
           items: { type: "string" },
           description: "Optional local file paths to read and attach as labelled context."
+        },
+        images: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional local image paths \u2014 same vision-routing behavior as ask_council."
         }
       }
     }
@@ -36442,7 +36728,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.10"
+    version: "0.2.11"
   },
   {
     capabilities: { tools: {} },

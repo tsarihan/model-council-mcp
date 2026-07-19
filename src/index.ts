@@ -13,7 +13,9 @@
  *   setup_council      — set subscription tiers + auto-populate
  *
  * ask_council / ask_council_async also accept `context` (inline text) and
- * `files` (local paths) to attach as labelled context for every member.
+ * `files` (local paths) to attach as labelled context for every member, and
+ * `images` (local image paths) which are routed only to council members
+ * auto-detected as vision-capable (see src/images.ts, providers/*.supportsVision).
  */
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -33,6 +35,7 @@ import { loadState, saveState } from './state.js';
 import { loadSubscriptions, validTiers, SubProvider } from './subscriptions.js';
 import { detectEnvironment, autoPopulatedMembers, quotaWarning } from './detect.js';
 import { buildAugmentedQuestion } from './context.js';
+import { loadImages } from './images.js';
 import { JobStore } from './jobs.js';
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
@@ -70,8 +73,9 @@ try {
   /* best-effort — a read-only state dir must not break boot */
 }
 
-/** Compose context/files into the prompt, then run the council. Shared by the
- *  synchronous ask_council and the background ask_council_async. */
+/** Compose context/files into the prompt and load any attached images, then run
+ *  the council. Shared by the synchronous ask_council and the background
+ *  ask_council_async. */
 async function runCouncil(input: {
   question: string;
   mode?: string;
@@ -79,16 +83,19 @@ async function runCouncil(input: {
   verbose?: boolean;
   context?: string;
   files?: string[];
+  images?: string[];
 }) {
   const question = await buildAugmentedQuestion(input.question, {
     context: input.context,
     files: input.files,
   });
+  const images = await loadImages(input.images);
   return orchestrator.ask(
     question,
     input.mode as ResponseMode | undefined,
     input.max_deconflict_rounds,
     input.verbose,
+    images.length ? images : undefined,
   );
 }
 
@@ -229,7 +236,17 @@ const AskCouncilInput = z.object({
     .optional()
     .describe(
       'Optional local file paths to read and attach as context (each fenced and ' +
-        'labelled). Caps: 256 KB/file, 768 KB total, 20 files.',
+        'labelled). Caps: 256 KB/file, 768 KB total, 20 files. Text files only — ' +
+        'use "images" for pictures.',
+    ),
+  images: z
+    .array(z.string())
+    .optional()
+    .describe(
+      'Optional local image paths (png/jpg/jpeg/gif/webp). Auto-detected ' +
+        'vision-capable council members are queried with the image(s); members ' +
+        'without vision support are automatically skipped for this call (see ' +
+        'visionRouting in the result). Caps: 8 MB/image, 24 MB total, 6 images.',
     ),
 });
 
@@ -332,7 +349,9 @@ const TOOLS = [
       'pooled (Delphi-style — members reconsider against a neutral, deduplicated, attribution-free ' +
       'pool of answers; no winner is forced, so genuine divergence is preserved), or ' +
       'dialectic (thesis/antithesis/synthesis — members defend their pick and critique the rest, ' +
-      'the judge compiles a pros/cons dossier per option, then members re-select a ranked top-3).',
+      'the judge compiles a pros/cons dossier per option, then members re-select a ranked top-3). ' +
+      'Attach images to ask a vision question — only auto-detected vision-capable members are ' +
+      'queried; the rest are skipped and reported in visionRouting.',
     inputSchema: {
       type: 'object' as const,
       required: ['question'],
@@ -365,7 +384,16 @@ const TOOLS = [
           items: { type: 'string' },
           description:
             'Optional local file paths to read and attach as labelled context ' +
-            '(caps: 256 KB/file, 768 KB total, 20 files).',
+            '(caps: 256 KB/file, 768 KB total, 20 files). Text only — use "images" for pictures.',
+        },
+        images: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Optional local image paths (png/jpg/jpeg/gif/webp). Auto-detected ' +
+            'vision-capable council members are queried with the image(s); members without ' +
+            'vision support are automatically skipped for this call (see visionRouting in ' +
+            'the result). Caps: 8 MB/image, 24 MB total, 6 images.',
         },
       },
     },
@@ -405,6 +433,11 @@ const TOOLS = [
           type: 'array',
           items: { type: 'string' },
           description: 'Optional local file paths to read and attach as labelled context.',
+        },
+        images: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional local image paths — same vision-routing behavior as ask_council.',
         },
       },
     },
@@ -474,7 +507,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.10',
+    version: '0.2.11',
   },
   {
     capabilities: { tools: {} },

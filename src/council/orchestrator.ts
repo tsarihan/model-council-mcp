@@ -12,7 +12,9 @@ import {
   ModelInfo,
   ResponseMode,
   RuntimeConfig,
+  VisionRouting,
 } from '../types.js';
+import { ChatImage } from '../providers/base.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { modelIdLabel } from '../config.js';
 import { categorize } from './categorizer.js';
@@ -140,6 +142,7 @@ export class CouncilOrchestrator {
     modeOverride?: ResponseMode,
     maxRoundsOverride?: number,
     verboseOverride?: boolean,
+    images?: ChatImage[],
   ): Promise<CouncilResult> {
     const mode = modeOverride ?? this.config.responseMode;
     const maxRounds = maxRoundsOverride ?? this.config.maxDeconflictRounds;
@@ -189,12 +192,49 @@ export class CouncilOrchestrator {
       );
     }
 
+    // ── Vision routing ──────────────────────────────────────────────────────
+    // Images are the trigger, not NLP classification of the question — if any
+    // are attached, probe each resolved member's provider (cached after the
+    // first call) and query ONLY the confirmed vision-capable subset. This is
+    // what guarantees an image never reaches a non-vision model: the filter
+    // runs before the fan-out, not as a per-provider best-effort.
+    let queryTargets = members;
+    let visionRouting: VisionRouting | undefined;
+    if (images && images.length > 0) {
+      const checked = await Promise.all(
+        members.map(async m => ({
+          member: m,
+          vision: await m.provider.supportsVision(m.modelId.model).catch(() => false),
+        })),
+      );
+      const visionMembers = checked.filter(c => c.vision).map(c => c.member);
+      const skippedNonVision = checked.filter(c => !c.vision).map(c => modelIdLabel(c.member.modelId));
+      if (visionMembers.length === 0) {
+        throw new Error(
+          `${images.length} image(s) attached, but none of the ${members.length} configured council ` +
+          `member(s) are vision-capable: ${members.map(m => modelIdLabel(m.modelId)).join(', ')}. ` +
+          `Add a vision-capable model with configure_council, or ask without images.`,
+        );
+      }
+      queryTargets = visionMembers;
+      visionRouting = {
+        imagesAttached: images.length,
+        queriedVisionModels: visionMembers.map(m => modelIdLabel(m.modelId)),
+        skippedNonVision,
+      };
+    }
+
     // ── Query all members (bounded concurrency) ───────────────────────────
-    const responses = await queryMembers(question, members, this.runtime);
+    const responses = await queryMembers(question, queryTargets, this.runtime, {}, images);
 
     // ── Individual mode — done ─────────────────────────────────────────────
     if (mode === 'individual') {
-      return { mode: 'individual', question, responses } satisfies IndividualResult;
+      return {
+        mode: 'individual',
+        question,
+        responses,
+        ...(visionRouting ? { visionRouting } : {}),
+      } satisfies IndividualResult;
     }
 
     // ── Find the judge ─────────────────────────────────────────────────────
@@ -211,7 +251,10 @@ export class CouncilOrchestrator {
     const erroredLabels = new Set(responses.filter(r => r.error).map(r => r.label));
     const judgeModelId = selectJudge(
       this.config.judgeModelId,
-      members.map(m => m.modelId),
+      // queryTargets, not members: candidates must actually have a response
+      // (when images filtered the council to a vision-capable subset, the
+      // skipped members never ran and would otherwise be eligible for judge).
+      queryTargets.map(m => m.modelId),
       this.modelCache,
       erroredLabels,
     );
@@ -238,29 +281,33 @@ export class CouncilOrchestrator {
       // ── Pooled (Delphi) ──────────────────────────────────────────────────
       // Neutral, attribution-free reconsideration. Skips categorization entirely.
       if (mode === 'pooled') {
-        return await runPooled({
+        const pooled = await runPooled({
           question,
           initialResponses: responses,
-          members,
+          // queryTargets: reconsideration re-questions the same members that
+          // answered round 0 — a vision-skipped member never saw the question.
+          members: queryTargets,
           judgeModelId,
           judgeProvider,
           runtime: this.runtime,
           verbose,
         });
+        return visionRouting ? { ...pooled, visionRouting } : pooled;
       }
 
       // ── Dialectic (thesis → antithesis → synthesis) ───────────────────────
       // Members defend their pick, judge builds pros/cons, members re-select.
       if (mode === 'dialectic') {
-        return await runDialectic({
+        const dialectic = await runDialectic({
           question,
           initialResponses: responses,
-          members,
+          members: queryTargets,
           judgeModelId,
           judgeProvider,
           runtime: this.runtime,
           verbose,
         });
+        return visionRouting ? { ...dialectic, visionRouting } : dialectic;
       }
 
       // ── Categorize ──────────────────────────────────────────────────────
@@ -277,23 +324,25 @@ export class CouncilOrchestrator {
           mode: 'categorized',
           ...catResult,
           rawResponses: responses,
+          ...(visionRouting ? { visionRouting } : {}),
         } satisfies CategorizedResult;
       }
 
       // ── Deconflicted ────────────────────────────────────────────────────
-      return (await deconflict({
+      const dec = (await deconflict({
         question,
         initialResponses: responses,
         initialConflicts: catResult.conflicting,
         commonAgreement: catResult.commonAgreement,
         complementary: catResult.complementary,
         maxRounds,
-        members,
+        members: queryTargets,
         judgeModelId,
         judgeProvider,
         runtime: this.runtime,
         verbose,
       })) as DeconflictedResult;
+      return visionRouting ? { ...dec, visionRouting } : dec;
     } catch (err) {
       // Degrade to individual so member work isn't discarded — but log the full
       // error to stderr so a genuine bug (not just a judge outage) stays visible
@@ -310,6 +359,7 @@ export class CouncilOrchestrator {
         note:
           `Reconciliation (${mode} mode, judge ${modelIdLabel(judgeModelId)}) failed — ${msg}. ` +
           `Returning the council's raw individual responses.`,
+        ...(visionRouting ? { visionRouting } : {}),
       } satisfies IndividualResult;
     }
   }

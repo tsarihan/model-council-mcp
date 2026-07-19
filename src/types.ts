@@ -109,6 +109,18 @@ export interface RawResponse {
   latencyMs: number;
 }
 
+/**
+ * Present on a result only when the ask attached images: records which
+ * configured members actually received them (probe-confirmed vision-capable)
+ * versus which were skipped because they aren't — so the routing decision is
+ * visible, not silent.
+ */
+export interface VisionRouting {
+  imagesAttached: number;
+  queriedVisionModels: string[];
+  skippedNonVision: string[];
+}
+
 // ─── Result shapes ────────────────────────────────────────────────────────────
 
 export interface IndividualResult {
@@ -117,6 +129,7 @@ export interface IndividualResult {
   responses: RawResponse[];
   /** Set when a reconciliation mode fell back to individual (e.g. the judge failed). */
   note?: string;
+  visionRouting?: VisionRouting;
 }
 
 export interface ComplementaryItem {
@@ -146,6 +159,7 @@ export interface CategorizedResult {
   conflicting: ConflictItem[];
   rawResponses: RawResponse[];
   judgeModel: string;     // label
+  visionRouting?: VisionRouting;
 }
 
 export interface RoundSummary {
@@ -191,6 +205,7 @@ export interface DeconflictedResult {
   };
   /** Per-round detail: member responses and the judge's re-categorization. */
   rounds?: DeconflictRoundDetail[];
+  visionRouting?: VisionRouting;
 }
 
 // ─── Pooled (Delphi) result ───────────────────────────────────────────────────
@@ -225,6 +240,7 @@ export interface PooledResult {
   // ── Verbose-only ──
   /** The initial fan-out responses from every council member. */
   initialResponses?: RawResponse[];
+  visionRouting?: VisionRouting;
 }
 
 // ─── Dialectic result (thesis → antithesis → synthesis) ───────────────────────
@@ -256,6 +272,7 @@ export interface DialecticResult {
   // ── Verbose-only ──
   /** Thesis: the initial fan-out responses from every council member. */
   initialResponses?: RawResponse[];
+  visionRouting?: VisionRouting;
 }
 
 export type CouncilResult =

@@ -35457,12 +35457,18 @@ function limitForPool(key, runtime) {
   if (explicit !== void 0) return explicit;
   return key === "local" ? runtime.localConcurrency : runtime.cloudConcurrency;
 }
-async function checkVisionPooled(members, runtime) {
+async function checkVisionPooled(members, runtime, onProgress) {
   const results = new Array(members.length);
   const buckets = /* @__PURE__ */ new Map();
+  const total = members.length;
+  let done = 0;
   members.forEach((member, i2) => {
     const task = async () => {
+      const label = modelIdLabel(member.modelId);
+      await onProgress?.(`Checking vision capability: ${label} (${done + 1}/${total})`);
       const vision = await member.provider.supportsVision(member.modelId.model).catch(() => false);
+      done++;
+      await onProgress?.(`${label}: ${vision ? "vision-capable" : "not vision-capable"} (${done}/${total} checked)`);
       results[i2] = { member, vision };
     };
     const key = poolKey(member);
@@ -35510,12 +35516,15 @@ async function completeWithRetry(provider, model, messages, opts, retries) {
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
-async function queryMembersVarying(promptFor, members, runtime, opts = {}, images) {
+async function queryMembersVarying(promptFor, members, runtime, opts = {}, images, onProgress) {
   const results = new Array(members.length);
   const buckets = /* @__PURE__ */ new Map();
+  const total = members.length;
+  let done = 0;
   members.forEach((member, i2) => {
     const task = async () => {
       const label = modelIdLabel(member.modelId);
+      await onProgress?.(`Asking ${label}...`);
       const t0 = Date.now();
       try {
         const userMessage = {
@@ -35531,6 +35540,8 @@ async function queryMembersVarying(promptFor, members, runtime, opts = {}, image
           runtime.retries
         );
         results[i2] = { modelId: member.modelId, label, response, latencyMs: Date.now() - t0 };
+        done++;
+        await onProgress?.(`${label} answered (${done}/${total})`);
       } catch (err) {
         results[i2] = {
           modelId: member.modelId,
@@ -35539,6 +35550,8 @@ async function queryMembersVarying(promptFor, members, runtime, opts = {}, image
           error: String(err),
           latencyMs: Date.now() - t0
         };
+        done++;
+        await onProgress?.(`${label} failed (${done}/${total})`);
       }
     };
     const key = poolKey(member);
@@ -35551,8 +35564,8 @@ async function queryMembersVarying(promptFor, members, runtime, opts = {}, image
   );
   return results;
 }
-async function queryMembers(question, members, runtime, opts = {}, images) {
-  return queryMembersVarying(() => question, members, runtime, opts, images);
+async function queryMembers(question, members, runtime, opts = {}, images, onProgress) {
+  return queryMembersVarying(() => question, members, runtime, opts, images, onProgress);
 }
 
 // src/council/categorizer.ts
@@ -36333,7 +36346,7 @@ var CouncilOrchestrator = class {
     return this.modelCache.filter((m2) => m2.provider === "ollama" && !isEmbeddingModel(m2)).map((m2) => ({ provider: "ollama", serverId: m2.serverId, model: m2.model }));
   }
   /** Ask the council and return a result in the configured (or overridden) mode */
-  async ask(question, modeOverride, maxRoundsOverride, verboseOverride, images) {
+  async ask(question, modeOverride, maxRoundsOverride, verboseOverride, images, onProgress) {
     const mode = modeOverride ?? this.config.responseMode;
     const maxRounds = maxRoundsOverride ?? this.config.maxDeconflictRounds;
     const verbose = verboseOverride ?? this.runtime.verbose;
@@ -36376,7 +36389,7 @@ var CouncilOrchestrator = class {
           m2.provider.seedVisionCache({ [m2.modelId.model]: persistedVision[label] });
         }
       }
-      const checked = await checkVisionPooled(members, this.runtime);
+      const checked = await checkVisionPooled(members, this.runtime, onProgress);
       const visionMembers = checked.filter((c2) => c2.vision).map((c2) => c2.member);
       const skippedNonVision = checked.filter((c2) => !c2.vision).map((c2) => modelIdLabel(c2.member.modelId));
       const nextPersisted = { ...persistedVision };
@@ -36403,7 +36416,7 @@ var CouncilOrchestrator = class {
         skippedNonVision
       };
     }
-    const responses = await queryMembers(question, queryTargets, this.runtime, {}, images);
+    const responses = await queryMembers(question, queryTargets, this.runtime, {}, images, onProgress);
     if (mode === "individual") {
       return {
         mode: "individual",
@@ -36860,7 +36873,7 @@ try {
   });
 } catch {
 }
-async function runCouncil(input) {
+async function runCouncil(input, onProgress) {
   const question = await buildAugmentedQuestion(input.question, {
     context: input.context,
     files: input.files
@@ -36871,7 +36884,8 @@ async function runCouncil(input) {
     input.mode,
     input.max_deconflict_rounds,
     input.verbose,
-    images.length ? images : void 0
+    images.length ? images : void 0,
+    onProgress
   );
 }
 var labelsToMembers = (labels) => labels.flatMap((s2) => {
@@ -37128,7 +37142,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.15"
+    version: "0.2.16"
   },
   {
     capabilities: { tools: {} },
@@ -37136,8 +37150,20 @@ var server = new Server(
   }
 );
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
-server.setRequestHandler(CallToolRequestSchema, async (req) => {
+server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
   const { name, arguments: args } = req.params;
+  const progressToken = extra._meta?.progressToken;
+  let progressCount = 0;
+  const onProgress = progressToken === void 0 ? void 0 : async (message) => {
+    progressCount++;
+    try {
+      await extra.sendNotification({
+        method: "notifications/progress",
+        params: { progressToken, progress: progressCount, message }
+      });
+    } catch {
+    }
+  };
   try {
     switch (name) {
       // ── list_models ──────────────────────────────────────────────────────
@@ -37239,7 +37265,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       // ── ask_council ──────────────────────────────────────────────────────
       case "ask_council": {
         const input = AskCouncilInput.parse(args ?? {});
-        const result = await runCouncil(input);
+        const result = await runCouncil(input, onProgress);
         return {
           content: [
             {

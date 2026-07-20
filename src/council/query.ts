@@ -59,6 +59,15 @@ export interface VisionCheck {
 }
 
 /**
+ * A human-readable status line for a long-running fan-out, so a caller that
+ * can forward it (e.g. an MCP `notifications/progress`) keeps the user from
+ * thinking a slow call has hung — vision detection in particular can now take
+ * minutes on a machine with several large local models, since it's correctly
+ * serialized per provider rather than racing them concurrently.
+ */
+export type ProgressReporter = (message: string) => void | Promise<void>;
+
+/**
  * Probe every member's supportsVision(), honouring the SAME per-provider
  * concurrency limits as a real query round (notably `local`, typically 1). A
  * vision probe is a real completion call — the OCR-challenge round trip, not
@@ -70,13 +79,20 @@ export interface VisionCheck {
 export async function checkVisionPooled(
   members: Member[],
   runtime: RuntimeConfig,
+  onProgress?: ProgressReporter,
 ): Promise<VisionCheck[]> {
   const results: VisionCheck[] = new Array(members.length);
   const buckets = new Map<PoolKey, Array<() => Promise<void>>>();
+  const total = members.length;
+  let done = 0;
 
   members.forEach((member, i) => {
     const task = async () => {
+      const label = modelIdLabel(member.modelId);
+      await onProgress?.(`Checking vision capability: ${label} (${done + 1}/${total})`);
       const vision = await member.provider.supportsVision(member.modelId.model).catch(() => false);
+      done++;
+      await onProgress?.(`${label}: ${vision ? 'vision-capable' : 'not vision-capable'} (${done}/${total} checked)`);
       results[i] = { member, vision };
     };
     const key = poolKey(member);
@@ -159,15 +175,19 @@ export async function queryMembersVarying(
   runtime: RuntimeConfig,
   opts: CompletionOptions = {},
   images?: ChatImage[],
+  onProgress?: ProgressReporter,
 ): Promise<RawResponse[]> {
   const results: RawResponse[] = new Array(members.length);
   // Group tasks into per-provider pools so each subscription's concurrency
   // ceiling is honoured independently (ChatGPT 6, Ollama cloud 3/10, …).
   const buckets = new Map<PoolKey, Array<() => Promise<void>>>();
+  const total = members.length;
+  let done = 0;
 
   members.forEach((member, i) => {
     const task = async () => {
       const label = modelIdLabel(member.modelId);
+      await onProgress?.(`Asking ${label}...`);
       const t0 = Date.now();
       try {
         const userMessage: ChatMessage = {
@@ -183,6 +203,8 @@ export async function queryMembersVarying(
           runtime.retries,
         );
         results[i] = { modelId: member.modelId, label, response, latencyMs: Date.now() - t0 };
+        done++;
+        await onProgress?.(`${label} answered (${done}/${total})`);
       } catch (err) {
         results[i] = {
           modelId: member.modelId,
@@ -191,6 +213,8 @@ export async function queryMembersVarying(
           error: String(err),
           latencyMs: Date.now() - t0,
         };
+        done++;
+        await onProgress?.(`${label} failed (${done}/${total})`);
       }
     };
     const key = poolKey(member);
@@ -218,6 +242,7 @@ export async function queryMembers(
   runtime: RuntimeConfig,
   opts: CompletionOptions = {},
   images?: ChatImage[],
+  onProgress?: ProgressReporter,
 ): Promise<RawResponse[]> {
-  return queryMembersVarying(() => question, members, runtime, opts, images);
+  return queryMembersVarying(() => question, members, runtime, opts, images, onProgress);
 }

@@ -30,6 +30,7 @@ import { z } from 'zod';
 import { loadConfig, modelIdLabel, parseModelId } from './config.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { CouncilOrchestrator } from './council/orchestrator.js';
+import { ProgressReporter } from './council/query.js';
 import { CouncilConfig, CouncilMember, ModelId, ResponseMode, SubscriptionTiers } from './types.js';
 import { loadState, saveState } from './state.js';
 import { loadSubscriptions, validTiers, SubProvider } from './subscriptions.js';
@@ -75,16 +76,20 @@ try {
 
 /** Compose context/files into the prompt and load any attached images, then run
  *  the council. Shared by the synchronous ask_council and the background
- *  ask_council_async. */
-async function runCouncil(input: {
-  question: string;
-  mode?: string;
-  max_deconflict_rounds?: number;
-  verbose?: boolean;
-  context?: string;
-  files?: string[];
-  images?: string[];
-}) {
+ *  ask_council_async — `onProgress` only makes sense for the synchronous path
+ *  (a caller is actually waiting), so callers pass it explicitly. */
+async function runCouncil(
+  input: {
+    question: string;
+    mode?: string;
+    max_deconflict_rounds?: number;
+    verbose?: boolean;
+    context?: string;
+    files?: string[];
+    images?: string[];
+  },
+  onProgress?: ProgressReporter,
+) {
   const question = await buildAugmentedQuestion(input.question, {
     context: input.context,
     files: input.files,
@@ -96,6 +101,7 @@ async function runCouncil(input: {
     input.max_deconflict_rounds,
     input.verbose,
     images.length ? images : undefined,
+    onProgress,
   );
 }
 
@@ -507,7 +513,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.15',
+    version: '0.2.16',
   },
   {
     capabilities: { tools: {} },
@@ -528,8 +534,46 @@ const server = new Server(
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
 // Call tools
-server.setRequestHandler(CallToolRequestSchema, async req => {
+server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
   const { name, arguments: args } = req.params;
+
+  // If the caller requested progress notifications (MCP progressToken), build
+  // a reporter that forwards status lines that way. Vision detection now runs
+  // strictly one local model at a time (see checkVisionPooled) — correct, but
+  // on a machine with several large local models that can take minutes with
+  // no other feedback, which reads as a hang. Best-effort: a notification
+  // failure must never break the tool call itself.
+  //
+  // Known client-side limitation (observed against the TS SDK's stdio Client,
+  // not something server code can work around): when several notifications
+  // for the same token fire in rapid, near-synchronous succession — e.g. every
+  // member's vision result is already cached and every check resolves without
+  // real I/O — the client's progress-handler bookkeeping can drop all but the
+  // first as "unknown token". In practice this self-resolves: that failure
+  // mode only shows up exactly when the call is fast enough that progress
+  // tracking wasn't needed anyway. When work is genuinely slow (cold model
+  // loads, real OCR round trips), the natural I/O gaps between steps keep
+  // delivery reliable.
+  const progressToken = extra._meta?.progressToken;
+  let progressCount = 0;
+  const onProgress: ProgressReporter | undefined =
+    progressToken === undefined
+      ? undefined
+      : async message => {
+          progressCount++;
+          // Awaited so notifications flush over the transport in order, before
+          // the next step of the call proceeds — a fire-and-forget send here
+          // raced with the final tool response and could arrive out of order
+          // or get dropped.
+          try {
+            await extra.sendNotification({
+              method: 'notifications/progress',
+              params: { progressToken, progress: progressCount, message },
+            });
+          } catch {
+            /* best-effort — a notification failure must never break the tool call */
+          }
+        };
 
   try {
     switch (name) {
@@ -656,7 +700,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
       // ── ask_council ──────────────────────────────────────────────────────
       case 'ask_council': {
         const input = AskCouncilInput.parse(args ?? {});
-        const result = await runCouncil(input);
+        const result = await runCouncil(input, onProgress);
 
         return {
           content: [

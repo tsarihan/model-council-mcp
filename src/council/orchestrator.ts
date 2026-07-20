@@ -21,7 +21,7 @@ import { categorize } from './categorizer.js';
 import { deconflict } from './deconflict.js';
 import { runDialectic } from './dialectic.js';
 import { runPooled } from './pool.js';
-import { checkVisionPooled, Member, queryMembers } from './query.js';
+import { checkVisionPooled, Member, ProgressReporter, queryMembers } from './query.js';
 import { loadState, saveState } from '../state.js';
 
 // ─── Model classification ──────────────────────────────────────────────────────
@@ -144,6 +144,7 @@ export class CouncilOrchestrator {
     maxRoundsOverride?: number,
     verboseOverride?: boolean,
     images?: ChatImage[],
+    onProgress?: ProgressReporter,
   ): Promise<CouncilResult> {
     const mode = modeOverride ?? this.config.responseMode;
     const maxRounds = maxRoundsOverride ?? this.config.maxDeconflictRounds;
@@ -214,7 +215,7 @@ export class CouncilOrchestrator {
         }
       }
 
-      const checked = await checkVisionPooled(members, this.runtime);
+      const checked = await checkVisionPooled(members, this.runtime, onProgress);
       const visionMembers = checked.filter(c => c.vision).map(c => c.member);
       const skippedNonVision = checked.filter(c => !c.vision).map(c => modelIdLabel(c.member.modelId));
 
@@ -251,7 +252,7 @@ export class CouncilOrchestrator {
     }
 
     // ── Query all members (bounded concurrency) ───────────────────────────
-    const responses = await queryMembers(question, queryTargets, this.runtime, {}, images);
+    const responses = await queryMembers(question, queryTargets, this.runtime, {}, images, onProgress);
 
     // ── Individual mode — done ─────────────────────────────────────────────
     if (mode === 'individual') {

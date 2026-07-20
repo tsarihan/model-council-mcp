@@ -460,6 +460,33 @@ async function main() {
       check('vision: visionRouting lists the queried vision model', visAsk.visionRouting?.queriedVisionModels?.includes('ollama:vision-a'));
       check('vision: visionRouting lists the skipped non-vision model', visAsk.visionRouting?.skippedNonVision?.includes('ollama:small-a'));
 
+      // Progress notifications: when the caller requests them (MCP progressToken,
+      // handled transparently by the SDK's `onprogress` client option), the
+      // server reports per-member vision-detection AND per-member answer status
+      // — this is what keeps a long vision-gated call, now correctly serialized
+      // per provider, from reading as a hang.
+      //
+      // Only asserting "at least one arrives" here, deliberately: this exact
+      // call (right after `visAsk` above already warmed the vision cache) hits
+      // a real client-side limitation in the MCP TS SDK's stdio Client — when
+      // several notifications for the same token fire in rapid, near-synchronous
+      // succession (every check now resolves from cache with no real I/O), the
+      // client's own progress-handler bookkeeping drops all but the first as
+      // "unknown token" (confirmed by isolated repro; not something server code
+      // can work around). That failure mode only shows up exactly when the call
+      // is fast enough that progress tracking wasn't needed anyway — a genuinely
+      // slow, uncached call (cold model loads, real OCR round trips) has natural
+      // I/O gaps between steps and delivers reliably, per the SAME repro against
+      // an uncached mock.
+      const progressMessages = [];
+      const visAskProgress = parseToolResult(await client.callTool(
+        { name: 'ask_council', arguments: { question: "What's in this picture?", mode: 'individual', images: [imgFile] } },
+        undefined,
+        { onprogress: p => progressMessages.push(p.message) },
+      ));
+      check('vision progress: at least one notification arrived', progressMessages.length > 0, JSON.stringify(progressMessages));
+      check('vision progress: final result unaffected', visAskProgress.responses?.length === 1 && visAskProgress.responses?.[0]?.label === 'ollama:vision-a');
+
       // Wire-shape proof: the non-vision member must NEVER receive the image
       // (a) it wasn't queried at all (asserted above via responses.length===1), and
       // (b) the vision member's request carried the image in Ollama's correct

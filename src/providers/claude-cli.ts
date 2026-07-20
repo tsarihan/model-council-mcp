@@ -33,6 +33,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ChatImage, ChatMessage, CompletionOptions, Provider } from './base.js';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
+import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
 
 const DEFAULT_MODELS = ['opus', 'sonnet'];
 const DEFAULT_TIMEOUT_MS = 300_000;
@@ -69,6 +70,8 @@ export class ClaudeCliProvider implements Provider {
   readonly config: ServerConfig;
   private readonly command: string;
   private readonly models: string[];
+  /** Per-model OCR-challenge-verified vision result; only set once definitive. */
+  private visionVerifiedCache = new Map<string, boolean>();
 
   constructor(config: ServerConfig) {
     this.config = config;
@@ -96,13 +99,29 @@ export class ClaudeCliProvider implements Provider {
   }
 
   /**
-   * True: the underlying Claude models are vision-capable, and `complete()`
-   * gives the CLI a real (permission-enforced) way to view an attached image
-   * — see the file header. Uniform across opus/sonnet/haiku; the mechanism is
-   * CLI-invocation-level, not model-level.
+   * There's no cheap capability signal for a CLI subprocess (no metadata
+   * endpoint, no accept/reject probe), so this goes straight to the OCR
+   * challenge — a real subprocess call once per model, cached after. The
+   * underlying Claude models are vision-capable and `complete()` gives the
+   * CLI a real (permission-enforced) way to view an attached image (see the
+   * file header), so this should always resolve true — but it stays a real
+   * behavioral check rather than a hardcoded assumption, consistent with
+   * every other provider and correct if the mechanism ever regresses.
    */
-  async supportsVision(): Promise<boolean> {
-    return true;
+  async supportsVision(model: string): Promise<boolean> {
+    const cached = this.visionVerifiedCache.get(model);
+    if (cached !== undefined) return cached;
+
+    const outcome = await verifyVisionChallenge((challenge) =>
+      this.complete(
+        model,
+        [{ role: 'user', content: CHALLENGE_PROMPT, images: [{ base64: challenge.base64, mimeType: challenge.mimeType }] }],
+        { maxTokens: 2000, timeoutMs: 60_000 },
+      ),
+    );
+    if (outcome === 'pass') { this.visionVerifiedCache.set(model, true); return true; }
+    if (outcome === 'fail') { this.visionVerifiedCache.set(model, false); return false; }
+    return false; // inconclusive — not cached, retried next call
   }
 
   async complete(

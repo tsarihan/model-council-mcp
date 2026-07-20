@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
 import { ChatMessage, CompletionOptions, Provider, PROBE_IMAGE_BASE64, isTimeoutError } from './base.js';
+import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
 
 // Curated list — Anthropic's REST API has no model-listing endpoint
 const ANTHROPIC_MODELS = [
@@ -43,8 +44,10 @@ export class AnthropicProvider implements Provider {
   readonly serverId = 'anthropic';
   readonly config: ServerConfig;
   private client: Anthropic;
-  /** Per-model vision-probe result. Only definitive answers are cached (see supportsVision). */
-  private visionCache = new Map<string, boolean>();
+  /** Per-model accept/reject probe result (stage 1). Only definitive answers are cached. */
+  private acceptCache = new Map<string, boolean>();
+  /** Per-model OCR-challenge-verified vision result (stage 2); only set once definitive. */
+  private visionVerifiedCache = new Map<string, boolean>();
 
   constructor(config: ServerConfig) {
     this.config = config;
@@ -73,16 +76,13 @@ export class AnthropicProvider implements Provider {
   }
 
   /**
-   * Functional probe (the Anthropic API has no capability-listing endpoint):
-   * send a 1-token request with an image block and see whether it's accepted.
-   * Every current Claude model is vision-capable, so this should always
-   * resolve true — but it stays a real probe rather than a hardcoded list, for
-   * consistency with the other providers and to stay correct if that changes.
-   * Only a definitive answer (200 or a 4xx rejection) is cached; a transient
-   * failure (timeout/5xx) returns false for this call only.
+   * Stage 1 (the Anthropic API has no capability-listing endpoint): send a
+   * 1-token request with an image block and see whether it's accepted. Only a
+   * definitive answer (200 or a 4xx rejection) is cached; a transient failure
+   * (timeout/5xx) returns false for this call only.
    */
-  async supportsVision(model: string): Promise<boolean> {
-    const cached = this.visionCache.get(model);
+  private async probeAcceptsImage(model: string): Promise<boolean> {
+    const cached = this.acceptCache.get(model);
     if (cached !== undefined) return cached;
     try {
       await this.client.messages.create({
@@ -98,15 +98,40 @@ export class AnthropicProvider implements Provider {
           },
         ],
       });
-      this.visionCache.set(model, true);
+      this.acceptCache.set(model, true);
       return true;
     } catch (err) {
       if (isTimeoutError(err)) return false; // transient — don't cache
       const status = (err as { status?: number }).status;
       if (typeof status === 'number' && status >= 500) return false; // server error — don't cache
-      this.visionCache.set(model, false); // 4xx → definitive rejection
+      this.acceptCache.set(model, false); // 4xx → definitive rejection
       return false;
     }
+  }
+
+  /**
+   * Two-stage detection. Every current Claude model is vision-capable, so
+   * this should always resolve true — but it stays a real behavioral check
+   * rather than a hardcoded assumption, for consistency with the other
+   * providers and to stay correct if that ever changes.
+   */
+  async supportsVision(model: string): Promise<boolean> {
+    const verified = this.visionVerifiedCache.get(model);
+    if (verified !== undefined) return verified;
+
+    const accepted = await this.probeAcceptsImage(model);
+    if (!accepted) return false;
+
+    const outcome = await verifyVisionChallenge((challenge) =>
+      this.complete(
+        model,
+        [{ role: 'user', content: CHALLENGE_PROMPT, images: [{ base64: challenge.base64, mimeType: challenge.mimeType }] }],
+        { maxTokens: 2000, timeoutMs: 60_000 },
+      ),
+    );
+    if (outcome === 'pass') { this.visionVerifiedCache.set(model, true); return true; }
+    if (outcome === 'fail') { this.visionVerifiedCache.set(model, false); return false; }
+    return false; // inconclusive — not cached, retried next call
   }
 
   async complete(

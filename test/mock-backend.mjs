@@ -3,16 +3,25 @@
  *
  * Emulates:
  *   GET  /api/tags   → model list (small-a 7B, small-b 7B, big-judge 70B, vision-a 8B, …)
- *   POST /api/show   → per-model capabilities (vision-a reports "vision"; others don't)
+ *   POST /api/show   → per-model capabilities (vision-a + fake-vision-a report "vision"; others don't)
  *   POST /api/chat   → context-aware response:
  *                        • categorization prompt → judge JSON (counter-driven)
  *                        • synthesis prompt      → final answer text
  *                        • deconflict round      → member convergence stance
+ *                        • OCR verification challenge → vision-a answers correctly (genuine
+ *                          vision); fake-vision-a answers wrong (recreates the real SGLang/
+ *                          qwen3.6-mlx false-positive: capabilities metadata claims vision,
+ *                          the model can't actually read the image)
  *                        • normal question       → member opinion
  *                      also records the request's `images` array for wire-shape assertions
  *   POST /reset      → reset the categorization counter
  */
 import http from 'node:http';
+import { CHALLENGE_IMAGES, CHALLENGE_PROMPT } from '../dist/vision-challenge.js';
+
+// base64 → code lookup, so the mock can answer (or deliberately misanswer) an
+// OCR verification challenge without hardcoding any specific challenge image.
+const CHALLENGE_BY_BASE64 = new Map(CHALLENGE_IMAGES.map(c => [c.base64, c.code]));
 
 let categorizeCalls = 0;
 let poolCalls = 0;
@@ -35,13 +44,20 @@ const MODELS = [
   { name: 'kimi-k2:cloud', details: { parameter_size: '1T', family: 'kimi' }, size: 0 },
   // Embedding model — must be EXCLUDED from auto-council
   { name: 'bge-m3',    details: { parameter_size: '567M', family: 'bert' }, size: 1_200_000_000 },
-  // Vision-capable model, for vision-routing tests — reports "vision" in /api/show capabilities.
+  // Vision-capable model, for vision-routing tests — reports "vision" in /api/show capabilities
+  // AND correctly reads the OCR verification challenge (genuine vision).
   { name: 'vision-a',  details: { parameter_size: '8B',  family: 'llava' }, size: 5_000_000_000 },
+  // Reports "vision" in /api/show capabilities but answers the OCR challenge WRONG — recreates
+  // the real false positive found live (a custom/quantized build whose metadata claims vision
+  // support the underlying weights don't actually have). Stage 2 must exclude this model even
+  // though stage 1 (capabilities metadata) says yes.
+  { name: 'fake-vision-a', details: { parameter_size: '7B', family: 'qwen' }, size: 4_500_000_000 },
 ];
 
 // /api/show capabilities per model name — everything not listed reports no vision.
 const CAPABILITIES = {
   'vision-a': ['completion', 'tools', 'vision'],
+  'fake-vision-a': ['completion', 'tools', 'vision'],
 };
 
 let lastImages = null; // last /api/chat request's `images` array on the user message, if any
@@ -134,6 +150,16 @@ function chatResponse(body) {
   const model = body.model ?? 'unknown';
   lastUserPrompt = content;
   lastImages = lastUser?.images ?? null;
+
+  // OCR-challenge verification (stage 2 of vision detection): the orchestrator's
+  // supportsVision() sends this exact prompt with one challenge image attached.
+  // vision-a genuinely reads it; fake-vision-a accepts the image (stage-1 metadata
+  // said vision) but answers with the wrong digits, same as the real SGLang bug.
+  if (content === CHALLENGE_PROMPT && lastImages?.length) {
+    const code = CHALLENGE_BY_BASE64.get(lastImages[0]);
+    if (model === 'vision-a') return code ?? 'unknown';
+    if (model === 'fake-vision-a') return '0000'; // clean, confident, wrong
+  }
 
   // Flaky model: empty on first call, content afterwards (exercises retry-on-empty)
   if (model === 'flaky-empty') {

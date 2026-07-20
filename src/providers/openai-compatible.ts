@@ -9,6 +9,7 @@ import {
   ChatMessage, CompletionOptions, Provider, stripThinkBlocks, clampMaxTokens,
   DEFAULT_COMPLETION_TIMEOUT_MS, PROBE_IMAGE_BASE64, isTimeoutError,
 } from './base.js';
+import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
 
 // Known-static model lists for cloud providers that don't enumerate via API
 // (OpenAI's /models endpoint returns many but we surface common ones)
@@ -64,8 +65,10 @@ export class OpenAICompatibleProvider implements Provider {
   private client: OpenAI;
   /** Per-model advertised context window (max_model_len); null = not advertised. */
   private maxLenCache = new Map<string, number | null>();
-  /** Per-model vision-probe result. Only definitive answers are cached (see supportsVision). */
-  private visionCache = new Map<string, boolean>();
+  /** Per-model accept/reject probe result (stage 1). Only definitive answers are cached. */
+  private acceptCache = new Map<string, boolean>();
+  /** Per-model OCR-challenge-verified vision result (stage 2); only set once definitive. */
+  private visionVerifiedCache = new Map<string, boolean>();
 
   constructor(config: ServerConfig) {
     this.config = config;
@@ -101,23 +104,24 @@ export class OpenAICompatibleProvider implements Provider {
   }
 
   /**
-   * Functional probe: no OpenAI-compatible endpoint (self-hosted or cloud)
-   * advertises vision support via /v1/models, so the only generic way to find
-   * out is to send a real request with an image part and see whether it's
-   * accepted. Cost is negligible (max_tokens: 1, a 32×32 test image).
+   * Stage 1: does the endpoint even ACCEPT an image_url part? No
+   * OpenAI-compatible endpoint (self-hosted or cloud) advertises vision
+   * support via /v1/models, so the only generic way to find out is to send a
+   * real request with an image part and see whether it's rejected. Cost is
+   * negligible (max_tokens: 1, a 32×32 test image).
    *
    * Only a DEFINITIVE answer is cached: a clean 200 (true) or a 4xx that
    * rejects the request (false — the server validated and refused the image
    * part). A timeout/connection error is transient — it returns false for
-   * this call only, without poisoning the cache, so a wedged server doesn't
-   * permanently mislabel a vision-capable model as text-only.
+   * this call only, without poisoning the cache.
    *
-   * Caveat: this proves the endpoint ACCEPTS an image, not that the model
-   * meaningfully attends to it — some servers accept and silently ignore
-   * unsupported content parts. It is the best available generic signal.
+   * A "true" here only proves the endpoint accepts an image, not that the
+   * model meaningfully attends to it — some servers accept and silently
+   * ignore unsupported content parts (observed live with SGLang serving a
+   * non-vision Qwen2.5-0.5B-Instruct). That's what stage 2 is for.
    */
-  async supportsVision(model: string): Promise<boolean> {
-    const cached = this.visionCache.get(model);
+  private async probeAcceptsImage(model: string): Promise<boolean> {
+    const cached = this.acceptCache.get(model);
     if (cached !== undefined) return cached;
     try {
       await this.client.chat.completions.create(
@@ -136,15 +140,52 @@ export class OpenAICompatibleProvider implements Provider {
         },
         { timeout: 15_000 },
       );
-      this.visionCache.set(model, true);
+      this.acceptCache.set(model, true);
       return true;
     } catch (err) {
       if (isTimeoutError(err)) return false; // transient — don't cache
       const status = (err as { status?: number }).status;
       if (typeof status === 'number' && status >= 500) return false; // server error — don't cache
-      this.visionCache.set(model, false); // 4xx (or unrecognized shape) → definitive rejection
+      this.acceptCache.set(model, false); // 4xx (or unrecognized shape) → definitive rejection
       return false;
     }
+  }
+
+  /**
+   * Two-stage detection. Stage 1 (above) is a trustworthy NEGATIVE but not a
+   * trustworthy positive. Stage 2 behaviorally confirms a stage-1 "yes" with
+   * an OCR challenge before it's trusted — this is what catches a server that
+   * accepts an image request without the underlying model actually reading it.
+   */
+  async supportsVision(model: string): Promise<boolean> {
+    const verified = this.visionVerifiedCache.get(model);
+    if (verified !== undefined) return verified;
+
+    const accepted = await this.probeAcceptsImage(model);
+    if (!accepted) return false; // trustworthy negative, already cached above
+
+    const outcome = await verifyVisionChallenge(async (challenge) => {
+      const res = await this.client.chat.completions.create(
+        {
+          model,
+          max_tokens: 2000,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: CHALLENGE_PROMPT },
+                { type: 'image_url', image_url: { url: `data:${challenge.mimeType};base64,${challenge.base64}` } },
+              ],
+            },
+          ],
+        },
+        { timeout: 60_000 },
+      );
+      return stripThinkBlocks(res.choices[0]?.message?.content ?? '');
+    });
+    if (outcome === 'pass') { this.visionVerifiedCache.set(model, true); return true; }
+    if (outcome === 'fail') { this.visionVerifiedCache.set(model, false); return false; }
+    return false; // inconclusive — not cached, retried next call
   }
 
   async ping(): Promise<boolean> {

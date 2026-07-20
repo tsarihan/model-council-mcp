@@ -11,6 +11,9 @@
  */
 import { readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { CHALLENGE_IMAGES, CHALLENGE_PROMPT } from '../dist/vision-challenge.js';
+
+const CHALLENGE_BY_BASE64 = new Map(CHALLENGE_IMAGES.map(c => [c.base64, c.code]));
 
 const args = process.argv.slice(2);
 
@@ -51,6 +54,7 @@ process.stdin.on('end', () => {
   // the real CLI enforces.
   let readSummary = 'noimages';
   const pathMatch = input.match(/Read each one with the Read tool before answering: (.+)\)/);
+  let challengeAnswer;
   if (toolsReadOnly && pathMatch) {
     const paths = pathMatch[1].split(', ').map(p => p.trim());
     const reads = paths.map(p => {
@@ -58,12 +62,26 @@ process.stdin.on('end', () => {
       if (!inScope) return `DENIED(${p})`;
       try {
         const bytes = readFileSync(p);
+        // OCR-challenge verification: genuinely "read" the image (real bytes,
+        // real Read-tool boundary) and answer with the code it actually encodes,
+        // instead of a fixed diagnostic string — this is what supportsVision()
+        // grades to confirm claude-cli can really see an attached image.
+        if (input.startsWith(CHALLENGE_PROMPT)) {
+          challengeAnswer = CHALLENGE_BY_BASE64.get(bytes.toString('base64'));
+        }
         return `OK(${p},${bytes.length}b)`;
       } catch {
         return `MISSING(${p})`;
       }
     });
     readSummary = `read:${reads.join('|')}`;
+  }
+
+  if (challengeAnswer) {
+    process.stdout.write(
+      JSON.stringify({ type: 'result', subtype: 'success', result: challengeAnswer, session_id: 'mock', total_cost_usd: 0 }),
+    );
+    process.exit(0);
   }
 
   const result =

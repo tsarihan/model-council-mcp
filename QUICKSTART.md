@@ -150,21 +150,28 @@ ask_council(question="What's wrong with this auth flow?", mode="dialectic",
 Caps: 256 KB/file, 768 KB total, 20 files (pass an excerpt via `context` for bigger inputs).
 
 **Ask a vision question.** Add `images` (local png/jpg/jpeg/gif/webp paths) and the
-plugin auto-detects which configured members can actually see — Ollama via its
-`/api/show` capabilities, self-hosted/cloud OpenAI-compatible and Anthropic
-members via a real probe request, `codex-cli` via its native `-i` image flag,
-`claude-cli` via a narrowly-scoped, permission-enforced `Read` (the CLI has no
-image flag, so the image goes to a fresh temp dir and the model reads it from
-there — nothing else is loosened). **Only vision-capable members are queried**;
-the rest are skipped and reported in the result's `visionRouting`:
+plugin auto-detects which configured members can actually see, with a two-stage
+check: a cheap prefilter (Ollama's `/api/show` capabilities, a functional probe for
+self-hosted/cloud OpenAI-compatible and Anthropic members) trusted only as a
+**negative**, then a behavioral OCR-challenge confirmation — the model is shown a
+small rendered image with a random 4-digit code and graded on whether it reads it
+back correctly — before a "yes" is trusted. This catches two real failure modes:
+a server accepting an image request without the model actually reading it, and
+Ollama capability metadata that's stale for custom/quantized builds. `codex-cli`
+uses its native `-i` image flag; `claude-cli` has no image flag, so the image goes
+to a fresh temp dir with a narrowly-scoped, permission-enforced `Read`. **Only
+vision-capable members are queried**; the rest are skipped and reported in the
+result's `visionRouting`:
 
 ```
 ask_council(question="What does this chart show?", images=["/Users/me/chart.png"])
 ```
-Caps: 8 MB/image, 24 MB total, 6 images. In practice, small local vision models
-vary a lot in reading accuracy on dense text/screenshots (they may engage with
-the image but misread specifics); Claude/ChatGPT (`claude-cli`/`codex-cli`) and
-a properly-sized self-hosted vision model both read fine text accurately.
+Caps: 8 MB/image, 24 MB total, 6 images. The OCR-challenge check runs once per
+member (cached after) — the first vision question against a given member costs
+one extra round trip. In practice, small local vision models vary a lot in
+reading accuracy on dense text/screenshots even once verified (they may engage
+with the image but misread specifics); Claude/ChatGPT (`claude-cli`/`codex-cli`)
+and a properly-sized self-hosted vision model both read fine text accurately.
 
 **Run it in the background.** A deconfliction/dialectic run over slow local models
 can take a while — `ask_council_async` returns a `job_id` immediately so you keep

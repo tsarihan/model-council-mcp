@@ -24815,6 +24815,142 @@ function clampMaxTokens(requested, maxModelLen, messages) {
   return Math.min(requested, budget);
 }
 
+// src/vision-challenge.ts
+var import_node_zlib = require("node:zlib");
+var FONT_5X7 = {
+  "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
+  "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
+  "2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
+  "3": ["11111", "00010", "00100", "00010", "00001", "10001", "01110"],
+  "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
+  "5": ["11111", "10000", "11110", "00001", "00001", "10001", "01110"],
+  "6": ["00110", "01000", "10000", "11110", "10001", "10001", "01110"],
+  "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
+  "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
+  "9": ["01110", "10001", "10001", "01111", "00001", "00010", "01100"]
+};
+var crcTable = null;
+function getCrcTable() {
+  if (crcTable) return crcTable;
+  const table = new Uint32Array(256);
+  for (let n2 = 0; n2 < 256; n2++) {
+    let c2 = n2;
+    for (let k2 = 0; k2 < 8; k2++) c2 = c2 & 1 ? 3988292384 ^ c2 >>> 1 : c2 >>> 1;
+    table[n2] = c2 >>> 0;
+  }
+  crcTable = table;
+  return table;
+}
+function crc32(buf) {
+  const table = getCrcTable();
+  let crc = 4294967295;
+  for (let i2 = 0; i2 < buf.length; i2++) crc = table[(crc ^ buf[i2]) & 255] ^ crc >>> 8;
+  return (crc ^ 4294967295) >>> 0;
+}
+function pngChunk(type, data) {
+  const typeBuf = Buffer.from(type, "ascii");
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length, 0);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])), 0);
+  return Buffer.concat([len, typeBuf, data, crc]);
+}
+var PNG_SIG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+function renderDigitsPNG(digits) {
+  const SCALE = 14;
+  const DIGIT_W = 5 * SCALE;
+  const DIGIT_H = 7 * SCALE;
+  const GAP = SCALE * 2;
+  const PAD = SCALE * 3;
+  const width = digits.length * DIGIT_W + (digits.length - 1) * GAP + PAD * 2;
+  const height = DIGIT_H + PAD * 2;
+  const stride = 1 + width * 3;
+  const raw = Buffer.alloc(height * stride, 255);
+  for (let y2 = 0; y2 < height; y2++) raw[y2 * stride] = 0;
+  const setPixel = (x2, y2) => {
+    if (x2 < 0 || x2 >= width || y2 < 0 || y2 >= height) return;
+    const off = y2 * stride + 1 + x2 * 3;
+    raw[off] = 0;
+    raw[off + 1] = 0;
+    raw[off + 2] = 0;
+  };
+  digits.split("").forEach((ch, di) => {
+    const font = FONT_5X7[ch];
+    if (!font) return;
+    const ox = PAD + di * (DIGIT_W + GAP);
+    for (let fy = 0; fy < 7; fy++) {
+      for (let fx = 0; fx < 5; fx++) {
+        if (font[fy][fx] !== "1") continue;
+        for (let sy = 0; sy < SCALE; sy++) {
+          for (let sx = 0; sx < SCALE; sx++) setPixel(ox + fx * SCALE + sx, PAD + fy * SCALE + sy);
+        }
+      }
+    }
+  });
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+  return Buffer.concat([
+    PNG_SIG,
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", (0, import_node_zlib.deflateSync)(raw)),
+    pngChunk("IEND", Buffer.alloc(0))
+  ]);
+}
+var CHALLENGE_CODES = [
+  "3456",
+  "8974",
+  "1203",
+  "6712",
+  "9045",
+  "2589",
+  "7361",
+  "4820",
+  "5197",
+  "8034"
+];
+var CHALLENGE_IMAGES = CHALLENGE_CODES.map((code) => ({
+  code,
+  base64: renderDigitsPNG(code).toString("base64"),
+  mimeType: "image/png"
+}));
+var CHALLENGE_PROMPT = "Reply with ONLY the 4-digit number shown in the attached image. No other text, no punctuation, no explanation \u2014 just the four digits.";
+function pickChallenges(n2) {
+  const pool = [...CHALLENGE_IMAGES];
+  const out = [];
+  for (let i2 = 0; i2 < n2 && pool.length; i2++) {
+    const idx = Math.floor(Math.random() * pool.length);
+    out.push(pool.splice(idx, 1)[0]);
+  }
+  return out;
+}
+function matchesCode(response, code) {
+  const normalized = response.replace(/[\s,-]/g, "");
+  const runs = normalized.match(/\d+/g) ?? [];
+  return runs.includes(code);
+}
+async function verifyVisionChallenge(ask) {
+  const challenges = pickChallenges(2);
+  let sawCleanWrongAnswer = false;
+  for (const challenge of challenges) {
+    let response;
+    try {
+      response = await ask(challenge);
+    } catch {
+      continue;
+    }
+    if (!response?.trim()) continue;
+    if (matchesCode(response, challenge.code)) return "pass";
+    sawCleanWrongAnswer = true;
+  }
+  return sawCleanWrongAnswer ? "fail" : "inconclusive";
+}
+
 // src/providers/ollama.ts
 function toOllamaMessages(messages) {
   return messages.map((m2) => ({
@@ -24828,6 +24964,8 @@ var OllamaProvider = class {
   config;
   /** Per-model /api/show result (context length + vision capability); undefined = not yet fetched. */
   showCache = /* @__PURE__ */ new Map();
+  /** Per-model OCR-challenge-verified vision result; only set once definitive. */
+  visionVerifiedCache = /* @__PURE__ */ new Map();
   constructor(config2) {
     this.config = config2;
     this.serverId = config2.id;
@@ -24869,12 +25007,41 @@ var OllamaProvider = class {
       return void 0;
     }
   }
+  /**
+   * Two-stage detection. Stage 1 (`/api/show` capabilities) is a trustworthy
+   * NEGATIVE but not a trustworthy positive — custom/quantized model builds
+   * (MLX conversions, GGUF imports) can drop the vision projector while still
+   * reporting `"vision"` in capabilities (documented upstream: unsloth#2290,
+   * ollama#9967; reproduced live with a local `-mlx` build that claimed vision
+   * but denied ever receiving an image). Stage 2 behaviorally confirms a
+   * stage-1 "yes" with an OCR challenge before it's trusted.
+   */
   async supportsVision(model) {
+    let metadataVision;
     try {
-      return (await this.fetchShow(model)).vision;
+      metadataVision = (await this.fetchShow(model)).vision;
     } catch {
       return false;
     }
+    if (!metadataVision) return false;
+    const cached3 = this.visionVerifiedCache.get(model);
+    if (cached3 !== void 0) return cached3;
+    const outcome = await verifyVisionChallenge(
+      (challenge) => this.complete(
+        model,
+        [{ role: "user", content: CHALLENGE_PROMPT, images: [{ base64: challenge.base64, mimeType: challenge.mimeType }] }],
+        { maxTokens: 2e3, timeoutMs: 6e4 }
+      )
+    );
+    if (outcome === "pass") {
+      this.visionVerifiedCache.set(model, true);
+      return true;
+    }
+    if (outcome === "fail") {
+      this.visionVerifiedCache.set(model, false);
+      return false;
+    }
+    return false;
   }
   async ping() {
     try {
@@ -31567,8 +31734,10 @@ var OpenAICompatibleProvider = class {
   client;
   /** Per-model advertised context window (max_model_len); null = not advertised. */
   maxLenCache = /* @__PURE__ */ new Map();
-  /** Per-model vision-probe result. Only definitive answers are cached (see supportsVision). */
-  visionCache = /* @__PURE__ */ new Map();
+  /** Per-model accept/reject probe result (stage 1). Only definitive answers are cached. */
+  acceptCache = /* @__PURE__ */ new Map();
+  /** Per-model OCR-challenge-verified vision result (stage 2); only set once definitive. */
+  visionVerifiedCache = /* @__PURE__ */ new Map();
   constructor(config2) {
     this.config = config2;
     this.serverId = config2.id;
@@ -31601,23 +31770,24 @@ var OpenAICompatibleProvider = class {
     return this.maxLenCache.get(model) ?? void 0;
   }
   /**
-   * Functional probe: no OpenAI-compatible endpoint (self-hosted or cloud)
-   * advertises vision support via /v1/models, so the only generic way to find
-   * out is to send a real request with an image part and see whether it's
-   * accepted. Cost is negligible (max_tokens: 1, a 32×32 test image).
+   * Stage 1: does the endpoint even ACCEPT an image_url part? No
+   * OpenAI-compatible endpoint (self-hosted or cloud) advertises vision
+   * support via /v1/models, so the only generic way to find out is to send a
+   * real request with an image part and see whether it's rejected. Cost is
+   * negligible (max_tokens: 1, a 32×32 test image).
    *
    * Only a DEFINITIVE answer is cached: a clean 200 (true) or a 4xx that
    * rejects the request (false — the server validated and refused the image
    * part). A timeout/connection error is transient — it returns false for
-   * this call only, without poisoning the cache, so a wedged server doesn't
-   * permanently mislabel a vision-capable model as text-only.
+   * this call only, without poisoning the cache.
    *
-   * Caveat: this proves the endpoint ACCEPTS an image, not that the model
-   * meaningfully attends to it — some servers accept and silently ignore
-   * unsupported content parts. It is the best available generic signal.
+   * A "true" here only proves the endpoint accepts an image, not that the
+   * model meaningfully attends to it — some servers accept and silently
+   * ignore unsupported content parts (observed live with SGLang serving a
+   * non-vision Qwen2.5-0.5B-Instruct). That's what stage 2 is for.
    */
-  async supportsVision(model) {
-    const cached3 = this.visionCache.get(model);
+  async probeAcceptsImage(model) {
+    const cached3 = this.acceptCache.get(model);
     if (cached3 !== void 0) return cached3;
     try {
       await this.client.chat.completions.create(
@@ -31636,15 +31806,55 @@ var OpenAICompatibleProvider = class {
         },
         { timeout: 15e3 }
       );
-      this.visionCache.set(model, true);
+      this.acceptCache.set(model, true);
       return true;
     } catch (err) {
       if (isTimeoutError(err)) return false;
       const status = err.status;
       if (typeof status === "number" && status >= 500) return false;
-      this.visionCache.set(model, false);
+      this.acceptCache.set(model, false);
       return false;
     }
+  }
+  /**
+   * Two-stage detection. Stage 1 (above) is a trustworthy NEGATIVE but not a
+   * trustworthy positive. Stage 2 behaviorally confirms a stage-1 "yes" with
+   * an OCR challenge before it's trusted — this is what catches a server that
+   * accepts an image request without the underlying model actually reading it.
+   */
+  async supportsVision(model) {
+    const verified = this.visionVerifiedCache.get(model);
+    if (verified !== void 0) return verified;
+    const accepted = await this.probeAcceptsImage(model);
+    if (!accepted) return false;
+    const outcome = await verifyVisionChallenge(async (challenge) => {
+      const res = await this.client.chat.completions.create(
+        {
+          model,
+          max_tokens: 2e3,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: CHALLENGE_PROMPT },
+                { type: "image_url", image_url: { url: `data:${challenge.mimeType};base64,${challenge.base64}` } }
+              ]
+            }
+          ]
+        },
+        { timeout: 6e4 }
+      );
+      return stripThinkBlocks(res.choices[0]?.message?.content ?? "");
+    });
+    if (outcome === "pass") {
+      this.visionVerifiedCache.set(model, true);
+      return true;
+    }
+    if (outcome === "fail") {
+      this.visionVerifiedCache.set(model, false);
+      return false;
+    }
+    return false;
   }
   async ping() {
     try {
@@ -34635,8 +34845,10 @@ var AnthropicProvider = class {
   serverId = "anthropic";
   config;
   client;
-  /** Per-model vision-probe result. Only definitive answers are cached (see supportsVision). */
-  visionCache = /* @__PURE__ */ new Map();
+  /** Per-model accept/reject probe result (stage 1). Only definitive answers are cached. */
+  acceptCache = /* @__PURE__ */ new Map();
+  /** Per-model OCR-challenge-verified vision result (stage 2); only set once definitive. */
+  visionVerifiedCache = /* @__PURE__ */ new Map();
   constructor(config2) {
     this.config = config2;
     this.client = new sdk_default({ apiKey: config2.apiKey });
@@ -34659,16 +34871,13 @@ var AnthropicProvider = class {
     }));
   }
   /**
-   * Functional probe (the Anthropic API has no capability-listing endpoint):
-   * send a 1-token request with an image block and see whether it's accepted.
-   * Every current Claude model is vision-capable, so this should always
-   * resolve true — but it stays a real probe rather than a hardcoded list, for
-   * consistency with the other providers and to stay correct if that changes.
-   * Only a definitive answer (200 or a 4xx rejection) is cached; a transient
-   * failure (timeout/5xx) returns false for this call only.
+   * Stage 1 (the Anthropic API has no capability-listing endpoint): send a
+   * 1-token request with an image block and see whether it's accepted. Only a
+   * definitive answer (200 or a 4xx rejection) is cached; a transient failure
+   * (timeout/5xx) returns false for this call only.
    */
-  async supportsVision(model) {
-    const cached3 = this.visionCache.get(model);
+  async probeAcceptsImage(model) {
+    const cached3 = this.acceptCache.get(model);
     if (cached3 !== void 0) return cached3;
     try {
       await this.client.messages.create({
@@ -34684,15 +34893,43 @@ var AnthropicProvider = class {
           }
         ]
       });
-      this.visionCache.set(model, true);
+      this.acceptCache.set(model, true);
       return true;
     } catch (err) {
       if (isTimeoutError(err)) return false;
       const status = err.status;
       if (typeof status === "number" && status >= 500) return false;
-      this.visionCache.set(model, false);
+      this.acceptCache.set(model, false);
       return false;
     }
+  }
+  /**
+   * Two-stage detection. Every current Claude model is vision-capable, so
+   * this should always resolve true — but it stays a real behavioral check
+   * rather than a hardcoded assumption, for consistency with the other
+   * providers and to stay correct if that ever changes.
+   */
+  async supportsVision(model) {
+    const verified = this.visionVerifiedCache.get(model);
+    if (verified !== void 0) return verified;
+    const accepted = await this.probeAcceptsImage(model);
+    if (!accepted) return false;
+    const outcome = await verifyVisionChallenge(
+      (challenge) => this.complete(
+        model,
+        [{ role: "user", content: CHALLENGE_PROMPT, images: [{ base64: challenge.base64, mimeType: challenge.mimeType }] }],
+        { maxTokens: 2e3, timeoutMs: 6e4 }
+      )
+    );
+    if (outcome === "pass") {
+      this.visionVerifiedCache.set(model, true);
+      return true;
+    }
+    if (outcome === "fail") {
+      this.visionVerifiedCache.set(model, false);
+      return false;
+    }
+    return false;
   }
   async complete(model, messages, opts = {}) {
     const systemParts = messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n");
@@ -34740,6 +34977,8 @@ var ClaudeCliProvider = class {
   config;
   command;
   models;
+  /** Per-model OCR-challenge-verified vision result; only set once definitive. */
+  visionVerifiedCache = /* @__PURE__ */ new Map();
   constructor(config2) {
     this.config = config2;
     this.serverId = config2.id;
@@ -34762,13 +35001,34 @@ var ClaudeCliProvider = class {
     }));
   }
   /**
-   * True: the underlying Claude models are vision-capable, and `complete()`
-   * gives the CLI a real (permission-enforced) way to view an attached image
-   * — see the file header. Uniform across opus/sonnet/haiku; the mechanism is
-   * CLI-invocation-level, not model-level.
+   * There's no cheap capability signal for a CLI subprocess (no metadata
+   * endpoint, no accept/reject probe), so this goes straight to the OCR
+   * challenge — a real subprocess call once per model, cached after. The
+   * underlying Claude models are vision-capable and `complete()` gives the
+   * CLI a real (permission-enforced) way to view an attached image (see the
+   * file header), so this should always resolve true — but it stays a real
+   * behavioral check rather than a hardcoded assumption, consistent with
+   * every other provider and correct if the mechanism ever regresses.
    */
-  async supportsVision() {
-    return true;
+  async supportsVision(model) {
+    const cached3 = this.visionVerifiedCache.get(model);
+    if (cached3 !== void 0) return cached3;
+    const outcome = await verifyVisionChallenge(
+      (challenge) => this.complete(
+        model,
+        [{ role: "user", content: CHALLENGE_PROMPT, images: [{ base64: challenge.base64, mimeType: challenge.mimeType }] }],
+        { maxTokens: 2e3, timeoutMs: 6e4 }
+      )
+    );
+    if (outcome === "pass") {
+      this.visionVerifiedCache.set(model, true);
+      return true;
+    }
+    if (outcome === "fail") {
+      this.visionVerifiedCache.set(model, false);
+      return false;
+    }
+    return false;
   }
   async complete(model, messages, opts = {}) {
     const systemParts = messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n");
@@ -34917,6 +35177,8 @@ var CodexCliProvider = class {
   config;
   command;
   models;
+  /** Per-model OCR-challenge-verified vision result; only set once definitive. */
+  visionVerifiedCache = /* @__PURE__ */ new Map();
   constructor(config2) {
     this.config = config2;
     this.serverId = config2.id;
@@ -34938,9 +35200,33 @@ var CodexCliProvider = class {
       label: `Codex ${m2} (ChatGPT subscription)`
     }));
   }
-  /** True: `codex exec` has a first-party `-i/--image` flag (see file header). */
-  async supportsVision() {
-    return true;
+  /**
+   * There's no cheap capability signal for a CLI subprocess, so this goes
+   * straight to the OCR challenge — a real subprocess call once per model,
+   * cached after. `codex exec` has a first-party `-i/--image` flag (see file
+   * header) so this should always resolve true — but it stays a real
+   * behavioral check rather than a hardcoded assumption, consistent with
+   * every other provider.
+   */
+  async supportsVision(model) {
+    const cached3 = this.visionVerifiedCache.get(model);
+    if (cached3 !== void 0) return cached3;
+    const outcome = await verifyVisionChallenge(
+      (challenge) => this.complete(
+        model,
+        [{ role: "user", content: CHALLENGE_PROMPT, images: [{ base64: challenge.base64, mimeType: challenge.mimeType }] }],
+        { maxTokens: 2e3, timeoutMs: 6e4 }
+      )
+    );
+    if (outcome === "pass") {
+      this.visionVerifiedCache.set(model, true);
+      return true;
+    }
+    if (outcome === "fail") {
+      this.visionVerifiedCache.set(model, false);
+      return false;
+    }
+    return false;
   }
   async complete(model, messages, opts = {}) {
     const systemParts = messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n");
@@ -36770,7 +37056,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.12"
+    version: "0.2.13"
   },
   {
     capabilities: { tools: {} },

@@ -279,6 +279,72 @@ console.log('▶ context.ts rejects image extensions in "files" (guards the othe
   }
 }
 
+console.log('▶ vision-challenge.ts (OCR-challenge behavioral vision verification)');
+{
+  const { CHALLENGE_IMAGES, pickChallenges, matchesCode, verifyVisionChallenge } =
+    await import('../dist/vision-challenge.js');
+
+  check('10 distinct challenge codes, all 4 digits, none start with 0',
+    new Set(CHALLENGE_IMAGES.map(c => c.code)).size === 10 &&
+    CHALLENGE_IMAGES.every(c => /^[1-9]\d{3}$/.test(c.code)));
+  check('every challenge is a valid decoded PNG (signature bytes)',
+    CHALLENGE_IMAGES.every(c => {
+      const buf = Buffer.from(c.base64, 'base64');
+      return buf.length > 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+    }));
+
+  const two = pickChallenges(2);
+  check('pickChallenges(2) returns 2 distinct challenges', two.length === 2 && two[0].code !== two[1].code);
+  check('pickChallenges(0) returns []', pickChallenges(0).length === 0);
+
+  check('matchesCode: exact match', matchesCode('3456', '3456'));
+  check('matchesCode: spaced digits match', matchesCode('The code is 3 4 5 6.', '3456'));
+  check('matchesCode: dashed digits match', matchesCode('3-4-5-6', '3456'));
+  check('matchesCode: wrong digits do not match', !matchesCode('1234', '3456'));
+  check('matchesCode: substring of a longer run does not match', !matchesCode('The number is 23456', '3456'));
+  check('matchesCode: empty response does not match', !matchesCode('', '3456'));
+
+  // verifyVisionChallenge state machine
+  {
+    let calls = 0;
+    const outcome = await verifyVisionChallenge(async (ch) => { calls++; return ch.code; });
+    check('first attempt correct → pass, short-circuits (only 1 call)', outcome === 'pass' && calls === 1);
+  }
+  {
+    const outcome = await verifyVisionChallenge(async () => '0000');
+    check('both attempts clean-wrong → fail', outcome === 'fail');
+  }
+  {
+    let n = 0;
+    const outcome = await verifyVisionChallenge(async (ch) => {
+      n++;
+      if (n === 1) throw new Error('transient network blip');
+      return ch.code;
+    });
+    check('first attempt throws, second correct → pass (transient error skipped, not counted as wrong)', outcome === 'pass');
+  }
+  {
+    let n = 0;
+    const outcome = await verifyVisionChallenge(async () => {
+      n++;
+      return n === 1 ? '' : '9999';
+    });
+    check('first attempt empty, second clean-wrong → fail (one clean wrong is enough)', outcome === 'fail');
+  }
+  {
+    const outcome = await verifyVisionChallenge(async () => { throw new Error('down'); });
+    check('both attempts error → inconclusive, not fail (never poisons the cache as a false negative)', outcome === 'inconclusive');
+  }
+  {
+    let n = 0;
+    const outcome = await verifyVisionChallenge(async (ch) => {
+      n++;
+      return n === 1 ? '' : ch.code;
+    });
+    check('first attempt empty, second correct → pass', outcome === 'pass');
+  }
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
 console.log('ALL PASSED ✅');

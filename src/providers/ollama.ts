@@ -3,6 +3,7 @@ import {
   ChatMessage, CompletionOptions, Provider, stripThinkBlocks, clampMaxTokens,
   DEFAULT_COMPLETION_TIMEOUT_MS,
 } from './base.js';
+import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
 
 /** What we read out of a single /api/show call — cached together so context
  *  length and vision capability never need two separate round trips. */
@@ -53,6 +54,8 @@ export class OllamaProvider implements Provider {
   readonly config: ServerConfig;
   /** Per-model /api/show result (context length + vision capability); undefined = not yet fetched. */
   private showCache = new Map<string, ShowInfo>();
+  /** Per-model OCR-challenge-verified vision result; only set once definitive. */
+  private visionVerifiedCache = new Map<string, boolean>();
 
   constructor(config: ServerConfig) {
     this.config = config;
@@ -101,12 +104,37 @@ export class OllamaProvider implements Provider {
     }
   }
 
+  /**
+   * Two-stage detection. Stage 1 (`/api/show` capabilities) is a trustworthy
+   * NEGATIVE but not a trustworthy positive — custom/quantized model builds
+   * (MLX conversions, GGUF imports) can drop the vision projector while still
+   * reporting `"vision"` in capabilities (documented upstream: unsloth#2290,
+   * ollama#9967; reproduced live with a local `-mlx` build that claimed vision
+   * but denied ever receiving an image). Stage 2 behaviorally confirms a
+   * stage-1 "yes" with an OCR challenge before it's trusted.
+   */
   async supportsVision(model: string): Promise<boolean> {
+    let metadataVision: boolean;
     try {
-      return (await this.fetchShow(model)).vision;
+      metadataVision = (await this.fetchShow(model)).vision;
     } catch {
-      return false; // unreachable → treat as not vision-capable for this call only
+      return false; // unreachable → not vision-capable for this call only, not cached
     }
+    if (!metadataVision) return false; // trustworthy negative, already cached by fetchShow
+
+    const cached = this.visionVerifiedCache.get(model);
+    if (cached !== undefined) return cached;
+
+    const outcome = await verifyVisionChallenge((challenge) =>
+      this.complete(
+        model,
+        [{ role: 'user', content: CHALLENGE_PROMPT, images: [{ base64: challenge.base64, mimeType: challenge.mimeType }] }],
+        { maxTokens: 2000, timeoutMs: 60_000 },
+      ),
+    );
+    if (outcome === 'pass') { this.visionVerifiedCache.set(model, true); return true; }
+    if (outcome === 'fail') { this.visionVerifiedCache.set(model, false); return false; }
+    return false; // inconclusive (transport error/empty on both attempts) — not cached, retried next call
   }
 
   async ping(): Promise<boolean> {

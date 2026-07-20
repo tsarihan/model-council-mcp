@@ -93,7 +93,7 @@ async function main() {
     // ── Test: list_models ─────────────────────────────────────────────────────
     console.log('\n▶ list_models');
     const lm = parseToolResult(await client.callTool({ name: 'list_models', arguments: {} }));
-    check('lists all 6 models (incl. cloud, embedding, vision)', lm.total === 6, `got ${lm.total}`);
+    check('lists all 7 models (incl. cloud, embedding, vision, fake-vision)', lm.total === 7, `got ${lm.total}`);
     check('big-judge present', lm.models.some(m => m.model === 'big-judge'));
     check('cloud model present', lm.models.some(m => m.model === 'kimi-k2:cloud'));
     check('embedding model present in list', lm.models.some(m => m.model === 'bge-m3'));
@@ -264,14 +264,14 @@ async function main() {
       name: 'ask_council', arguments: { question: 'auto test' },
     }));
     const autoLabels = autoInd.responses.map(r => r.label);
-    check('auto-council: 5 chat members (6 models − 1 embedding)', autoInd.responses.length === 5, `got ${autoInd.responses.length}: ${autoLabels.join(',')}`);
+    check('auto-council: 6 chat members (7 models − 1 embedding)', autoInd.responses.length === 6, `got ${autoInd.responses.length}: ${autoLabels.join(',')}`);
     check('auto-council includes :cloud model', autoLabels.includes('ollama:kimi-k2:cloud'));
     check('auto-council EXCLUDES embedding model', !autoLabels.some(l => l.includes('bge-m3')));
 
     // get_council_config reflects auto membership
     const autoCfg = parseToolResult(await client.callTool({ name: 'get_council_config', arguments: {} }));
     check('config reports auto source', /auto/i.test(autoCfg.council?.membershipSource ?? ''), autoCfg.council?.membershipSource);
-    check('config auto members = 5', autoCfg.council?.members?.length === 5, `got ${autoCfg.council?.members?.length}`);
+    check('config auto members = 6', autoCfg.council?.members?.length === 6, `got ${autoCfg.council?.members?.length}`);
 
     // auto-council categorized → judge auto-picks the 1T cloud model (tests T→B parsing)
     await resetMock();
@@ -483,6 +483,43 @@ async function main() {
         });
       } catch (e) { visErr = String(e?.message ?? e); }
       check('vision: no vision-capable member → clear error (not a silent skip)', /vision-capable/i.test(visErr ?? ''), visErr);
+
+      // ── The false-positive regression this whole feature exists to catch:
+      // fake-vision-a reports "vision" in /api/show capabilities (stage 1 says
+      // yes) but answers the OCR challenge with the wrong digits (stage 2 says
+      // no) — same shape as the real SGLang bug found live. It must be excluded
+      // exactly like a model with no vision claim at all.
+      await resetMock();
+      await client.callTool({
+        name: 'configure_council',
+        arguments: { models: ['ollama:fake-vision-a'], response_mode: 'individual' },
+      });
+      let fakeVisErr = null;
+      try {
+        await client.callTool({
+          name: 'ask_council',
+          arguments: { question: 'x', images: [imgFile] },
+        });
+      } catch (e) { fakeVisErr = String(e?.message ?? e); }
+      check('vision: metadata-claims-vision-but-fails-OCR member → excluded (clear error)',
+        /vision-capable/i.test(fakeVisErr ?? ''), fakeVisErr);
+
+      // Mixed council: the real vision model is queried, the false-positive is not.
+      await resetMock();
+      await client.callTool({
+        name: 'configure_council',
+        arguments: { models: ['ollama:vision-a', 'ollama:fake-vision-a'], response_mode: 'individual' },
+      });
+      const mixedVisAsk = parseToolResult(await client.callTool({
+        name: 'ask_council',
+        arguments: { question: "What's in this picture?", mode: 'individual', images: [imgFile] },
+      }));
+      check('vision: mixed council queries only the genuinely vision-capable member',
+        mixedVisAsk.responses?.length === 1 && mixedVisAsk.responses?.[0]?.label === 'ollama:vision-a',
+        JSON.stringify(mixedVisAsk.responses?.map(r => r.label)));
+      check('vision: mixed council reports the false-positive as skipped',
+        mixedVisAsk.visionRouting?.skippedNonVision?.includes('ollama:fake-vision-a'),
+        JSON.stringify(mixedVisAsk.visionRouting));
     } finally {
       rmSync(imgDir, { recursive: true, force: true });
     }

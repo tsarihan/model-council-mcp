@@ -26,6 +26,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ChatImage, ChatMessage, CompletionOptions, Provider } from './base.js';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
+import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
 
 const DEFAULT_MODELS = ['default'];
 const DEFAULT_TIMEOUT_MS = 300_000;
@@ -62,6 +63,8 @@ export class CodexCliProvider implements Provider {
   readonly config: ServerConfig;
   private readonly command: string;
   private readonly models: string[];
+  /** Per-model OCR-challenge-verified vision result; only set once definitive. */
+  private visionVerifiedCache = new Map<string, boolean>();
 
   constructor(config: ServerConfig) {
     this.config = config;
@@ -88,9 +91,28 @@ export class CodexCliProvider implements Provider {
     }));
   }
 
-  /** True: `codex exec` has a first-party `-i/--image` flag (see file header). */
-  async supportsVision(): Promise<boolean> {
-    return true;
+  /**
+   * There's no cheap capability signal for a CLI subprocess, so this goes
+   * straight to the OCR challenge — a real subprocess call once per model,
+   * cached after. `codex exec` has a first-party `-i/--image` flag (see file
+   * header) so this should always resolve true — but it stays a real
+   * behavioral check rather than a hardcoded assumption, consistent with
+   * every other provider.
+   */
+  async supportsVision(model: string): Promise<boolean> {
+    const cached = this.visionVerifiedCache.get(model);
+    if (cached !== undefined) return cached;
+
+    const outcome = await verifyVisionChallenge((challenge) =>
+      this.complete(
+        model,
+        [{ role: 'user', content: CHALLENGE_PROMPT, images: [{ base64: challenge.base64, mimeType: challenge.mimeType }] }],
+        { maxTokens: 2000, timeoutMs: 60_000 },
+      ),
+    );
+    if (outcome === 'pass') { this.visionVerifiedCache.set(model, true); return true; }
+    if (outcome === 'fail') { this.visionVerifiedCache.set(model, false); return false; }
+    return false; // inconclusive — not cached, retried next call
   }
 
   async complete(

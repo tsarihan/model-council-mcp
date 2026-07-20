@@ -10,6 +10,9 @@
  * real, accessible image bytes at the paths it passed.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
+import { CHALLENGE_IMAGES, CHALLENGE_PROMPT } from '../dist/vision-challenge.js';
+
+const CHALLENGE_BY_BASE64 = new Map(CHALLENGE_IMAGES.map(c => [c.base64, c.code]));
 
 const args = process.argv.slice(2);
 
@@ -53,7 +56,16 @@ let input = '';
 process.stdin.on('data', (d) => (input += d));
 process.stdin.on('end', () => {
   process.stderr.write('[mock-codex progress]\n'); // progress goes to stderr
-  const result =
+
+  // OCR-challenge verification: genuinely "read" the first attached image
+  // (real bytes at the path the provider passed via -i) and answer with the
+  // code it actually encodes — this is what supportsVision() grades to
+  // confirm codex-cli can really see an attached image.
+  let challengeAnswer;
+  if (imagePaths.length && input.includes(CHALLENGE_PROMPT)) {
+    try { challengeAnswer = CHALLENGE_BY_BASE64.get(readFileSync(imagePaths[0]).toString('base64')); } catch { /* fall through */ }
+  }
+  const result = challengeAnswer ??
     `mock-codex model=${model} okey=${okey} ckey=${ckey} sandbox=${sandbox} ${imageSummary} ` +
     `:: ${input.trim().slice(0, 500)}`;
   if (outFile) {

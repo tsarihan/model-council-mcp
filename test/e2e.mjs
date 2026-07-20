@@ -93,7 +93,7 @@ async function main() {
     // ── Test: list_models ─────────────────────────────────────────────────────
     console.log('\n▶ list_models');
     const lm = parseToolResult(await client.callTool({ name: 'list_models', arguments: {} }));
-    check('lists all 7 models (incl. cloud, embedding, vision, fake-vision)', lm.total === 7, `got ${lm.total}`);
+    check('lists all 8 models (incl. cloud, embedding, vision, fake-vision)', lm.total === 8, `got ${lm.total}`);
     check('big-judge present', lm.models.some(m => m.model === 'big-judge'));
     check('cloud model present', lm.models.some(m => m.model === 'kimi-k2:cloud'));
     check('embedding model present in list', lm.models.some(m => m.model === 'bge-m3'));
@@ -264,14 +264,14 @@ async function main() {
       name: 'ask_council', arguments: { question: 'auto test' },
     }));
     const autoLabels = autoInd.responses.map(r => r.label);
-    check('auto-council: 6 chat members (7 models − 1 embedding)', autoInd.responses.length === 6, `got ${autoInd.responses.length}: ${autoLabels.join(',')}`);
+    check('auto-council: 7 chat members (8 models − 1 embedding)', autoInd.responses.length === 7, `got ${autoInd.responses.length}: ${autoLabels.join(',')}`);
     check('auto-council includes :cloud model', autoLabels.includes('ollama:kimi-k2:cloud'));
     check('auto-council EXCLUDES embedding model', !autoLabels.some(l => l.includes('bge-m3')));
 
     // get_council_config reflects auto membership
     const autoCfg = parseToolResult(await client.callTool({ name: 'get_council_config', arguments: {} }));
     check('config reports auto source', /auto/i.test(autoCfg.council?.membershipSource ?? ''), autoCfg.council?.membershipSource);
-    check('config auto members = 6', autoCfg.council?.members?.length === 6, `got ${autoCfg.council?.members?.length}`);
+    check('config auto members = 7', autoCfg.council?.members?.length === 7, `got ${autoCfg.council?.members?.length}`);
 
     // auto-council categorized → judge auto-picks the 1T cloud model (tests T→B parsing)
     await resetMock();
@@ -520,6 +520,26 @@ async function main() {
       check('vision: mixed council reports the false-positive as skipped',
         mixedVisAsk.visionRouting?.skippedNonVision?.includes('ollama:fake-vision-a'),
         JSON.stringify(mixedVisAsk.visionRouting));
+
+      // The vision-DETECTION phase itself (not just the real query round) must honour
+      // the `local` concurrency pool (1 here) — probing 2+ local models' OCR challenges
+      // concurrently is exactly what thrashes memory on hardware that can only hold one
+      // large local model at a time (real failure mode: two genuinely vision-capable
+      // Ollama models both got starved into false negatives when probed concurrently).
+      await resetMock();
+      await client.callTool({
+        name: 'configure_council',
+        arguments: { models: ['ollama:vision-a', 'ollama:vision-b'], response_mode: 'individual' },
+      });
+      const concVisAsk = parseToolResult(await client.callTool({
+        name: 'ask_council',
+        arguments: { question: "What's in this picture?", mode: 'individual', images: [imgFile] },
+      }));
+      check('vision: both local vision models detected + queried',
+        concVisAsk.responses?.length === 2, JSON.stringify(concVisAsk.responses?.map(r => r.label)));
+      const dbgConcVis = await (await fetch(`${MOCK_URL}/debug`)).json();
+      check('vision: detection phase respects local concurrency (max 1 in flight)',
+        dbgConcVis.maxConcurrent === 1, `maxConcurrent=${dbgConcVis.maxConcurrent}`);
     } finally {
       rmSync(imgDir, { recursive: true, force: true });
     }

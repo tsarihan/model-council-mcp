@@ -53,6 +53,45 @@ function limitForPool(key: PoolKey, runtime: RuntimeConfig): number {
   return key === 'local' ? runtime.localConcurrency : runtime.cloudConcurrency;
 }
 
+export interface VisionCheck {
+  member: Member;
+  vision: boolean;
+}
+
+/**
+ * Probe every member's supportsVision(), honouring the SAME per-provider
+ * concurrency limits as a real query round (notably `local`, typically 1). A
+ * vision probe is a real completion call — the OCR-challenge round trip, not
+ * just a metadata read — so firing every member's probe concurrently against
+ * a single local Ollama host can thrash memory on hardware that can't hold
+ * multiple large local models at once, causing genuinely vision-capable
+ * models to time out and be (transiently) misreported as not vision-capable.
+ */
+export async function checkVisionPooled(
+  members: Member[],
+  runtime: RuntimeConfig,
+): Promise<VisionCheck[]> {
+  const results: VisionCheck[] = new Array(members.length);
+  const buckets = new Map<PoolKey, Array<() => Promise<void>>>();
+
+  members.forEach((member, i) => {
+    const task = async () => {
+      const vision = await member.provider.supportsVision(member.modelId.model).catch(() => false);
+      results[i] = { member, vision };
+    };
+    const key = poolKey(member);
+    const arr = buckets.get(key);
+    if (arr) arr.push(task);
+    else buckets.set(key, [task]);
+  });
+
+  await Promise.all(
+    [...buckets.entries()].map(([key, tasks]) => pooled(tasks, limitForPool(key, runtime))),
+  );
+
+  return results;
+}
+
 /** Thrown by completeWithRetry when every attempt returned an empty response. */
 export class EmptyCompletionError extends Error {
   constructor(message = 'empty response after retries') {

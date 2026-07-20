@@ -35417,6 +35417,24 @@ function limitForPool(key, runtime) {
   if (explicit !== void 0) return explicit;
   return key === "local" ? runtime.localConcurrency : runtime.cloudConcurrency;
 }
+async function checkVisionPooled(members, runtime) {
+  const results = new Array(members.length);
+  const buckets = /* @__PURE__ */ new Map();
+  members.forEach((member, i2) => {
+    const task = async () => {
+      const vision = await member.provider.supportsVision(member.modelId.model).catch(() => false);
+      results[i2] = { member, vision };
+    };
+    const key = poolKey(member);
+    const arr = buckets.get(key);
+    if (arr) arr.push(task);
+    else buckets.set(key, [task]);
+  });
+  await Promise.all(
+    [...buckets.entries()].map(([key, tasks]) => pooled(tasks, limitForPool(key, runtime)))
+  );
+  return results;
+}
 var EmptyCompletionError = class extends Error {
   constructor(message = "empty response after retries") {
     super(message);
@@ -36311,12 +36329,7 @@ var CouncilOrchestrator = class {
     let queryTargets = members;
     let visionRouting;
     if (images && images.length > 0) {
-      const checked = await Promise.all(
-        members.map(async (m2) => ({
-          member: m2,
-          vision: await m2.provider.supportsVision(m2.modelId.model).catch(() => false)
-        }))
-      );
+      const checked = await checkVisionPooled(members, this.runtime);
       const visionMembers = checked.filter((c2) => c2.vision).map((c2) => c2.member);
       const skippedNonVision = checked.filter((c2) => !c2.vision).map((c2) => modelIdLabel(c2.member.modelId));
       if (visionMembers.length === 0) {
@@ -37056,7 +37069,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.13"
+    version: "0.2.14"
   },
   {
     capabilities: { tools: {} },

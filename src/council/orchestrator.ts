@@ -21,7 +21,7 @@ import { categorize } from './categorizer.js';
 import { deconflict } from './deconflict.js';
 import { runDialectic } from './dialectic.js';
 import { runPooled } from './pool.js';
-import { Member, queryMembers } from './query.js';
+import { checkVisionPooled, Member, queryMembers } from './query.js';
 
 // ─── Model classification ──────────────────────────────────────────────────────
 
@@ -201,12 +201,7 @@ export class CouncilOrchestrator {
     let queryTargets = members;
     let visionRouting: VisionRouting | undefined;
     if (images && images.length > 0) {
-      const checked = await Promise.all(
-        members.map(async m => ({
-          member: m,
-          vision: await m.provider.supportsVision(m.modelId.model).catch(() => false),
-        })),
-      );
+      const checked = await checkVisionPooled(members, this.runtime);
       const visionMembers = checked.filter(c => c.vision).map(c => c.member);
       const skippedNonVision = checked.filter(c => !c.vision).map(c => modelIdLabel(c.member.modelId));
       if (visionMembers.length === 0) {

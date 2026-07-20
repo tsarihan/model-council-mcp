@@ -47,6 +47,11 @@ const MODELS = [
   // Vision-capable model, for vision-routing tests — reports "vision" in /api/show capabilities
   // AND correctly reads the OCR verification challenge (genuine vision).
   { name: 'vision-a',  details: { parameter_size: '8B',  family: 'llava' }, size: 5_000_000_000 },
+  // A second genuinely vision-capable model — exists so a test can assert the vision-DETECTION
+  // phase itself (not just the real query round) respects the `local` concurrency pool, since
+  // probing 2+ local models' OCR challenges concurrently is exactly what thrashes memory on
+  // hardware that can only hold one large local model at a time.
+  { name: 'vision-b',  details: { parameter_size: '9B',  family: 'llava' }, size: 5_200_000_000 },
   // Reports "vision" in /api/show capabilities but answers the OCR challenge WRONG — recreates
   // the real false positive found live (a custom/quantized build whose metadata claims vision
   // support the underlying weights don't actually have). Stage 2 must exclude this model even
@@ -57,6 +62,7 @@ const MODELS = [
 // /api/show capabilities per model name — everything not listed reports no vision.
 const CAPABILITIES = {
   'vision-a': ['completion', 'tools', 'vision'],
+  'vision-b': ['completion', 'tools', 'vision'],
   'fake-vision-a': ['completion', 'tools', 'vision'],
 };
 
@@ -157,7 +163,7 @@ function chatResponse(body) {
   // said vision) but answers with the wrong digits, same as the real SGLang bug.
   if (content === CHALLENGE_PROMPT && lastImages?.length) {
     const code = CHALLENGE_BY_BASE64.get(lastImages[0]);
-    if (model === 'vision-a') return code ?? 'unknown';
+    if (model === 'vision-a' || model === 'vision-b') return code ?? 'unknown';
     if (model === 'fake-vision-a') return '0000'; // clean, confident, wrong
   }
 

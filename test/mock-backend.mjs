@@ -25,6 +25,7 @@ const CHALLENGE_BY_BASE64 = new Map(CHALLENGE_IMAGES.map(c => [c.base64, c.code]
 
 let categorizeCalls = 0;
 let poolCalls = 0;
+let challengeCalls = 0; // count of OCR-challenge requests — proves a seeded cache skips re-probing
 let lastRepollPrompt = null;
 let lastDefensePrompt = null;
 let defensePrompts = {};
@@ -162,6 +163,7 @@ function chatResponse(body) {
   // vision-a genuinely reads it; fake-vision-a accepts the image (stage-1 metadata
   // said vision) but answers with the wrong digits, same as the real SGLang bug.
   if (content === CHALLENGE_PROMPT && lastImages?.length) {
+    challengeCalls++;
     const code = CHALLENGE_BY_BASE64.get(lastImages[0]);
     if (model === 'vision-a' || model === 'vision-b') return code ?? 'unknown';
     if (model === 'fake-vision-a') return '0000'; // clean, confident, wrong
@@ -279,6 +281,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/reset') {
     categorizeCalls = 0;
     poolCalls = 0;
+    challengeCalls = 0;
     lastRepollPrompt = null;
     lastDefensePrompt = null;
     defensePrompts = {};
@@ -295,7 +298,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'GET' && req.url === '/debug') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ maxConcurrent, lastNumPredict, lastRepollPrompt, lastDefensePrompt, defensePrompts, lastSelectionPrompt, lastUserPrompt, lastImages }));
+    res.end(JSON.stringify({ maxConcurrent, lastNumPredict, lastRepollPrompt, lastDefensePrompt, defensePrompts, lastSelectionPrompt, lastUserPrompt, lastImages, challengeCalls }));
     return;
   }
 

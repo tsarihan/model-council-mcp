@@ -22,6 +22,7 @@ import { deconflict } from './deconflict.js';
 import { runDialectic } from './dialectic.js';
 import { runPooled } from './pool.js';
 import { checkVisionPooled, Member, queryMembers } from './query.js';
+import { loadState, saveState } from '../state.js';
 
 // ─── Model classification ──────────────────────────────────────────────────────
 
@@ -201,9 +202,39 @@ export class CouncilOrchestrator {
     let queryTargets = members;
     let visionRouting: VisionRouting | undefined;
     if (images && images.length > 0) {
+      // Seed each member's provider from any previously-verified result on
+      // disk, so a restart doesn't re-pay the OCR-challenge round trip for a
+      // model already proven (in)capable in a prior session — on a slow
+      // machine that adds up across a multi-member council.
+      const persistedVision = loadState().visionCapability ?? {};
+      for (const m of members) {
+        const label = modelIdLabel(m.modelId);
+        if (label in persistedVision) {
+          m.provider.seedVisionCache({ [m.modelId.model]: persistedVision[label] });
+        }
+      }
+
       const checked = await checkVisionPooled(members, this.runtime);
       const visionMembers = checked.filter(c => c.vision).map(c => c.member);
       const skippedNonVision = checked.filter(c => !c.vision).map(c => modelIdLabel(c.member.modelId));
+
+      // Persist any newly-confirmed DEFINITIVE results — getVisionCache()
+      // only ever contains definitive entries, since a transient/inconclusive
+      // probe is never cached in-memory in the first place — so future
+      // restarts skip re-probing them too.
+      const nextPersisted: Record<string, boolean> = { ...persistedVision };
+      let visionStateChanged = false;
+      for (const m of members) {
+        const label = modelIdLabel(m.modelId);
+        const cache = m.provider.getVisionCache();
+        const value = cache[m.modelId.model];
+        if (value !== undefined && nextPersisted[label] !== value) {
+          nextPersisted[label] = value;
+          visionStateChanged = true;
+        }
+      }
+      if (visionStateChanged) saveState({ visionCapability: nextPersisted });
+
       if (visionMembers.length === 0) {
         throw new Error(
           `${images.length} image(s) attached, but none of the ${members.length} configured council ` +

@@ -115,4 +115,20 @@ export interface Provider {
    * permanently mislabel a vision model as text-only.
    */
   supportsVision(model: string): Promise<boolean>;
+
+  /**
+   * The current DEFINITIVE vision-capability results, keyed by bare model
+   * name — never includes a transient/inconclusive result (those are
+   * deliberately never cached at all, see supportsVision). Read by the
+   * orchestrator to persist verified capability to disk so a restart doesn't
+   * re-pay the detection round trip for a model already proven capable.
+   */
+  getVisionCache(): Record<string, boolean>;
+
+  /**
+   * Seed the vision-capability cache from persisted state. Never overwrites
+   * an existing in-memory entry — a fresh result computed earlier this
+   * session always wins over a stale disk value.
+   */
+  seedVisionCache(entries: Record<string, boolean>): void;
 }

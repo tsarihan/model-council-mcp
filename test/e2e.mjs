@@ -751,6 +751,30 @@ async function main() {
     await detectClient.callTool({ name: 'configure_council', arguments: { models: reduced } });
     const persisted2 = JSON.parse(readFileSync(stateFile, 'utf8'));
     check('configure_council: deletion persisted', persisted2.members?.length === reduced.length && !persisted2.members.includes('ollama:small-a'));
+
+    // Vision-capability results persist to disk too, so a restart doesn't re-pay
+    // the OCR-challenge round trip for a model already proven capable.
+    const visImgDir = mkdtempSync(join(tmpdir(), 'mc-e2e-vis-'));
+    const visImgFile = join(visImgDir, 'photo.png');
+    writeFileSync(visImgFile, Buffer.from('FAKE_IMAGE_BYTES'));
+    await resetMock();
+    await detectClient.callTool({
+      name: 'configure_council',
+      arguments: { models: ['ollama:vision-a'], response_mode: 'individual' },
+    });
+    const visAsk1 = parseToolResult(await detectClient.callTool({
+      name: 'ask_council', arguments: { question: 'x', images: [visImgFile] },
+    }));
+    check('vision persistence: first ask routes to the vision-capable member', visAsk1.responses?.length === 1, JSON.stringify(visAsk1.responses));
+    const dbgVis1 = await (await fetch(`${MOCK_URL}/debug`)).json();
+    check('vision persistence: first ask actually ran the OCR challenge', dbgVis1.challengeCalls >= 1, `challengeCalls=${dbgVis1.challengeCalls}`);
+    const persisted3 = JSON.parse(readFileSync(stateFile, 'utf8'));
+    check('vision persistence: result written to state file', persisted3.visionCapability?.['ollama:vision-a'] === true, JSON.stringify(persisted3.visionCapability));
+
+    // Restore the `reduced` council (the vision test above reconfigured members
+    // to just vision-a) so the reboot-persistence check below still sees it.
+    await detectClient.callTool({ name: 'configure_council', arguments: { models: reduced } });
+
     await detectClient.close();
 
     // Reboot against the SAME state file → the reduced council must be honoured
@@ -769,6 +793,23 @@ async function main() {
       await new Promise(r => setTimeout(r, 100));
     }
     check('reboot: persisted (reduced) council honoured — deletions stick', rebootMembers.length === reduced.length && !rebootMembers.includes('ollama:small-a'), `got ${rebootMembers.length}`);
+
+    // Same reboot, same state file: a vision question against the SAME member
+    // must skip the OCR-challenge round trip entirely — the seeded cache from
+    // disk answers it — while still routing correctly.
+    await resetMock();
+    await rebootClient.callTool({
+      name: 'configure_council',
+      arguments: { models: ['ollama:vision-a'], response_mode: 'individual' },
+    });
+    const visAsk2 = parseToolResult(await rebootClient.callTool({
+      name: 'ask_council', arguments: { question: 'x', images: [visImgFile] },
+    }));
+    check('vision persistence: reboot still routes to the vision-capable member', visAsk2.responses?.length === 1, JSON.stringify(visAsk2.responses));
+    const dbgVis2 = await (await fetch(`${MOCK_URL}/debug`)).json();
+    check('vision persistence: reboot skips re-running the OCR challenge (seeded from disk)', dbgVis2.challengeCalls === 0, `challengeCalls=${dbgVis2.challengeCalls}`);
+    rmSync(visImgDir, { recursive: true, force: true });
+
     await rebootClient.close(); rebootClient = undefined;
 
     // Logged-out Codex → detected not-usable, excluded from the auto-council, hinted.

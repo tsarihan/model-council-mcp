@@ -21,6 +21,17 @@ export interface CouncilState {
    * the plugin host does NOT pass userConfig-derived env vars to hook processes.
    */
   env?: { ollamaAddress?: string; claudeCliPath?: string; codexCliPath?: string };
+  /**
+   * Verified vision-capability results, keyed by model-id label (e.g.
+   * "ollama:gemma4:12b", "claude-cli:opus") — the same format as `members`.
+   * Only ever holds DEFINITIVE results (never a transient/inconclusive one —
+   * those are deliberately never cached at all, in-memory or on disk). Lets a
+   * restart skip re-running the OCR-challenge detection round trip for a
+   * model already proven capable in a prior session — on a slow machine that
+   * round trip can take many seconds per model, which adds up across a
+   * multi-member council and would otherwise repeat on every reload.
+   */
+  visionCapability?: Record<string, boolean>;
 }
 
 const STATE_VERSION = 1;

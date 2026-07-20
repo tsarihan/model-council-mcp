@@ -134,6 +134,16 @@ export class AnthropicProvider implements Provider {
     return false; // inconclusive — not cached, retried next call
   }
 
+  getVisionCache(): Record<string, boolean> {
+    return Object.fromEntries(this.visionVerifiedCache);
+  }
+
+  seedVisionCache(entries: Record<string, boolean>): void {
+    for (const [model, vision] of Object.entries(entries)) {
+      if (!this.visionVerifiedCache.has(model)) this.visionVerifiedCache.set(model, vision);
+    }
+  }
+
   async complete(
     model: string,
     messages: ChatMessage[],

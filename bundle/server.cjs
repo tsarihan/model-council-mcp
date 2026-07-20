@@ -25043,6 +25043,14 @@ var OllamaProvider = class {
     }
     return false;
   }
+  getVisionCache() {
+    return Object.fromEntries(this.visionVerifiedCache);
+  }
+  seedVisionCache(entries) {
+    for (const [model, vision] of Object.entries(entries)) {
+      if (!this.visionVerifiedCache.has(model)) this.visionVerifiedCache.set(model, vision);
+    }
+  }
   async ping() {
     try {
       const res = await fetch(`${this.config.baseUrl}/api/tags`, {
@@ -31856,6 +31864,14 @@ var OpenAICompatibleProvider = class {
     }
     return false;
   }
+  getVisionCache() {
+    return Object.fromEntries(this.visionVerifiedCache);
+  }
+  seedVisionCache(entries) {
+    for (const [model, vision] of Object.entries(entries)) {
+      if (!this.visionVerifiedCache.has(model)) this.visionVerifiedCache.set(model, vision);
+    }
+  }
   async ping() {
     try {
       const url = new URL("/v1/models", this.config.baseUrl);
@@ -34931,6 +34947,14 @@ var AnthropicProvider = class {
     }
     return false;
   }
+  getVisionCache() {
+    return Object.fromEntries(this.visionVerifiedCache);
+  }
+  seedVisionCache(entries) {
+    for (const [model, vision] of Object.entries(entries)) {
+      if (!this.visionVerifiedCache.has(model)) this.visionVerifiedCache.set(model, vision);
+    }
+  }
   async complete(model, messages, opts = {}) {
     const systemParts = messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n");
     const userMessages = toAnthropicMessages(messages);
@@ -35029,6 +35053,14 @@ var ClaudeCliProvider = class {
       return false;
     }
     return false;
+  }
+  getVisionCache() {
+    return Object.fromEntries(this.visionVerifiedCache);
+  }
+  seedVisionCache(entries) {
+    for (const [model, vision] of Object.entries(entries)) {
+      if (!this.visionVerifiedCache.has(model)) this.visionVerifiedCache.set(model, vision);
+    }
   }
   async complete(model, messages, opts = {}) {
     const systemParts = messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n");
@@ -35227,6 +35259,14 @@ var CodexCliProvider = class {
       return false;
     }
     return false;
+  }
+  getVisionCache() {
+    return Object.fromEntries(this.visionVerifiedCache);
+  }
+  seedVisionCache(entries) {
+    for (const [model, vision] of Object.entries(entries)) {
+      if (!this.visionVerifiedCache.has(model)) this.visionVerifiedCache.set(model, vision);
+    }
   }
   async complete(model, messages, opts = {}) {
     const systemParts = messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n");
@@ -36329,9 +36369,28 @@ var CouncilOrchestrator = class {
     let queryTargets = members;
     let visionRouting;
     if (images && images.length > 0) {
+      const persistedVision = loadState().visionCapability ?? {};
+      for (const m2 of members) {
+        const label = modelIdLabel(m2.modelId);
+        if (label in persistedVision) {
+          m2.provider.seedVisionCache({ [m2.modelId.model]: persistedVision[label] });
+        }
+      }
       const checked = await checkVisionPooled(members, this.runtime);
       const visionMembers = checked.filter((c2) => c2.vision).map((c2) => c2.member);
       const skippedNonVision = checked.filter((c2) => !c2.vision).map((c2) => modelIdLabel(c2.member.modelId));
+      const nextPersisted = { ...persistedVision };
+      let visionStateChanged = false;
+      for (const m2 of members) {
+        const label = modelIdLabel(m2.modelId);
+        const cache = m2.provider.getVisionCache();
+        const value = cache[m2.modelId.model];
+        if (value !== void 0 && nextPersisted[label] !== value) {
+          nextPersisted[label] = value;
+          visionStateChanged = true;
+        }
+      }
+      if (visionStateChanged) saveState({ visionCapability: nextPersisted });
       if (visionMembers.length === 0) {
         throw new Error(
           `${images.length} image(s) attached, but none of the ${members.length} configured council member(s) are vision-capable: ${members.map((m2) => modelIdLabel(m2.modelId)).join(", ")}. Add a vision-capable model with configure_council, or ask without images.`
@@ -37069,7 +37128,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.14"
+    version: "0.2.15"
   },
   {
     capabilities: { tools: {} },

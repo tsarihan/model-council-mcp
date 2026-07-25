@@ -2984,7 +2984,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve3.call(this, root, ref);
+      let _sch = resolve4.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a3 = root.localRefs) === null || _a3 === void 0 ? void 0 : _a3[ref];
         const { schemaId } = this.opts;
@@ -3011,7 +3011,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve3(root, ref) {
+    function resolve4(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3642,7 +3642,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve3(baseURI, relativeURI, options) {
+    function resolve4(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const resolved = resolveComponent(parse3(baseURI, schemelessOptions), parse3(relativeURI, schemelessOptions), schemelessOptions, true);
       schemelessOptions.skipEscape = true;
@@ -3900,7 +3900,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize,
-      resolve: resolve3,
+      resolve: resolve4,
       resolveComponent,
       equal,
       serialize,
@@ -8948,7 +8948,7 @@ var require_lib2 = __commonJS({
       let accum = [];
       let accumBytes = 0;
       let abort = false;
-      return new Body.Promise(function(resolve3, reject) {
+      return new Body.Promise(function(resolve4, reject) {
         let resTimeout;
         if (_this4.timeout) {
           resTimeout = setTimeout(function() {
@@ -8982,7 +8982,7 @@ var require_lib2 = __commonJS({
           }
           clearTimeout(resTimeout);
           try {
-            resolve3(Buffer.concat(accum, accumBytes));
+            resolve4(Buffer.concat(accum, accumBytes));
           } catch (err) {
             reject(new FetchError(`Could not create Buffer from response body for ${_this4.url}: ${err.message}`, "system", err));
           }
@@ -9657,7 +9657,7 @@ var require_lib2 = __commonJS({
         throw new Error("native promise missing, set fetch.Promise to your favorite alternative");
       }
       Body.Promise = fetch4.Promise;
-      return new fetch4.Promise(function(resolve3, reject) {
+      return new fetch4.Promise(function(resolve4, reject) {
         const request = new Request5(url, opts);
         const options = getNodeRequestOptions(request);
         const send = (options.protocol === "https:" ? https : http).request;
@@ -9790,7 +9790,7 @@ var require_lib2 = __commonJS({
                   requestOpts.body = void 0;
                   requestOpts.headers.delete("content-length");
                 }
-                resolve3(fetch4(new Request5(locationURL, requestOpts)));
+                resolve4(fetch4(new Request5(locationURL, requestOpts)));
                 finalize();
                 return;
             }
@@ -9811,7 +9811,7 @@ var require_lib2 = __commonJS({
           const codings = headers.get("Content-Encoding");
           if (!request.compress || request.method === "HEAD" || codings === null || res.statusCode === 204 || res.statusCode === 304) {
             response = new Response5(body, response_options);
-            resolve3(response);
+            resolve4(response);
             return;
           }
           const zlibOptions = {
@@ -9821,7 +9821,7 @@ var require_lib2 = __commonJS({
           if (codings == "gzip" || codings == "x-gzip") {
             body = body.pipe(zlib.createGunzip(zlibOptions));
             response = new Response5(body, response_options);
-            resolve3(response);
+            resolve4(response);
             return;
           }
           if (codings == "deflate" || codings == "x-deflate") {
@@ -9833,12 +9833,12 @@ var require_lib2 = __commonJS({
                 body = body.pipe(zlib.createInflateRaw());
               }
               response = new Response5(body, response_options);
-              resolve3(response);
+              resolve4(response);
             });
             raw.on("end", function() {
               if (!response) {
                 response = new Response5(body, response_options);
-                resolve3(response);
+                resolve4(response);
               }
             });
             return;
@@ -9846,11 +9846,11 @@ var require_lib2 = __commonJS({
           if (codings == "br" && typeof zlib.createBrotliDecompress === "function") {
             body = body.pipe(zlib.createBrotliDecompress());
             response = new Response5(body, response_options);
-            resolve3(response);
+            resolve4(response);
             return;
           }
           response = new Response5(body, response_options);
-          resolve3(response);
+          resolve4(response);
         });
         writeToStream(req, request);
       });
@@ -23176,7 +23176,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve3) => setTimeout(resolve3, pollInterval));
+        await new Promise((resolve4) => setTimeout(resolve4, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -23193,7 +23193,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve4, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -23271,7 +23271,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve3(parseResult.data);
+            resolve4(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -23532,12 +23532,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve4, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve3, interval);
+      const timeoutId = setTimeout(resolve4, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -24407,12 +24407,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve3) => {
+    return new Promise((resolve4) => {
       const json = serializeMessage(message);
       if (this._stdout.write(json)) {
-        resolve3();
+        resolve4();
       } else {
-        this._stdout.once("drain", resolve3);
+        this._stdout.once("drain", resolve4);
       }
     });
   }
@@ -26569,8 +26569,8 @@ function _addRequestID(value, response) {
 }
 var APIPromise = class _APIPromise extends Promise {
   constructor(responsePromise, parseResponse2 = defaultParseResponse) {
-    super((resolve3) => {
-      resolve3(null);
+    super((resolve4) => {
+      resolve4(null);
     });
     this.responsePromise = responsePromise;
     this.parseResponse = parseResponse2;
@@ -27145,7 +27145,7 @@ var startsWithSchemeRegexp = /^[a-z][a-z0-9+.-]*:/i;
 var isAbsoluteURL = (url) => {
   return startsWithSchemeRegexp.test(url);
 };
-var sleep = (ms) => new Promise((resolve3) => setTimeout(resolve3, ms));
+var sleep = (ms) => new Promise((resolve4) => setTimeout(resolve4, ms));
 var validatePositiveInteger = (name, n2) => {
   if (typeof n2 !== "number" || !Number.isInteger(n2)) {
     throw new OpenAIError(`${name} must be an integer`);
@@ -27578,12 +27578,12 @@ var EventStream = class {
     _EventStream_errored.set(this, false);
     _EventStream_aborted.set(this, false);
     _EventStream_catchingPromiseCreated.set(this, false);
-    __classPrivateFieldSet7(this, _EventStream_connectedPromise, new Promise((resolve3, reject) => {
-      __classPrivateFieldSet7(this, _EventStream_resolveConnectedPromise, resolve3, "f");
+    __classPrivateFieldSet7(this, _EventStream_connectedPromise, new Promise((resolve4, reject) => {
+      __classPrivateFieldSet7(this, _EventStream_resolveConnectedPromise, resolve4, "f");
       __classPrivateFieldSet7(this, _EventStream_rejectConnectedPromise, reject, "f");
     }), "f");
-    __classPrivateFieldSet7(this, _EventStream_endPromise, new Promise((resolve3, reject) => {
-      __classPrivateFieldSet7(this, _EventStream_resolveEndPromise, resolve3, "f");
+    __classPrivateFieldSet7(this, _EventStream_endPromise, new Promise((resolve4, reject) => {
+      __classPrivateFieldSet7(this, _EventStream_resolveEndPromise, resolve4, "f");
       __classPrivateFieldSet7(this, _EventStream_rejectEndPromise, reject, "f");
     }), "f");
     __classPrivateFieldGet8(this, _EventStream_connectedPromise, "f").catch(() => {
@@ -27667,11 +27667,11 @@ var EventStream = class {
    *   const message = await stream.emitted('message') // rejects if the stream errors
    */
   emitted(event) {
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve4, reject) => {
       __classPrivateFieldSet7(this, _EventStream_catchingPromiseCreated, true, "f");
       if (event !== "error")
         this.once("error", reject);
-      this.once(event, resolve3);
+      this.once(event, resolve4);
     });
   }
   async done() {
@@ -27824,7 +27824,7 @@ var AssistantStream = class _AssistantStream extends EventStream {
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve3, reject) => readQueue.push({ resolve: resolve3, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve4, reject) => readQueue.push({ resolve: resolve4, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
         }
         const chunk = pushQueue.shift();
         return { value: chunk, done: false };
@@ -29442,7 +29442,7 @@ var ChatCompletionStream = class _ChatCompletionStream extends AbstractChatCompl
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve3, reject) => readQueue.push({ resolve: resolve3, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve4, reject) => readQueue.push({ resolve: resolve4, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
         }
         const chunk = pushQueue.shift();
         return { value: chunk, done: false };
@@ -31093,7 +31093,7 @@ var ResponseStream = class _ResponseStream extends EventStream {
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve3, reject) => readQueue.push({ resolve: resolve3, reject })).then((event2) => event2 ? { value: event2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve4, reject) => readQueue.push({ resolve: resolve4, reject })).then((event2) => event2 ? { value: event2, done: false } : { value: void 0, done: true });
         }
         const event = pushQueue.shift();
         return { value: event, done: false };
@@ -32515,8 +32515,8 @@ async function defaultParseResponse2(props) {
 }
 var APIPromise2 = class _APIPromise extends Promise {
   constructor(responsePromise, parseResponse2 = defaultParseResponse2) {
-    super((resolve3) => {
-      resolve3(null);
+    super((resolve4) => {
+      resolve4(null);
     });
     this.responsePromise = responsePromise;
     this.parseResponse = parseResponse2;
@@ -33077,7 +33077,7 @@ var startsWithSchemeRegexp2 = new RegExp("^(?:[a-z]+:)?//", "i");
 var isAbsoluteURL2 = (url) => {
   return startsWithSchemeRegexp2.test(url);
 };
-var sleep2 = (ms) => new Promise((resolve3) => setTimeout(resolve3, ms));
+var sleep2 = (ms) => new Promise((resolve4) => setTimeout(resolve4, ms));
 var validatePositiveInteger2 = (name, n2) => {
   if (typeof n2 !== "number" || !Number.isInteger(n2)) {
     throw new AnthropicError(`${name} must be an integer`);
@@ -33788,12 +33788,12 @@ var PromptCachingBetaMessageStream = class _PromptCachingBetaMessageStream {
       }
       return this._emit("error", new AnthropicError(String(error2)));
     });
-    __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_connectedPromise, new Promise((resolve3, reject) => {
-      __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_resolveConnectedPromise, resolve3, "f");
+    __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_connectedPromise, new Promise((resolve4, reject) => {
+      __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_resolveConnectedPromise, resolve4, "f");
       __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_rejectConnectedPromise, reject, "f");
     }), "f");
-    __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_endPromise, new Promise((resolve3, reject) => {
-      __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_resolveEndPromise, resolve3, "f");
+    __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_endPromise, new Promise((resolve4, reject) => {
+      __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_resolveEndPromise, resolve4, "f");
       __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_rejectEndPromise, reject, "f");
     }), "f");
     __classPrivateFieldGet14(this, _PromptCachingBetaMessageStream_connectedPromise, "f").catch(() => {
@@ -33922,11 +33922,11 @@ var PromptCachingBetaMessageStream = class _PromptCachingBetaMessageStream {
    *   const message = await stream.emitted('message') // rejects if the stream errors
    */
   emitted(event) {
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve4, reject) => {
       __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_catchingPromiseCreated, true, "f");
       if (event !== "error")
         this.once("error", reject);
-      this.once(event, resolve3);
+      this.once(event, resolve4);
     });
   }
   async done() {
@@ -34153,7 +34153,7 @@ var PromptCachingBetaMessageStream = class _PromptCachingBetaMessageStream {
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve3, reject) => readQueue.push({ resolve: resolve3, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve4, reject) => readQueue.push({ resolve: resolve4, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
         }
         const chunk = pushQueue.shift();
         return { value: chunk, done: false };
@@ -34307,12 +34307,12 @@ var MessageStream = class _MessageStream {
       }
       return this._emit("error", new AnthropicError(String(error2)));
     });
-    __classPrivateFieldSet13(this, _MessageStream_connectedPromise, new Promise((resolve3, reject) => {
-      __classPrivateFieldSet13(this, _MessageStream_resolveConnectedPromise, resolve3, "f");
+    __classPrivateFieldSet13(this, _MessageStream_connectedPromise, new Promise((resolve4, reject) => {
+      __classPrivateFieldSet13(this, _MessageStream_resolveConnectedPromise, resolve4, "f");
       __classPrivateFieldSet13(this, _MessageStream_rejectConnectedPromise, reject, "f");
     }), "f");
-    __classPrivateFieldSet13(this, _MessageStream_endPromise, new Promise((resolve3, reject) => {
-      __classPrivateFieldSet13(this, _MessageStream_resolveEndPromise, resolve3, "f");
+    __classPrivateFieldSet13(this, _MessageStream_endPromise, new Promise((resolve4, reject) => {
+      __classPrivateFieldSet13(this, _MessageStream_resolveEndPromise, resolve4, "f");
       __classPrivateFieldSet13(this, _MessageStream_rejectEndPromise, reject, "f");
     }), "f");
     __classPrivateFieldGet15(this, _MessageStream_connectedPromise, "f").catch(() => {
@@ -34441,11 +34441,11 @@ var MessageStream = class _MessageStream {
    *   const message = await stream.emitted('message') // rejects if the stream errors
    */
   emitted(event) {
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve4, reject) => {
       __classPrivateFieldSet13(this, _MessageStream_catchingPromiseCreated, true, "f");
       if (event !== "error")
         this.once("error", reject);
-      this.once(event, resolve3);
+      this.once(event, resolve4);
     });
   }
   async done() {
@@ -34672,7 +34672,7 @@ var MessageStream = class _MessageStream {
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve3, reject) => readQueue.push({ resolve: resolve3, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve4, reject) => readQueue.push({ resolve: resolve4, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
         }
         const chunk = pushQueue.shift();
         return { value: chunk, done: false };
@@ -35147,7 +35147,7 @@ var ClaudeCliProvider = class {
     }
   }
   run(args, input, timeoutMs) {
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve4, reject) => {
       const env = { ...process.env };
       delete env.ANTHROPIC_API_KEY;
       delete env.ANTHROPIC_AUTH_TOKEN;
@@ -35182,7 +35182,7 @@ var ClaudeCliProvider = class {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve3({ code: code ?? 1, stdout, stderr });
+        resolve4({ code: code ?? 1, stdout, stderr });
       });
       if (input !== void 0) child.stdin.write(input);
       child.stdin.end();
@@ -35344,7 +35344,7 @@ var CodexCliProvider = class {
     }
   }
   run(args, input, timeoutMs) {
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve4, reject) => {
       const env = { ...process.env };
       delete env.OPENAI_API_KEY;
       delete env.CODEX_API_KEY;
@@ -35379,7 +35379,7 @@ var CodexCliProvider = class {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve3({ code: code ?? 1, stdout, stderr });
+        resolve4({ code: code ?? 1, stdout, stderr });
       });
       if (input !== void 0) child.stdin.write(input);
       child.stdin.end();
@@ -35521,7 +35521,7 @@ var GrokCliProvider = class {
     return text;
   }
   run(args, input, timeoutMs) {
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve4, reject) => {
       const env = { ...process.env };
       delete env.XAI_API_KEY;
       const child = (0, import_node_child_process3.spawn)(this.command, args, {
@@ -35554,7 +35554,7 @@ var GrokCliProvider = class {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve3({ code: code ?? 1, stdout, stderr });
+        resolve4({ code: code ?? 1, stdout, stderr });
       });
       if (input !== void 0) child.stdin.write(input);
       child.stdin.end();
@@ -35677,7 +35677,7 @@ var EmptyCompletionError = class extends Error {
     this.name = "EmptyCompletionError";
   }
 };
-var sleep3 = (ms) => new Promise((resolve3) => setTimeout(resolve3, ms));
+var sleep3 = (ms) => new Promise((resolve4) => setTimeout(resolve4, ms));
 async function pooled(tasks, limit2) {
   if (tasks.length === 0) return;
   const width = limit2 && limit2 > 0 ? Math.min(limit2, tasks.length) : tasks.length;
@@ -36722,7 +36722,7 @@ var CouncilOrchestrator = class {
 var import_node_child_process4 = require("node:child_process");
 var isCloudModel = (m2) => m2.endsWith(":cloud") || m2.endsWith("-cloud");
 function runCli(command, args, opts = { timeoutMs: 8e3 }) {
-  return new Promise((resolve3) => {
+  return new Promise((resolve4) => {
     const env = { ...process.env };
     if (opts.stripKeys === "anthropic") {
       delete env.ANTHROPIC_API_KEY;
@@ -36739,7 +36739,7 @@ function runCli(command, args, opts = { timeoutMs: 8e3 }) {
     try {
       child = (0, import_node_child_process4.spawn)(command, args, { env, stdio: ["pipe", "pipe", "pipe"] });
     } catch {
-      resolve3({ code: 127, stdout: "", stderr: "spawn failed" });
+      resolve4({ code: 127, stdout: "", stderr: "spawn failed" });
       return;
     }
     let stdout = "", stderr = "", settled = false;
@@ -36747,7 +36747,7 @@ function runCli(command, args, opts = { timeoutMs: 8e3 }) {
       if (!settled) {
         settled = true;
         clearTimeout(timer);
-        resolve3(r2);
+        resolve4(r2);
       }
     };
     const timer = setTimeout(() => {
@@ -36771,8 +36771,8 @@ function runCli(command, args, opts = { timeoutMs: 8e3 }) {
 }
 async function withTimeout(p2, ms, fallback) {
   let timer;
-  const t2 = new Promise((resolve3) => {
-    timer = setTimeout(() => resolve3(fallback), ms);
+  const t2 = new Promise((resolve4) => {
+    timer = setTimeout(() => resolve4(fallback), ms);
   });
   try {
     return await Promise.race([p2, t2]);
@@ -36905,7 +36905,67 @@ function quotaWarning(report, tiers, subs) {
 
 // src/context.ts
 var import_promises = require("node:fs/promises");
+var import_node_path6 = require("node:path");
+
+// src/git.ts
+var import_node_child_process5 = require("node:child_process");
+var import_node_util = require("node:util");
 var import_node_path5 = require("node:path");
+var execFileAsync = (0, import_node_util.promisify)(import_node_child_process5.execFile);
+var MAX_DIFF_BYTES = 512 * 1024;
+function diffArgsForRef(ref) {
+  switch (ref) {
+    case "staged":
+      return ["diff", "--cached"];
+    case "unstaged":
+      return ["diff"];
+    case "uncommitted":
+      return ["diff", "HEAD"];
+    default:
+      return ["diff", "--end-of-options", ref];
+  }
+}
+async function assertGitRepo(repoPath) {
+  try {
+    await execFileAsync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: repoPath });
+  } catch {
+    throw new Error(`"${repoPath}" is not inside a git repository (or git is not installed).`);
+  }
+}
+async function buildGitDiff(input) {
+  const ref = input.ref?.trim();
+  if (!ref) {
+    throw new Error(
+      'git_ref must be a non-empty string: "uncommitted" | "staged" | "unstaged", or a git revision/range like "main..HEAD" or "HEAD~3..HEAD".'
+    );
+  }
+  if (ref.startsWith("-")) {
+    throw new Error(
+      `git_ref "${ref}" looks like a git option, not a revision/range \u2014 refusing it. Use "uncommitted" | "staged" | "unstaged", or a revision/range like "main..HEAD".`
+    );
+  }
+  const repoPath = (0, import_node_path5.resolve)(input.repo?.trim() || process.cwd());
+  await assertGitRepo(repoPath);
+  const args = diffArgsForRef(ref);
+  let stdout;
+  try {
+    ({ stdout } = await execFileAsync("git", args, { cwd: repoPath, maxBuffer: MAX_DIFF_BYTES * 2 }));
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`git diff failed for git_ref "${ref}": ${detail.trim().slice(0, 300)}`);
+  }
+  if (!stdout.trim()) {
+    throw new Error(`No changes found for git_ref "${ref}" in ${repoPath} \u2014 nothing to review.`);
+  }
+  if (Buffer.byteLength(stdout, "utf8") > MAX_DIFF_BYTES) {
+    throw new Error(
+      `git diff for "${ref}" is too large (> ${Math.round(MAX_DIFF_BYTES / 1024)} KB) to attach automatically. Narrow the range (e.g. a smaller commit range) or attach specific files via "files" instead.`
+    );
+  }
+  return stdout;
+}
+
+// src/context.ts
 var MAX_FILE_BYTES = 256 * 1024;
 var MAX_TOTAL_BYTES = 768 * 1024;
 var MAX_FILES = 20;
@@ -36917,6 +36977,11 @@ async function buildAugmentedQuestion(question, input) {
     blocks.push(`----- CONTEXT -----
 ${inline}`);
   }
+  if (input.gitRef?.trim()) {
+    const diff = await buildGitDiff({ ref: input.gitRef, repo: input.gitRepo });
+    blocks.push(`----- GIT DIFF (${input.gitRef.trim()}) -----
+${diff}`);
+  }
   const files = input.files ?? [];
   if (files.length > MAX_FILES) {
     throw new Error(`Too many files attached (${files.length}); the limit is ${MAX_FILES}.`);
@@ -36924,8 +36989,8 @@ ${inline}`);
   let total = 0;
   for (const raw of files) {
     if (typeof raw !== "string" || !raw.trim()) continue;
-    const path = (0, import_node_path5.resolve)(raw);
-    if (IMAGE_EXTENSIONS.has((0, import_node_path5.extname)(path).toLowerCase())) {
+    const path = (0, import_node_path6.resolve)(raw);
+    if (IMAGE_EXTENSIONS.has((0, import_node_path6.extname)(path).toLowerCase())) {
       throw new Error(
         `${raw} looks like an image \u2014 "files" reads text and would send garbled data. Use the "images" parameter instead.`
       );
@@ -36968,7 +37033,7 @@ ${question}`;
 
 // src/images.ts
 var import_promises2 = require("node:fs/promises");
-var import_node_path6 = require("node:path");
+var import_node_path7 = require("node:path");
 var MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 var MAX_TOTAL_IMAGE_BYTES = 24 * 1024 * 1024;
 var MAX_IMAGES = 6;
@@ -36988,8 +37053,8 @@ async function loadImages(paths) {
   let total = 0;
   for (const raw of paths) {
     if (typeof raw !== "string" || !raw.trim()) continue;
-    const path = (0, import_node_path6.resolve)(raw);
-    const ext = (0, import_node_path6.extname)(path).toLowerCase();
+    const path = (0, import_node_path7.resolve)(raw);
+    const ext = (0, import_node_path7.extname)(path).toLowerCase();
     const mimeType = EXT_TO_MIME[ext];
     if (!mimeType) {
       throw new Error(
@@ -37104,7 +37169,9 @@ try {
 async function runCouncil(input, onProgress) {
   const question = await buildAugmentedQuestion(input.question, {
     context: input.context,
-    files: input.files
+    files: input.files,
+    gitRef: input.git_ref,
+    gitRepo: input.git_repo
   });
   const images = await loadImages(input.images);
   return orchestrator.ask(
@@ -37180,6 +37247,10 @@ var AskCouncilInput = external_exports.object({
   files: external_exports.array(external_exports.string()).optional().describe(
     'Optional local file paths to read and attach as context (each fenced and labelled). Caps: 256 KB/file, 768 KB total, 20 files. Text files only \u2014 use "images" for pictures.'
   ),
+  git_ref: external_exports.string().optional().describe(
+    'Auto-attach a local `git diff` as context \u2014 for repo reviews, instead of hand-listing every changed file via "files". One of "uncommitted" (staged + unstaged vs HEAD), "staged", "unstaged", or any git revision/range (e.g. "main..HEAD", "HEAD~3..HEAD"). Errors clearly if the ref/repo is invalid, there are no changes, or the diff is too large (> 512 KB \u2014 narrow the range or use "files" instead).'
+  ),
+  git_repo: external_exports.string().optional().describe("Repo directory to run git_ref in. Defaults to the server's working directory."),
   images: external_exports.array(external_exports.string()).optional().describe(
     "Optional local image paths (png/jpg/jpeg/gif/webp). Auto-detected vision-capable council members are queried with the image(s); members without vision support are automatically skipped for this call (see visionRouting in the result). Caps: 8 MB/image, 24 MB total, 6 images."
   )
@@ -37246,7 +37317,7 @@ var TOOLS = [
   {
     name: "ask_council",
     annotations: { title: "Ask the council", readOnlyHint: false },
-    description: "Send a question to the model council and get a structured response. Mode: individual (each model answers separately), categorized (judge groups responses into agreement/complementary/conflicting), deconflicted (iterative loop \u2014 judge orchestrates re-questioning until conflicts resolve, returns a deconfliction score 0\u2013100%), pooled (Delphi-style \u2014 members reconsider against a neutral, deduplicated, attribution-free pool of answers; no winner is forced, so genuine divergence is preserved), or dialectic (thesis/antithesis/synthesis \u2014 members defend their pick and critique the rest, the judge compiles a pros/cons dossier per option, then members re-select a ranked top-3). Attach images to ask a vision question \u2014 only auto-detected vision-capable members are queried; the rest are skipped and reported in visionRouting.",
+    description: 'Send a question to the model council and get a structured response. Mode: individual (each model answers separately), categorized (judge groups responses into agreement/complementary/conflicting), deconflicted (iterative loop \u2014 judge orchestrates re-questioning until conflicts resolve, returns a deconfliction score 0\u2013100%), pooled (Delphi-style \u2014 members reconsider against a neutral, deduplicated, attribution-free pool of answers; no winner is forced, so genuine divergence is preserved), or dialectic (thesis/antithesis/synthesis \u2014 members defend their pick and critique the rest, the judge compiles a pros/cons dossier per option, then members re-select a ranked top-3). Attach images to ask a vision question \u2014 only auto-detected vision-capable members are queried; the rest are skipped and reported in visionRouting. For a repo review, pass git_ref (e.g. "uncommitted", "main..HEAD") instead of hand-listing files \u2014 the server runs `git diff` locally and attaches it as context.',
     inputSchema: {
       type: "object",
       required: ["question"],
@@ -37276,6 +37347,14 @@ var TOOLS = [
           type: "array",
           items: { type: "string" },
           description: 'Optional local file paths to read and attach as labelled context (caps: 256 KB/file, 768 KB total, 20 files). Text only \u2014 use "images" for pictures.'
+        },
+        git_ref: {
+          type: "string",
+          description: 'Auto-attach a local `git diff` as context for a repo review, instead of hand-listing every changed file via "files". One of "uncommitted" (staged+unstaged vs HEAD), "staged", "unstaged", or a git revision/range (e.g. "main..HEAD"). Errors clearly on a bad ref, no changes, or a diff too large to attach (> 512 KB).'
+        },
+        git_repo: {
+          type: "string",
+          description: "Repo directory to run git_ref in. Defaults to the working directory."
         },
         images: {
           type: "array",
@@ -37315,6 +37394,14 @@ var TOOLS = [
           type: "array",
           items: { type: "string" },
           description: "Optional local file paths to read and attach as labelled context."
+        },
+        git_ref: {
+          type: "string",
+          description: "Auto-attach a local git diff as context \u2014 same behavior as ask_council."
+        },
+        git_repo: {
+          type: "string",
+          description: "Repo directory to run git_ref in. Defaults to the working directory."
         },
         images: {
           type: "array",
@@ -37372,7 +37459,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.18"
+    version: "0.2.19"
   },
   {
     capabilities: { tools: {} },

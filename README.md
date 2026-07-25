@@ -15,7 +15,7 @@ An MCP server that routes a question to a **council** of AI models — local (Ol
 - **High-stakes technical decision** — `ask_council(..., mode="dialectic")` to see each option argued for *and* against before a synthesized, ranked recommendation (attach the relevant file with `files=[…]`).
 - **Reduce single-model bias** — `mode="pooled"` (Delphi) so a minority-but-correct answer is *preserved* instead of averaged away by the loudest model.
 - **Spot disagreement fast** — `mode="categorized"` to have a judge sort answers into agreement, complementary insight, and genuine conflict.
-- **Code / design review across models** — attach a file (`files=["src/auth.ts"]`) and ask the whole council to critique it; use `context` to add constraints ("must be OWASP-clean").
+- **Code / design review across models** — attach a file (`files=["src/auth.ts"]`) or a local diff (`git_ref="uncommitted"`) and ask the whole council to critique it; use `context` to add constraints ("must be OWASP-clean").
 - **Local-only, offline second opinions** — fan a prompt across every model you already run in Ollama; no cloud, no API keys.
 - **Mix your subscriptions** — put Claude (Opus/Sonnet/Haiku) and ChatGPT (via Codex) side by side on the same question, billed to plans you already pay for.
 - **Long runs without blocking** — kick off a deconfliction over slow local models with `ask_council_async`, keep working, then `get_council_result(job_id)`.
@@ -308,6 +308,18 @@ Send a question to the full council.
 }
 ```
 
+**Repo review — auto-attach a git diff.** Instead of hand-listing every changed file via `"files"`, add `"git_ref"` and the server runs `git diff` locally and attaches the result as context:
+
+```json
+{
+  "question": "Review this diff for bugs and regressions.",
+  "mode": "categorized",
+  "git_ref": "uncommitted"
+}
+```
+
+`git_ref` is one of `"uncommitted"` (staged + unstaged vs `HEAD` — the usual "review my changes" case), `"staged"`, `"unstaged"`, or any git revision/range (`"main..HEAD"`, `"HEAD~3..HEAD"`, a commit SHA). `"git_repo"` defaults to the server's working directory, which for a Claude Code plugin session is normally your project root — pass it explicitly if it isn't (e.g. a standalone MCP install launched from elsewhere). Errors clearly (not silently) on an invalid ref, a ref that looks like a git option rather than a revision (rejected outright — no legitimate revision starts with `-`), a path that isn't a git repo, no changes found for the ref, or a diff too large to attach automatically (> 512 KB — narrow the range, or fall back to `"files"` for specific files). Note: like plain `git diff`, this doesn't show brand-new **untracked** files — only changes to files git already knows about. This only reads a diff on the server's own machine via `git diff` (no shell, args passed as an array) — it does not give any council member live/agentic git access; API-keyed members never gain filesystem access at all, and the CLI-based members (`claude-cli`/`codex-cli`/`grok-cli`) stay locked down exactly as before.
+
 **Attach images (vision).** Add `"images"` (an array of local png/jpg/jpeg/gif/webp paths) to ask a vision question. Vision support is auto-detected per member with a **two-stage check**, then cached:
 
 1. **Cheap negative prefilter** (per provider): Ollama's `/api/show` `capabilities` field; OpenAI-compatible (vLLM/SGLang/TRT-LLM/OpenAI/X.AI) and Anthropic send a real functional probe (a small test image + `max_tokens: 1`, since neither advertises vision via metadata). A "no" here is trustworthy and skips stage 2. `claude-cli`/`codex-cli` have no cheap signal and go straight to stage 2.
@@ -454,7 +466,7 @@ Where `pooled` is deliberately *neutral*, `dialectic` is deliberately *adversari
 
 ### `ask_council_async`
 
-Same inputs as `ask_council` (including `context` / `files`), but starts the run in the **background** and returns a `job_id` immediately — so a long deconfliction/dialectic run, or a council with slow local models, doesn't block you.
+Same inputs as `ask_council` (including `context` / `files` / `git_ref`), but starts the run in the **background** and returns a `job_id` immediately — so a long deconfliction/dialectic run, or a council with slow local models, doesn't block you.
 
 ```json
 { "status": "running", "job_id": "6f2c…", "mode": "dialectic", "members": 8 }
@@ -562,7 +574,7 @@ They solve different problems. `claude-council` gives Claude Code the opinions o
 
 **Does it work in Cowork / claude.ai?** No — it executes your local `claude`/`codex`/`grok` CLIs and reaches localhost/LAN model servers, which cloud-hosted surfaces can't do. Use it in **Claude Code** (plugin) or **Claude Desktop** (standalone MCP).
 
-**Can it review a file, or run without blocking?** Yes — `ask_council` takes `context` / `files`, and `ask_council_async` + `get_council_result` run a council in the background and fetch the result when ready.
+**Can it review a file, a diff, or run without blocking?** Yes — `ask_council` takes `context` / `files` / `git_ref` (auto-attaches a local `git diff` for repo reviews), and `ask_council_async` + `get_council_result` run a council in the background and fetch the result when ready.
 
 **What does "judge" mean?** Categorized / deconflicted / pooled / dialectic modes use one member as the judge that groups, re-questions, or distils the others. It's auto-selected as the largest member; override with `judge_model`.
 

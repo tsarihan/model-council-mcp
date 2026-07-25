@@ -161,6 +161,26 @@ ask_council(question="What's wrong with this auth flow?", mode="dialectic",
 ```
 Caps: 256 KB/file, 768 KB total, 20 files (pass an excerpt via `context` for bigger inputs).
 
+**Repo review? Auto-attach a diff instead.** Skip hand-listing changed files — add
+`git_ref` and the server runs `git diff` locally and attaches it as context:
+
+```
+ask_council(question="Review this diff for bugs and regressions.", mode="categorized",
+            git_ref="uncommitted")
+```
+
+`git_ref` is `"uncommitted"` (staged + unstaged vs `HEAD` — the usual case),
+`"staged"`, `"unstaged"`, or any git revision/range (`"main..HEAD"`,
+`"HEAD~3..HEAD"`). `git_repo` defaults to the server's working directory
+(normally your project root in a Claude Code plugin session) — set it
+explicitly if that's not where your repo is. Errors clearly on a bad ref
+(including anything that looks like a git option rather than a revision —
+rejected outright), a non-repo path, no changes, or a diff too large to attach
+(> 512 KB — narrow the range or use `files` instead). Note: won't show
+brand-new untracked files, same as plain `git diff`. This doesn't give any
+council member live git access — it's a local `git diff` read on the server's
+own machine, same trust model as `files`.
+
 **Ask a vision question.** Add `images` (local png/jpg/jpeg/gif/webp paths) and the
 plugin auto-detects which configured members can actually see, with a two-stage
 check: a cheap prefilter (Ollama's `/api/show` capabilities, a functional probe for
@@ -195,7 +215,7 @@ on `/reload-plugins`.
 
 Handy tools & commands:
 
-- `ask_council` — ask the council (modes above; `context` / `files` / `images` optional).
+- `ask_council` — ask the council (modes above; `context` / `files` / `git_ref` / `images` optional).
 - `ask_council_async` / `get_council_result` — background runs + fetch/list.
 - `council_status` — detected environment, current members, tiers, per-provider
   concurrency, quota warning. (`/model-council:status` in the Claude Code plugin.)
@@ -215,6 +235,7 @@ Handy tools & commands:
 | Point Ollama at a remote host | `ollama_address` |
 | Give slow local models more time | `request_timeout_ms` (ms; default 120000) |
 | Review a file / add background | `ask_council(files=[…], context="…")` |
+| Review a diff (repo review) | `ask_council(git_ref="uncommitted")` |
 | Ask about an image | `ask_council(images=[…])` — routed only to vision-capable members |
 | Not block on a long run | `ask_council_async` → `get_council_result(job_id)` |
 | Cap output length | `max_tokens` (auto-clamped down to each server's context) |

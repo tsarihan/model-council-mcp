@@ -3,7 +3,7 @@
  * concurrency derivation, poolKey bucketing, and persistent state round-trip.
  * Runs against the built dist/ modules (pure functions — no server needed).
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -269,6 +269,83 @@ console.log('▶ loadImages validation (src/images.ts)');
     check('over the image count cap → clear error', threwCount);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+console.log('▶ buildGitDiff validation (src/git.ts)');
+{
+  const { execFileSync } = await import('node:child_process');
+  const { writeFileSync } = await import('node:fs');
+  const { buildGitDiff, MAX_DIFF_BYTES } = await import('../dist/git.js');
+  const repo = mkdtempSync(join(tmpdir(), 'mc-git-'));
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    const filePath = join(repo, 'a.txt');
+    writeFileSync(filePath, 'line one\n');
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'initial'], { cwd: repo });
+
+    writeFileSync(filePath, 'line one\nline two\n');
+    const unstaged = await buildGitDiff({ ref: 'unstaged', repo });
+    check('unstaged: shows the added line', /\+line two/.test(unstaged), unstaged);
+
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    const staged = await buildGitDiff({ ref: 'staged', repo });
+    check('staged: shows the added line', /\+line two/.test(staged), staged);
+
+    writeFileSync(filePath, 'line one\nline two\nline three\n');
+    const uncommitted = await buildGitDiff({ ref: 'uncommitted', repo });
+    check('uncommitted: shows both staged and unstaged changes vs HEAD',
+      /\+line two/.test(uncommitted) && /\+line three/.test(uncommitted), uncommitted);
+
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'second'], { cwd: repo });
+    const range = await buildGitDiff({ ref: 'HEAD~1..HEAD', repo });
+    check('revision range: diffs between two commits',
+      /\+line two/.test(range) && /\+line three/.test(range), range);
+
+    let threwNotRepo = false;
+    const notRepoDir = mkdtempSync(join(tmpdir(), 'mc-notgit-'));
+    try { await buildGitDiff({ ref: 'uncommitted', repo: notRepoDir }); }
+    catch (e) { threwNotRepo = /not inside a git repository/i.test(e.message); }
+    rmSync(notRepoDir, { recursive: true, force: true });
+    check('non-repo path → clear error', threwNotRepo);
+
+    let threwBadRef = false;
+    try { await buildGitDiff({ ref: 'no-such-branch..HEAD', repo }); }
+    catch (e) { threwBadRef = /git diff failed/i.test(e.message); }
+    check('unknown ref → clear error', threwBadRef);
+
+    let threwEmpty = false;
+    try { await buildGitDiff({ ref: 'staged', repo }); } // nothing staged after the commit above
+    catch (e) { threwEmpty = /no changes found/i.test(e.message); }
+    check('no changes → clear error (not silently empty)', threwEmpty);
+
+    let threwBlank = false;
+    try { await buildGitDiff({ ref: '   ', repo }); }
+    catch (e) { threwBlank = /must be a non-empty string/i.test(e.message); }
+    check('blank ref → clear error', threwBlank);
+
+    writeFileSync(filePath, 'x'.repeat(MAX_DIFF_BYTES + 50_000));
+    let threwTooLarge = false;
+    try { await buildGitDiff({ ref: 'unstaged', repo }); }
+    catch (e) { threwTooLarge = /too large/i.test(e.message); }
+    check('diff too large → clear error (not silently truncated)', threwTooLarge);
+
+    // Regression: a ref starting with '-' must be rejected, not passed through to
+    // git as an option — `git diff --output=<file>` is an arbitrary file write
+    // primitive that fails SILENTLY on our side (empty stdout looks like "no
+    // changes"), so this must throw before ever reaching execFile.
+    const pwnTarget = join(repo, 'pwned.txt');
+    let threwOptionInjection = false;
+    try { await buildGitDiff({ ref: `--output=${pwnTarget}`, repo }); }
+    catch (e) { threwOptionInjection = /looks like a git option/i.test(e.message); }
+    check('ref starting with "-" → rejected (git-option injection guard)', threwOptionInjection);
+    check('git-option injection guard: no file was actually written', !existsSync(pwnTarget));
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
   }
 }
 

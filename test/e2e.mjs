@@ -3,7 +3,7 @@
  * backend) and drive all 4 tools + 3 response modes via the MCP protocol.
  */
 import { spawn } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -436,6 +436,69 @@ async function main() {
       check('context: missing file → error surfaced', threw);
     } finally {
       rmSync(ctxDir, { recursive: true, force: true });
+    }
+
+    // ── Test: git_ref auto-attaches a local diff (repo review convenience) ─────
+    console.log('\n▶ ask_council with git_ref (auto-attached diff)');
+    {
+      const { execFileSync } = await import('node:child_process');
+      const gitDir = mkdtempSync(join(tmpdir(), 'mc-gitref-'));
+      try {
+        execFileSync('git', ['init', '-q'], { cwd: gitDir });
+        execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: gitDir });
+        execFileSync('git', ['config', 'user.name', 'Test'], { cwd: gitDir });
+        const filePath = join(gitDir, 'reviewme.txt');
+        writeFileSync(filePath, 'GIT_BASELINE_LINE\n');
+        execFileSync('git', ['add', '.'], { cwd: gitDir });
+        execFileSync('git', ['commit', '-q', '-m', 'initial'], { cwd: gitDir });
+        writeFileSync(filePath, 'GIT_BASELINE_LINE\nGIT_DIFF_MARKER_88\n');
+
+        await resetMock();
+        await client.callTool({
+          name: 'ask_council',
+          arguments: { question: 'Review this diff.', mode: 'individual', git_ref: 'uncommitted', git_repo: gitDir },
+        });
+        const dbgGit = JSON.stringify(await (await fetch(`${MOCK_URL}/debug`)).json());
+        check('git_ref: diff content reached members', /GIT_DIFF_MARKER_88/.test(dbgGit), dbgGit);
+        check('git_ref: labelled with the requested ref', /GIT DIFF \(uncommitted\)/.test(dbgGit), dbgGit);
+
+        // A ref with no changes is a clear error, not a silent no-op.
+        let threwEmpty = false;
+        try {
+          await client.callTool({
+            name: 'ask_council',
+            arguments: { question: 'x', git_ref: 'staged', git_repo: gitDir },
+          });
+        } catch (e) { threwEmpty = /no changes found/i.test(String(e?.message ?? e)); }
+        check('git_ref: no changes → error surfaced', threwEmpty);
+
+        // A path that isn't a git repo is a clear error.
+        const notRepoDir = mkdtempSync(join(tmpdir(), 'mc-gitref-notrepo-'));
+        let threwNotRepo = false;
+        try {
+          await client.callTool({
+            name: 'ask_council',
+            arguments: { question: 'x', git_ref: 'uncommitted', git_repo: notRepoDir },
+          });
+        } catch (e) { threwNotRepo = /not inside a git repository/i.test(String(e?.message ?? e)); }
+        rmSync(notRepoDir, { recursive: true, force: true });
+        check('git_ref: non-repo path → error surfaced', threwNotRepo);
+
+        // Regression: a ref starting with '-' must never reach `git diff` as an
+        // option — "--output=<file>" is an arbitrary file write primitive.
+        const pwnTarget = join(gitDir, 'pwned.txt');
+        let threwInjection = false;
+        try {
+          await client.callTool({
+            name: 'ask_council',
+            arguments: { question: 'x', git_ref: `--output=${pwnTarget}`, git_repo: gitDir },
+          });
+        } catch (e) { threwInjection = /looks like a git option/i.test(String(e?.message ?? e)); }
+        check('git_ref: option-injection ref rejected', threwInjection);
+        check('git_ref: option-injection ref did not write a file', !existsSync(pwnTarget));
+      } finally {
+        rmSync(gitDir, { recursive: true, force: true });
+      }
     }
 
     // ── Test: ask_council with images (vision auto-detection + routing) ───────

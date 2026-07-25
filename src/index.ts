@@ -12,10 +12,11 @@
  *   council_status     — detected environment, members, tiers, quota
  *   setup_council      — set subscription tiers + auto-populate
  *
- * ask_council / ask_council_async also accept `context` (inline text) and
- * `files` (local paths) to attach as labelled context for every member, and
- * `images` (local image paths) which are routed only to council members
- * auto-detected as vision-capable (see src/images.ts, providers/*.supportsVision).
+ * ask_council / ask_council_async also accept `context` (inline text), `files`
+ * (local paths), and `git_ref` (auto-attaches a local `git diff` — see
+ * src/git.ts) to attach as labelled context for every member, and `images`
+ * (local image paths) which are routed only to council members auto-detected
+ * as vision-capable (see src/images.ts, providers/*.supportsVision).
  */
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -88,12 +89,16 @@ async function runCouncil(
     context?: string;
     files?: string[];
     images?: string[];
+    git_ref?: string;
+    git_repo?: string;
   },
   onProgress?: ProgressReporter,
 ) {
   const question = await buildAugmentedQuestion(input.question, {
     context: input.context,
     files: input.files,
+    gitRef: input.git_ref,
+    gitRepo: input.git_repo,
   });
   const images = await loadImages(input.images);
   return orchestrator.ask(
@@ -246,6 +251,20 @@ const AskCouncilInput = z.object({
         'labelled). Caps: 256 KB/file, 768 KB total, 20 files. Text files only — ' +
         'use "images" for pictures.',
     ),
+  git_ref: z
+    .string()
+    .optional()
+    .describe(
+      'Auto-attach a local `git diff` as context — for repo reviews, instead of hand-listing ' +
+        'every changed file via "files". One of "uncommitted" (staged + unstaged vs HEAD), ' +
+        '"staged", "unstaged", or any git revision/range (e.g. "main..HEAD", "HEAD~3..HEAD"). ' +
+        'Errors clearly if the ref/repo is invalid, there are no changes, or the diff is too ' +
+        'large (> 512 KB — narrow the range or use "files" instead).',
+    ),
+  git_repo: z
+    .string()
+    .optional()
+    .describe('Repo directory to run git_ref in. Defaults to the server\'s working directory.'),
   images: z
     .array(z.string())
     .optional()
@@ -360,7 +379,9 @@ const TOOLS = [
       'dialectic (thesis/antithesis/synthesis — members defend their pick and critique the rest, ' +
       'the judge compiles a pros/cons dossier per option, then members re-select a ranked top-3). ' +
       'Attach images to ask a vision question — only auto-detected vision-capable members are ' +
-      'queried; the rest are skipped and reported in visionRouting.',
+      'queried; the rest are skipped and reported in visionRouting. For a repo review, pass ' +
+      'git_ref (e.g. "uncommitted", "main..HEAD") instead of hand-listing files — the server ' +
+      'runs `git diff` locally and attaches it as context.',
     inputSchema: {
       type: 'object' as const,
       required: ['question'],
@@ -394,6 +415,18 @@ const TOOLS = [
           description:
             'Optional local file paths to read and attach as labelled context ' +
             '(caps: 256 KB/file, 768 KB total, 20 files). Text only — use "images" for pictures.',
+        },
+        git_ref: {
+          type: 'string',
+          description:
+            'Auto-attach a local `git diff` as context for a repo review, instead of hand-listing ' +
+            'every changed file via "files". One of "uncommitted" (staged+unstaged vs HEAD), ' +
+            '"staged", "unstaged", or a git revision/range (e.g. "main..HEAD"). Errors clearly on ' +
+            'a bad ref, no changes, or a diff too large to attach (> 512 KB).',
+        },
+        git_repo: {
+          type: 'string',
+          description: 'Repo directory to run git_ref in. Defaults to the working directory.',
         },
         images: {
           type: 'array',
@@ -442,6 +475,14 @@ const TOOLS = [
           type: 'array',
           items: { type: 'string' },
           description: 'Optional local file paths to read and attach as labelled context.',
+        },
+        git_ref: {
+          type: 'string',
+          description: 'Auto-attach a local git diff as context — same behavior as ask_council.',
+        },
+        git_repo: {
+          type: 'string',
+          description: 'Repo directory to run git_ref in. Defaults to the working directory.',
         },
         images: {
           type: 'array',
@@ -518,7 +559,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.18',
+    version: '0.2.19',
   },
   {
     capabilities: { tools: {} },

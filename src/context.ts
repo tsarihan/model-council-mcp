@@ -9,6 +9,7 @@
  */
 import { readFile, stat } from 'node:fs/promises';
 import { extname, resolve } from 'node:path';
+import { buildGitDiff } from './git.js';
 
 export const MAX_FILE_BYTES = 256 * 1024; // 256 KB per file
 export const MAX_TOTAL_BYTES = 768 * 1024; // 768 KB across all files
@@ -22,6 +23,8 @@ const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bm
 export interface ContextInput {
   context?: string; // inline background text
   files?: string[]; // paths to read and attach
+  gitRef?: string; // e.g. "uncommitted" | "staged" | "unstaged" | "main..HEAD"
+  gitRepo?: string; // repo directory for the diff; defaults to the server's cwd
 }
 
 /**
@@ -38,6 +41,11 @@ export async function buildAugmentedQuestion(
   const inline = input.context?.trim();
   if (inline) {
     blocks.push(`----- CONTEXT -----\n${inline}`);
+  }
+
+  if (input.gitRef?.trim()) {
+    const diff = await buildGitDiff({ ref: input.gitRef, repo: input.gitRepo });
+    blocks.push(`----- GIT DIFF (${input.gitRef.trim()}) -----\n${diff}`);
   }
 
   const files = input.files ?? [];

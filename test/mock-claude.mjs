@@ -115,9 +115,15 @@ process.stdin.on('end', () => {
   }
 
   const toolsTag = toolsOff ? 'off' : toolsReadOnly ? 'read' : toolsRepoAccess ? 'repo' : 'on';
+  // Reports the mock's OWN process.cwd() — a real signal, since it reflects
+  // whatever `cwd` the provider passed to spawn(). Proves the fix that pins
+  // cwd to a granted --add-dir instead of silently inheriting the server's
+  // own working directory (an undocumented extra grant beyond --add-dir,
+  // confirmed live before the fix).
   const result =
     `mock-claude model=${model} key=${key} tools=${toolsTag} ` +
-    `mcp=${strictMcp ? 'strict' : 'default'} sys=${sysReplace ? 'replace' : 'default'} ${readSummary} ${repoListing} :: ${input.trim().slice(0, 80)}`;
+    `mcp=${strictMcp ? 'strict' : 'default'} sys=${sysReplace ? 'replace' : 'default'} ${readSummary} ${repoListing} ` +
+    `cwd=${process.cwd()} :: ${input.trim().slice(0, 80)}`;
   process.stdout.write(
     JSON.stringify({
       type: 'result',

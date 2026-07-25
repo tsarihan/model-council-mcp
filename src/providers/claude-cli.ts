@@ -35,6 +35,16 @@
  * recursion into this plugin). Verified live against the real CLI before
  * shipping: a scoped `Read,Grep,Glob` call correctly answered a real
  * "how many files" question about this very repo.
+ *
+ * IMPORTANT — child cwd is pinned to a granted directory (see `run()`'s `cwd`
+ * param): without an explicit cwd, the spawned process inherits the SERVER's
+ * own working directory, and Claude's Read tool can access files there with
+ * NO `--add-dir` at all (confirmed live — this is a real, separate implicit
+ * grant on top of whatever `--add-dir` lists). Found during a live council
+ * review of this exact feature and fixed before it shipped further: `cwd` is
+ * always one of the already-granted directories (repoRoot when present, else
+ * the vision image dir), so the process's own directory never adds scope
+ * beyond what `--add-dir` explicitly grants.
  */
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -224,7 +234,15 @@ export class ClaudeCliProvider implements Provider {
       // floor so the (shorter) generic request timeout can't cut off a valid answer,
       // while a higher REQUEST_TIMEOUT_MS can still raise it. Still bounded (no hang).
       const timeoutMs = Math.max(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
-      const { code, stdout, stderr } = await this.run(args, prompt, timeoutMs);
+      // Without an explicit cwd, the child inherits the SERVER's own working
+      // directory — verified live that claude-cli's Read tool can access
+      // files there with NO --add-dir at all. That's an undocumented extra
+      // grant beyond --add-dir whenever the server's cwd differs from
+      // whatever was actually granted (e.g. a full_repo_access call where
+      // git_repo points elsewhere). Pin cwd to one of the already-granted
+      // directories so the process's own directory never adds scope beyond
+      // what --add-dir explicitly lists.
+      const { code, stdout, stderr } = await this.run(args, prompt, timeoutMs, addDirs[addDirs.length - 1]);
       if (code !== 0) {
         throw new Error(
           `claude CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || '(no stderr)'}`,
@@ -262,6 +280,7 @@ export class ClaudeCliProvider implements Provider {
     args: string[],
     input: string | undefined,
     timeoutMs: number,
+    cwd?: string,
   ): Promise<RunResult> {
     return new Promise((resolve, reject) => {
       // Force subscription auth: strip credentials the CLI would prefer over it.
@@ -275,6 +294,9 @@ export class ClaudeCliProvider implements Provider {
         // Own process group so a timeout reaps any subprocesses claude spawns,
         // not just the direct child.
         detached: true,
+        // Explicit cwd (see complete()) so an unset value never silently
+        // inherits the server's own working directory as extra tool scope.
+        ...(cwd ? { cwd } : {}),
       });
 
       let stdout = '';

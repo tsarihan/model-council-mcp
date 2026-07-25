@@ -2,8 +2,8 @@
  * End-to-end test: spawn the built MCP server over stdio (pointed at the mock
  * backend) and drive all 4 tools + 3 response modes via the MCP protocol.
  */
-import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -441,7 +441,6 @@ async function main() {
     // ── Test: git_ref auto-attaches a local diff (repo review convenience) ─────
     console.log('\n▶ ask_council with git_ref (auto-attached diff)');
     {
-      const { execFileSync } = await import('node:child_process');
       const gitDir = mkdtempSync(join(tmpdir(), 'mc-gitref-'));
       try {
         execFileSync('git', ['init', '-q'], { cwd: gitDir });
@@ -739,7 +738,11 @@ async function main() {
     // real repo root — the mock genuinely lists it, proving real access (not
     // just the flag reaching the CLI).
     await cliClient.callTool({ name: 'configure_council', arguments: { models: ['claude-cli:opus'], response_mode: 'individual' } });
+    // Must be a real git repo — full_repo_access now validates the granted
+    // root the same way git_ref does (a real permission-review finding: an
+    // arbitrary resolvable path, including "/", was previously accepted).
     const repoDir = mkdtempSync(join(tmpdir(), 'mc-clirepo-'));
+    execFileSync('git', ['init', '-q'], { cwd: repoDir });
     writeFileSync(join(repoDir, 'alpha.txt'), 'a');
     writeFileSync(join(repoDir, 'beta.txt'), 'b');
     try {
@@ -749,8 +752,30 @@ async function main() {
       }));
       const repoResp = repoAsk.responses?.[0]?.response ?? '';
       check('claude-cli full_repo_access: tools widened to Read,Grep,Glob', /tools=repo\b/.test(repoResp), repoResp);
-      check('claude-cli full_repo_access: mock genuinely listed the granted repo root', /repolist:alpha\.txt\|beta\.txt/.test(repoResp), repoResp);
+      check('claude-cli full_repo_access: mock genuinely listed the granted repo root', /repolist:\.git\|alpha\.txt\|beta\.txt/.test(repoResp), repoResp);
       check('claude-cli full_repo_access: still strict MCP (no recursion)', /mcp=strict\b/.test(repoResp), repoResp);
+      // Regression: the child's own cwd must be pinned to the granted root, not
+      // silently inherited from the server — verified live that an unset cwd
+      // let claude-cli Read files in the server's own working directory with
+      // NO --add-dir at all (an undocumented extra grant beyond --add-dir).
+      // realpath both sides: macOS resolves /var -> /private/var, so the mock's
+      // own process.cwd() (already realpath'd by the OS) won't string-match the
+      // raw mkdtempSync path otherwise.
+      check('claude-cli full_repo_access: child cwd pinned to the granted root (no server-cwd leak)', repoResp.includes(`cwd=${realpathSync(repoDir)}`), repoResp);
+
+      // A path that resolves but isn't a real git repo must be rejected, not
+      // silently granted — this is the actual fix for the "any arbitrary
+      // directory, including /" gap.
+      const notRepoDir = mkdtempSync(join(tmpdir(), 'mc-clinotrepo-'));
+      let threwNotRepo = false;
+      try {
+        await cliClient.callTool({
+          name: 'ask_council',
+          arguments: { question: 'x', mode: 'individual', full_repo_access: true, git_repo: notRepoDir },
+        });
+      } catch (e) { threwNotRepo = /not inside a git repository/i.test(String(e?.message ?? e)); }
+      rmSync(notRepoDir, { recursive: true, force: true });
+      check('full_repo_access: non-repo git_repo rejected (no arbitrary-directory grant)', threwNotRepo);
 
       // Concurrency safety: a call WITHOUT full_repo_access run at the same time
       // must NOT see it — the per-call clone in orchestrator.ask() must never
@@ -836,6 +861,7 @@ async function main() {
     // empty ephemeral dir — the mock genuinely lists it, proving real access —
     // while --sandbox stays read-only regardless.
     const cxRepoDir = mkdtempSync(join(tmpdir(), 'mc-codexrepo-'));
+    execFileSync('git', ['init', '-q'], { cwd: cxRepoDir }); // full_repo_access now requires a real git repo
     writeFileSync(join(cxRepoDir, 'gamma.txt'), 'g');
     writeFileSync(join(cxRepoDir, 'delta.txt'), 'd');
     try {
@@ -844,7 +870,7 @@ async function main() {
         arguments: { question: 'how many files?', mode: 'individual', full_repo_access: true, git_repo: cxRepoDir },
       }));
       const cxRepoResp = cxRepoAsk.responses?.[0]?.response ?? '';
-      check('codex-cli full_repo_access: -C points at the real repo root', /cwdlist:delta\.txt\|gamma\.txt/.test(cxRepoResp), cxRepoResp);
+      check('codex-cli full_repo_access: -C points at the real repo root', /cwdlist:\.git\|delta\.txt\|gamma\.txt/.test(cxRepoResp), cxRepoResp);
       check('codex-cli full_repo_access: sandbox still read-only', /sandbox=read-only\b/.test(cxRepoResp), cxRepoResp);
     } finally {
       rmSync(cxRepoDir, { recursive: true, force: true });

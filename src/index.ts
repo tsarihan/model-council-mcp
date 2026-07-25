@@ -40,6 +40,7 @@ import { loadState, saveState } from './state.js';
 import { loadSubscriptions, validTiers, tierAllowsCloud, SubProvider } from './subscriptions.js';
 import { detectEnvironment, autoPopulatedMembers, quotaWarning } from './detect.js';
 import { buildAugmentedQuestion } from './context.js';
+import { assertGitRepo } from './git.js';
 import { loadImages } from './images.js';
 import { JobStore } from './jobs.js';
 
@@ -106,10 +107,15 @@ async function runCouncil(
   });
   const images = await loadImages(input.images);
   // Reuses git_repo as the granted root when both are set, so a git_ref review
-  // and full_repo_access point at the same repo by default.
-  const fullRepoAccessRepo = input.full_repo_access
-    ? resolve(input.git_repo?.trim() || process.cwd())
-    : undefined;
+  // and full_repo_access point at the same repo by default. Validated with the
+  // same assertGitRepo() git_ref already gets — without this, any resolvable
+  // path ("/", a home directory, a typo) would be accepted as a "repo root"
+  // and granted to claude-cli/codex-cli (a real permission-review finding).
+  let fullRepoAccessRepo: string | undefined;
+  if (input.full_repo_access) {
+    fullRepoAccessRepo = resolve(input.git_repo?.trim() || process.cwd());
+    await assertGitRepo(fullRepoAccessRepo);
+  }
   return orchestrator.ask(
     question,
     input.mode as ResponseMode | undefined,
@@ -604,7 +610,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.20',
+    version: '0.2.21',
   },
   {
     capabilities: { tools: {} },

@@ -44,7 +44,14 @@ function diffArgsForRef(ref: string): string[] {
   }
 }
 
-async function assertGitRepo(repoPath: string): Promise<void> {
+/**
+ * Throws unless `repoPath` is inside a real git work tree. Exported so callers
+ * granting filesystem access based on a caller-supplied path (e.g.
+ * full_repo_access's git_repo) can require the same validation git_ref
+ * already gets — an unvalidated path here would otherwise accept anything
+ * ("/", a home directory, a nonexistent path) as a "repo root" to grant.
+ */
+export async function assertGitRepo(repoPath: string): Promise<void> {
   try {
     await execFileAsync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: repoPath });
   } catch {

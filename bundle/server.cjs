@@ -35120,7 +35120,7 @@ var ClaudeCliProvider = class {
         // replace the default coding-agent persona
       ];
       const timeoutMs = Math.max(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
-      const { code, stdout, stderr } = await this.run(args, prompt, timeoutMs);
+      const { code, stdout, stderr } = await this.run(args, prompt, timeoutMs, addDirs[addDirs.length - 1]);
       if (code !== 0) {
         throw new Error(
           `claude CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || "(no stderr)"}`
@@ -35150,7 +35150,7 @@ var ClaudeCliProvider = class {
       }
     }
   }
-  run(args, input, timeoutMs) {
+  run(args, input, timeoutMs, cwd) {
     return new Promise((resolve5, reject) => {
       const env = { ...process.env };
       delete env.ANTHROPIC_API_KEY;
@@ -35160,7 +35160,10 @@ var ClaudeCliProvider = class {
         stdio: ["pipe", "pipe", "pipe"],
         // Own process group so a timeout reaps any subprocesses claude spawns,
         // not just the direct child.
-        detached: true
+        detached: true,
+        // Explicit cwd (see complete()) so an unset value never silently
+        // inherits the server's own working directory as extra tool scope.
+        ...cwd ? { cwd } : {}
       });
       let stdout = "";
       let stderr = "";
@@ -37187,7 +37190,11 @@ async function runCouncil(input, onProgress) {
     gitRepo: input.git_repo
   });
   const images = await loadImages(input.images);
-  const fullRepoAccessRepo = input.full_repo_access ? (0, import_node_path8.resolve)(input.git_repo?.trim() || process.cwd()) : void 0;
+  let fullRepoAccessRepo;
+  if (input.full_repo_access) {
+    fullRepoAccessRepo = (0, import_node_path8.resolve)(input.git_repo?.trim() || process.cwd());
+    await assertGitRepo(fullRepoAccessRepo);
+  }
   return orchestrator.ask(
     question,
     input.mode,
@@ -37485,7 +37492,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.20"
+    version: "0.2.21"
   },
   {
     capabilities: { tools: {} },

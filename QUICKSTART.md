@@ -196,7 +196,8 @@ the user before setting it true for an interactive request (autonomous use is
 fine for an unattended review step you already control, e.g. end-of-workflow).
 Other members (`openai`/`anthropic`/`xai`/`ollama`/self-hosted, `grok-cli`) are
 unaffected — no filesystem access to grant. Neither member can write or run
-mutating commands.
+mutating commands. The granted root is validated the same way `git_ref` is
+(must be a real git repository) before anything is granted.
 
 ```
 ask_council(question="Review the whole repo: architecture, risky areas, what you'd improve.",

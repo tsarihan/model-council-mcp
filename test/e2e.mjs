@@ -14,6 +14,7 @@ const MOCK_PORT = 11499;
 const MOCK_URL = `http://localhost:${MOCK_PORT}`;
 const MOCK_CLAUDE = fileURLToPath(new URL('./mock-claude.mjs', import.meta.url));
 const MOCK_CODEX = fileURLToPath(new URL('./mock-codex.mjs', import.meta.url));
+const MOCK_GROK = fileURLToPath(new URL('./mock-grok.mjs', import.meta.url));
 
 let passed = 0;
 let failed = 0;
@@ -621,6 +622,7 @@ async function main() {
       CLAUDE_CLI: 'true',
       CLAUDE_CLI_PATH: MOCK_CLAUDE,
       CLAUDE_CLI_MODELS: 'opus,sonnet',
+      GROK_CLI_PATH: MOCK_GROK, // never let a real installed `grok` binary run during tests
       COUNCIL_MODELS: 'claude-cli:opus,claude-cli:sonnet',
       RESPONSE_MODE: 'individual',
       CLOUD_CONCURRENCY: '2',
@@ -687,6 +689,7 @@ async function main() {
       CODEX_CLI: 'true',
       CODEX_CLI_PATH: MOCK_CODEX,
       CODEX_CLI_MODELS: 'gpt-5-codex,default',
+      GROK_CLI_PATH: MOCK_GROK, // never let a real installed `grok` binary run during tests
       COUNCIL_MODELS: 'codex-cli:gpt-5-codex,codex-cli:default',
       RESPONSE_MODE: 'individual',
       CLOUD_CONCURRENCY: '2',
@@ -731,10 +734,74 @@ async function main() {
     await codexClient.close();
   }
 
+  // ── Test: grok-cli subscription provider (isolated server instance) ────────
+  console.log('\n▶ grok-cli subscription provider (mocked grok binary)');
+  chmodSync(MOCK_GROK, 0o755);
+  const grokTransport = new StdioClientTransport({
+    command: 'node',
+    args: [serverEntry],
+    env: {
+      ...process.env,
+      OLLAMA_ADDRESS: 'http://127.0.0.1:1',
+      XAI_API_KEY: 'xai-test-should-be-stripped', // must NOT reach the CLI
+      GROK_CLI: 'true',
+      GROK_CLI_PATH: MOCK_GROK,
+      GROK_CLI_MODELS: 'grok-4.5,grok-4.5-fast',
+      COUNCIL_MODELS: 'grok-cli:grok-4.5,grok-cli:grok-4.5-fast',
+      RESPONSE_MODE: 'individual',
+      CLOUD_CONCURRENCY: '2',
+      MODEL_COUNCIL_STATE: join(tmpdir(), `mc-e2e-grok-${process.pid}.json`), // isolate from real ~/.config
+    },
+  });
+  const grokClient = new Client({ name: 'grok-e2e', version: '1.0.0' }, { capabilities: {} });
+  await grokClient.connect(grokTransport);
+  try {
+    const gcfg = parseToolResult(await grokClient.callTool({ name: 'get_council_config', arguments: {} }));
+    check('grok-cli: provider registered', (gcfg.providers ?? []).some(p => p.type === 'grok-cli'), (gcfg.providers ?? []).map(p => p.type).join(','));
+
+    const gx = parseToolResult(await grokClient.callTool({
+      name: 'ask_council', arguments: { question: 'hi grok', mode: 'individual' },
+    }));
+    check('grok-cli: 2 members answered', gx.responses?.length === 2, `got ${gx.responses?.length}`);
+    check('grok-cli: model flag passed (grok-4.5)', gx.responses?.some(r => r.label === 'grok-cli:grok-4.5' && /model=grok-4\.5\b/.test(r.response)), gx.responses?.map(r => r.label).join(','));
+    check('grok-cli: second member model flag passed (grok-4.5-fast)', gx.responses?.some(r => r.label === 'grok-cli:grok-4.5-fast' && /model=grok-4\.5-fast/.test(r.response)));
+    check('grok-cli: XAI_API_KEY stripped (subscription auth)', gx.responses?.every(r => /xkey=unset/.test(r.response ?? '')), gx.responses?.map(r => r.response).join(' | '));
+    check('grok-cli: tools disabled in nested call', gx.responses?.every(r => /tools=off/.test(r.response ?? '')));
+    check('grok-cli: permission-mode bypassPermissions passed', gx.responses?.every(r => /perm=bypassPermissions/.test(r.response ?? '')));
+    check('grok-cli: system prompt overridden (neutral persona)', gx.responses?.every(r => /sys=override/.test(r.response ?? '')));
+    check('grok-cli: prompt reached the CLI via --prompt-json', gx.responses?.every(r => /hi grok/.test(r.response ?? '')));
+
+    // CLI-reported error ({"type":"error",...} + exit 1) → surfaced as a member error
+    await grokClient.callTool({ name: 'configure_council', arguments: { models: ['grok-cli:erroring'], response_mode: 'individual' } });
+    const gErrRes = parseToolResult(await grokClient.callTool({ name: 'ask_council', arguments: { question: 'x', mode: 'individual' } }));
+    check('grok-cli: CLI error surfaced as member error', !!gErrRes.responses?.[0]?.error && !gErrRes.responses?.[0]?.response, JSON.stringify(gErrRes.responses?.[0]));
+
+    // Vision: grok-cli passes images as native --prompt-json "image" content
+    // blocks (no Read-tool/-i-flag workaround needed) — asserts the mock
+    // observed a real image block and no tool loosening was required.
+    await grokClient.callTool({ name: 'configure_council', arguments: { models: ['grok-cli:grok-4.5'], response_mode: 'individual' } });
+    const grokImgDir = mkdtempSync(join(tmpdir(), 'mc-grokimg-'));
+    const grokImgPath = join(grokImgDir, 'shot.png');
+    writeFileSync(grokImgPath, Buffer.from('GROK_CLI_IMAGE_BYTES_213'));
+    try {
+      const grokVis = parseToolResult(await grokClient.callTool({
+        name: 'ask_council', arguments: { question: 'describe this', mode: 'individual', images: [grokImgPath] },
+      }));
+      check('grok-cli vision: visionRouting queried grok-4.5', grokVis.visionRouting?.queriedVisionModels?.includes('grok-cli:grok-4.5'), JSON.stringify(grokVis.visionRouting));
+      const grokVisResp = grokVis.responses?.[0]?.response ?? '';
+      check('grok-cli vision: native image block carried (no tool loosening)', /tools=off\b/.test(grokVisResp) && /images=1\b/.test(grokVisResp), grokVisResp);
+    } finally {
+      rmSync(grokImgDir, { recursive: true, force: true });
+    }
+  } finally {
+    await grokClient.close();
+  }
+
   // ── Test: Phase 2 — auto-population + environment detection (isolated) ──────
   console.log('\n▶ zero-config auto-population + environment detection');
   chmodSync(MOCK_CLAUDE, 0o755);
   chmodSync(MOCK_CODEX, 0o755);
+  chmodSync(MOCK_GROK, 0o755);
   const stateDir = mkdtempSync(join(tmpdir(), 'mc-e2e-'));
   const stateFile = join(stateDir, 'state.json');
   const detectTransport = new StdioClientTransport({
@@ -745,8 +812,10 @@ async function main() {
       OLLAMA_ADDRESS: MOCK_URL,
       CLAUDE_CLI_PATH: MOCK_CLAUDE,
       CODEX_CLI_PATH: MOCK_CODEX,
+      GROK_CLI_PATH: MOCK_GROK,
       MODEL_COUNCIL_STATE: stateFile, // fresh → boot auto-populates
-      // default tiers (unset) → plus/pro/pro → cloud on for all three
+      // default tiers (unset) → plus/pro/pro/free → cloud on for all but grok
+      // (grok defaults to 'free' unlike claude/chatgpt, see config.ts)
     },
   });
   const detectClient = new Client({ name: 'detect-e2e', version: '1.0.0' }, { capabilities: {} });
@@ -759,8 +828,13 @@ async function main() {
     check('status: ollama cloud probe ok', st.detected?.ollama?.cloud === 'ok', st.detected?.ollama?.cloud);
     check('status: claude CLI installed + usable', st.detected?.claude?.installed === true && st.detected?.claude?.usable === true);
     check('status: codex CLI installed + logged in', st.detected?.codex?.installed === true && st.detected?.codex?.usable === true);
+    // At the default 'free' tier, detectGrok() must NOT spend a real (quota-metered)
+    // login probe — usable stays false, unverified, until the tier opts in.
+    check('status: grok CLI installed, but NOT probed at free tier (no quota spent)', st.detected?.grok?.installed === true && st.detected?.grok?.usable === false, JSON.stringify(st.detected?.grok));
     check('status: per-provider concurrency from tiers', st.concurrency?.chatgpt === 6 && st.concurrency?.['ollama-cloud'] === 3 && st.concurrency?.claude === 2, JSON.stringify(st.concurrency));
     check('status: quota warning present', typeof st.quotaWarning === 'string' && st.quotaWarning.length > 0);
+    check('status: grok tier defaults to free (opt-in, unlike claude/chatgpt)', st.tiers?.grok === 'free', JSON.stringify(st.tiers));
+    check('status: hint nudges toward GROK_TIER since tier gate not yet opted in', (st.hints ?? []).some(h => /GROK_TIER/.test(h)), (st.hints ?? []).join(' | '));
 
     const setup = parseToolResult(await detectClient.callTool({ name: 'setup_council', arguments: { ollama: 'max' } }));
     check('setup: ollama tier max applied', setup.tiers?.ollama === 'max' && setup.applied?.ollama === 'max');
@@ -768,9 +842,16 @@ async function main() {
     check('setup: auto-populated local + cloud + claude + codex',
       labels.includes('ollama:small-a') && labels.some(l => /cloud/.test(l)) && labels.some(l => l.startsWith('claude-cli:')) && labels.some(l => l.startsWith('codex-cli:')),
       labels.join(','));
+    check('setup: grok excluded by default (free tier, opt-in)', !labels.some(l => l.startsWith('grok-cli:')), labels.join(','));
 
+    // Opting into a paid Grok tier pulls grok-cli members into the auto-council.
+    const grokSetup = parseToolResult(await detectClient.callTool({ name: 'setup_council', arguments: { grok: 'supergrok' } }));
+    check('setup: grok tier supergrok applied', grokSetup.tiers?.grok === 'supergrok' && grokSetup.applied?.grok === 'supergrok');
+    check('setup: grok-cli members now included', (grokSetup.council?.members ?? []).some(l => l.startsWith('grok-cli:')), (grokSetup.council?.members ?? []).join(','));
+
+    const labelsWithGrok = grokSetup.council?.members ?? [];
     const persisted = JSON.parse(readFileSync(stateFile, 'utf8'));
-    check('setup: council persisted to state file', Array.isArray(persisted.members) && persisted.members.length === labels.length);
+    check('setup: council persisted to state file', Array.isArray(persisted.members) && persisted.members.length === labelsWithGrok.length);
     check('setup: tier persisted to state file', persisted.tiers?.ollama === 'max');
 
     // Delete a member via configure_council → the reduced set persists.
@@ -808,7 +889,7 @@ async function main() {
     // (initCouncil applies persisted members, does NOT re-auto-populate the deletion).
     const rebootTransport = new StdioClientTransport({
       command: 'node', args: [serverEntry],
-      env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, MODEL_COUNCIL_STATE: stateFile },
+      env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: stateFile },
     });
     rebootClient = new Client({ name: 'reboot-e2e', version: '1.0.0' }, { capabilities: {} });
     await rebootClient.connect(rebootTransport);
@@ -843,7 +924,7 @@ async function main() {
     loDir = mkdtempSync(join(tmpdir(), 'mc-e2e-lo-'));
     const loTransport = new StdioClientTransport({
       command: 'node', args: [serverEntry],
-      env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, CODEX_MOCK_LOGGED_OUT: '1', MODEL_COUNCIL_STATE: join(loDir, 'state.json') },
+      env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, CODEX_MOCK_LOGGED_OUT: '1', MODEL_COUNCIL_STATE: join(loDir, 'state.json') },
     });
     loggedOutClient = new Client({ name: 'lo-e2e', version: '1.0.0' }, { capabilities: {} });
     await loggedOutClient.connect(loTransport);

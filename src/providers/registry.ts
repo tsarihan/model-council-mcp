@@ -5,6 +5,7 @@ import { OpenAICompatibleProvider } from './openai-compatible.js';
 import { AnthropicProvider } from './anthropic.js';
 import { ClaudeCliProvider } from './claude-cli.js';
 import { CodexCliProvider } from './codex-cli.js';
+import { GrokCliProvider } from './grok-cli.js';
 
 export class ProviderRegistry {
   private providers = new Map<string, Provider>();
@@ -24,6 +25,9 @@ export class ProviderRegistry {
           break;
         case 'codex-cli':
           provider = new CodexCliProvider(srv);
+          break;
+        case 'grok-cli':
+          provider = new GrokCliProvider(srv);
           break;
         case 'openai':
         case 'xai':

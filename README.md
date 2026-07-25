@@ -62,6 +62,7 @@ claude --plugin-dir /path/to/model-council-mcp
 | **Claude tier** | `free` / `pro` / `max5x` / `max20x` — cloud access + Claude concurrency | `pro` |
 | **ChatGPT tier** | `free` / `plus` / `pro5x` / `pro20x` — Codex concurrency | `plus` |
 | **Ollama tier** | `free` / `pro` / `max` — `free` = local only; `pro`/`max` = cloud + 3/10 concurrency | `pro` |
+| **Grok tier** | `free` / `supergrok` / `premiumplus` / `heavy` — cloud access + Grok concurrency (defaults to `free`, opt-in) | `free` |
 | Judge model | Categorizer/deconflicter, or `auto` (largest) | `auto` |
 | Default response mode | `individual` / `categorized` / `deconflicted` / `pooled` / `dialectic` | `categorized` |
 | Max deconfliction rounds | 1–10 | `3` |
@@ -76,16 +77,19 @@ claude --plugin-dir /path/to/model-council-mcp
 
 ## Subscription tiers, auto-population & detection
 
-The council mixes three kinds of member, each gated by a **subscription tier** so it never quietly burns quota you don't have:
+The council mixes four kinds of member, each gated by a **subscription tier** so it never quietly burns quota you don't have:
 
 | Provider | Tiers | `free` means | Reference file |
 |---|---|---|---|
 | **Ollama** | `free` / `pro` / `max` | local models only (no `:cloud`) | [`config/subscriptions.json`](config/subscriptions.json) |
 | **Claude** (via `claude` CLI) | `free` / `pro` / `max5x` / `max20x` | no Claude members | ″ |
 | **ChatGPT** (via `codex` CLI) | `free` / `plus` / `pro5x` / `pro20x` | no ChatGPT/Codex members | ″ |
+| **Grok** (via `grok` CLI) | `free` / `supergrok` / `premiumplus` / `heavy` | no Grok members | ″ |
+
+Grok defaults to `free` even when the `grok` CLI is installed and logged in — unlike Claude/ChatGPT, it's opt-in, since it's a newer provider added on top of an existing install base. Set `GROK_TIER` (or run `/model-council:setup`) to turn it on.
 
 - **Per-provider concurrency.** Each subscription gets its own concurrency ceiling (e.g. ChatGPT 6, Claude 2, Ollama-cloud 3 on Pro / 10 on Max), so one slow, tightly-rate-limited provider can't starve another. Tier→limit mappings, curated cloud models, and provider model names all live in **`config/subscriptions.json`** — edit it and pull to pick up new plans/models.
-- **Detection.** On boot (and on `council_status`) the server checks: is Ollama reachable, does your plan reach `:cloud`, is the `claude` CLI installed **and logged in** (a locked-down probe), is the `codex` CLI **signed in** (`codex login status`). Only usable providers are auto-added; the rest get a hint (e.g. *"Codex CLI installed but not signed in — run `codex login`"*).
+- **Detection.** On boot (and on `council_status`) the server checks: is Ollama reachable, does your plan reach `:cloud`, is the `claude` CLI installed **and logged in** (a locked-down probe), is the `codex` CLI **signed in** (`codex login status`), is the `grok` CLI installed **and logged in** (a locked-down probe, like Claude — the CLI has no dedicated login-status subcommand). Only usable providers are auto-added; the rest get a hint (e.g. *"Codex CLI installed but not signed in — run `codex login`"*).
 - **It persists.** Your tier choices and member edits are saved to `~/.config/model-council/state.json` (override with `MODEL_COUNCIL_STATE`), so they survive plugin reloads.
 - **Works standalone too.** The auto-config, `council_status`, and `setup_council` tools all work for a plain `claude mcp add` / MCP-store install; only the SessionStart welcome line and the `/model-council:*` slash commands are Claude-Code-plugin-only sugar.
 
@@ -142,6 +146,9 @@ Or add to `~/.claude.json` → `mcpServers`:
 | `CODEX_CLI` | `true` → add a subscription-backed ChatGPT member via the local `codex exec` CLI (no API key) | `false` |
 | `CODEX_CLI_MODELS` | Model names for the Codex member (`default` = Codex's configured model) | `default` |
 | `CODEX_CLI_PATH` | Path to the `codex` binary | `codex` |
+| `GROK_CLI` | `true` → add subscription-backed Grok members via the local `grok` CLI (no API key) | `false` |
+| `GROK_CLI_MODELS` | Model names for the Grok CLI member | `grok-4.5` |
+| `GROK_CLI_PATH` | Path to the `grok` binary | `grok` |
 
 ### Claude via your subscription (first-party CLI)
 
@@ -171,6 +178,21 @@ Set `CODEX_CLI=true` to add a council member that runs through the locally-insta
 **Where it works:** same as the Claude CLI above — anywhere the `codex` binary actually executes (this machine, or a `/remote-control`-driven CLI running on your machine). It does **not** work for a remotely-hosted copy of this server.
 
 > Same rules as the Claude CLI: sanctioned first-party surface under your own subscription. Reusing a subscription *token* against the raw OpenAI API from a third-party app is a separate, prohibited thing; this feature does not do that.
+
+### Grok via your subscription (first-party Grok Build CLI)
+
+Set `GROK_CLI=true` (or a `GROK_TIER` above `free`) to add council members that run through xAI's locally-installed **Grok Build CLI** (`grok -p` / `--prompt-json`) instead of the X.AI API. Inference runs under whatever your `grok` CLI is logged in with — typically your own **SuperGrok / X Premium+ / Heavy subscription** — so these members don't consume API credits. They appear as `grok-cli:grok-4.5` (or `grok-cli:<model>`).
+
+**Behavior & requirements**
+- The `grok` CLI must be installed and logged in. Set `GROK_CLI_PATH` if it isn't on `PATH`.
+- Each call shells out to `grok` with all tools disabled (`--tools ''`) and `--permission-mode bypassPermissions` (required for headless use — without it the CLI silently cancels the turn instead of completing).
+- **`XAI_API_KEY` is stripped from the nested call**, because the CLI accepts it as an alternate auth path that would otherwise switch billing to per-token instead of the subscription.
+- Images are passed as native `--prompt-json` content blocks (no Read-tool or `-i`-flag workaround needed — the CLI accepts structured image content directly).
+- Unlike Claude/ChatGPT's CLI members, **Grok defaults to `free`** (opt-in) — set `GROK_TIER` above `free` or `GROK_CLI=true` explicitly to add it to the auto-populated council, since this is a newer provider added on top of an existing install base.
+
+**Where it works:** anywhere the `grok` binary actually executes (this machine, or a `/remote-control`-driven CLI running on your machine). It does **not** work for a remotely-hosted copy of this server.
+
+> Same rules as the Claude/Codex CLIs: sanctioned first-party surface under your own subscription. Reusing a subscription *token* against the raw X.AI API from a third-party app is a separate, prohibited thing; this feature does not do that.
 
 ### OpenAI-compatible server format
 
@@ -536,9 +558,9 @@ This design is informed by *The Mirror Law*, which shows that a learner trained 
 **How is this different from `claude-council` (hex/claude-council)?**
 They solve different problems. `claude-council` gives Claude Code the opinions of *other* cloud coding agents (Gemini, GPT/Codex, Grok, Perplexity) with a rich coding-workflow UX (roles, vision, tmux streaming). **model-council** convenes a panel across your **own** infrastructure — local **Ollama**, self-hosted **vLLM / SGLang / TensorRT-LLM**, *and* your Claude + ChatGPT subscriptions — and reconciles it with decision-theoretic modes (Delphi **pooled**, **dialectic**, scored **deconfliction**), not just side-by-side + debate. Concretely, only model-council: (a) runs fully **local / offline / private**, (b) auto-discovers self-hosted models and their **context windows**, and (c) puts **Claude itself** on the panel. It also ships as a **standalone MCP server**, so it works in Claude Desktop and any MCP client, not only Claude Code.
 
-**Do I need API keys?** No. Local Ollama and self-hosted servers need none; Claude and ChatGPT members run under your existing subscriptions via the first-party `claude` / `codex` CLIs. API keys are only for the optional OpenAI/Anthropic/X.AI cloud members.
+**Do I need API keys?** No. Local Ollama and self-hosted servers need none; Claude, ChatGPT, and Grok members run under your existing subscriptions via the first-party `claude` / `codex` / `grok` CLIs. API keys are only for the optional OpenAI/Anthropic/X.AI cloud members.
 
-**Does it work in Cowork / claude.ai?** No — it executes your local `claude`/`codex` CLIs and reaches localhost/LAN model servers, which cloud-hosted surfaces can't do. Use it in **Claude Code** (plugin) or **Claude Desktop** (standalone MCP).
+**Does it work in Cowork / claude.ai?** No — it executes your local `claude`/`codex`/`grok` CLIs and reaches localhost/LAN model servers, which cloud-hosted surfaces can't do. Use it in **Claude Code** (plugin) or **Claude Desktop** (standalone MCP).
 
 **Can it review a file, or run without blocking?** Yes — `ask_council` takes `context` / `files`, and `ask_council_async` + `get_council_result` run a council in the background and fetch the result when ready.
 
@@ -550,10 +572,10 @@ They solve different problems. `claude-council` gives Claude Code the opinions o
 
 model-council runs **entirely locally** and stores nothing off your machine. Full policy: [PRIVACY.md](PRIVACY.md).
 
-- **Where your prompts go.** A question is sent only to the model endpoints you configure: your local Ollama server, any self-hosted vLLM/TRT-LLM/SGLang servers, cloud API providers you supply keys for (OpenAI/Anthropic/X.AI), and — for subscription members — your own local `claude` / `codex` CLIs. There is no model-council backend and no telemetry; nothing is sent to the author.
-- **Credentials.** API keys are stored in your client's secure storage (system keychain) and used only to call the provider you gave them for. Subscription members run under **your own** Claude/ChatGPT login via the first-party CLIs; the server strips `ANTHROPIC_*` / `OPENAI_*` / `CODEX_*` keys from those child processes so inference is billed to your subscription, not an API key.
-- **On disk.** The only file written is `~/.config/model-council/state.json` (your selected tiers + council members), plus `~/.codex` / Claude CLI session state owned by those tools. No conversation content is persisted by this server.
-- **Subprocesses.** Detection and subscription inference shell out to the locally-installed `claude` and `codex` binaries (read-only sandbox for Codex; MCP/tools disabled for the Claude probe so it can't recurse or take actions).
+- **Where your prompts go.** A question is sent only to the model endpoints you configure: your local Ollama server, any self-hosted vLLM/TRT-LLM/SGLang servers, cloud API providers you supply keys for (OpenAI/Anthropic/X.AI), and — for subscription members — your own local `claude` / `codex` / `grok` CLIs. There is no model-council backend and no telemetry; nothing is sent to the author.
+- **Credentials.** API keys are stored in your client's secure storage (system keychain) and used only to call the provider you gave them for. Subscription members run under **your own** Claude/ChatGPT/Grok login via the first-party CLIs; the server strips `ANTHROPIC_*` / `OPENAI_*` / `CODEX_*` / `XAI_API_KEY` keys from those child processes so inference is billed to your subscription, not an API key.
+- **On disk.** The only file written is `~/.config/model-council/state.json` (your selected tiers + council members), plus `~/.codex` / Claude CLI / Grok CLI session state owned by those tools. No conversation content is persisted by this server.
+- **Subprocesses.** Detection and subscription inference shell out to the locally-installed `claude`, `codex`, and `grok` binaries (read-only sandbox for Codex; MCP/tools disabled and `bypassPermissions` scoped to the nested call for Claude/Grok so they can't recurse or take actions).
 
 ## Submitting to a directory
 

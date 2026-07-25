@@ -11,7 +11,7 @@ import { join, dirname } from 'node:path';
 export interface CouncilState {
   version: number;
   /** User-selected subscription tiers (override env/userConfig defaults). */
-  tiers?: { chatgpt?: string; claude?: string; ollama?: string };
+  tiers?: { chatgpt?: string; claude?: string; grok?: string; ollama?: string };
   /** Materialised council members (model-id labels) — makes deletions stick. */
   members?: string[];
   /** Reference-data version the user was last welcomed for. */
@@ -20,7 +20,7 @@ export interface CouncilState {
    * Resolved runtime paths, persisted so the SessionStart hook can read them —
    * the plugin host does NOT pass userConfig-derived env vars to hook processes.
    */
-  env?: { ollamaAddress?: string; claudeCliPath?: string; codexCliPath?: string };
+  env?: { ollamaAddress?: string; claudeCliPath?: string; codexCliPath?: string; grokCliPath?: string };
   /**
    * Verified vision-capability results, keyed by model-id label (e.g.
    * "ollama:gemma4:12b", "claude-cli:opus") — the same format as `members`.

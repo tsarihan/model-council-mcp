@@ -9,7 +9,8 @@ export type ProviderType =
   | 'trtllm'
   | 'sglang'
   | 'claude-cli'
-  | 'codex-cli';
+  | 'codex-cli'
+  | 'grok-cli';
 
 export type ResponseMode =
   | 'individual'
@@ -66,6 +67,7 @@ export interface CouncilConfig {
 export type PoolKey =
   | 'chatgpt'
   | 'claude'
+  | 'grok'
   | 'openai'
   | 'anthropic'
   | 'xai'
@@ -77,6 +79,7 @@ export interface SubscriptionTiers {
   chatgpt: string;
   claude: string;
   ollama: string;
+  grok: string;
 }
 
 /**

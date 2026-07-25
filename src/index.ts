@@ -33,7 +33,7 @@ import { CouncilOrchestrator } from './council/orchestrator.js';
 import { ProgressReporter } from './council/query.js';
 import { CouncilConfig, CouncilMember, ModelId, ResponseMode, SubscriptionTiers } from './types.js';
 import { loadState, saveState } from './state.js';
-import { loadSubscriptions, validTiers, SubProvider } from './subscriptions.js';
+import { loadSubscriptions, validTiers, tierAllowsCloud, SubProvider } from './subscriptions.js';
 import { detectEnvironment, autoPopulatedMembers, quotaWarning } from './detect.js';
 import { buildAugmentedQuestion } from './context.js';
 import { loadImages } from './images.js';
@@ -68,6 +68,7 @@ try {
       ollamaAddress: appConfig.servers.find(s => s.type === 'ollama')?.baseUrl,
       claudeCliPath: appConfig.servers.find(s => s.type === 'claude-cli')?.command,
       codexCliPath: appConfig.servers.find(s => s.type === 'codex-cli')?.command,
+      grokCliPath: appConfig.servers.find(s => s.type === 'grok-cli')?.command,
     },
   });
 } catch {
@@ -123,7 +124,7 @@ function effectiveTiers(subs = loadSubscriptions()): SubscriptionTiers {
     const v = stateTiers[p] ?? appConfig.tiers[p];
     return validTiers(p, subs).includes(v) ? v : appConfig.tiers[p];
   };
-  return { chatgpt: guard('chatgpt'), claude: guard('claude'), ollama: guard('ollama') };
+  return { chatgpt: guard('chatgpt'), claude: guard('claude'), grok: guard('grok'), ollama: guard('ollama') };
 }
 
 /**
@@ -167,7 +168,7 @@ const ListModelsInput = z.object({
     .string()
     .optional()
     .describe(
-      'Optional provider to filter by (ollama, openai, anthropic, xai, vllm, trtllm, sglang)',
+      'Optional provider to filter by (ollama, openai, anthropic, xai, vllm, trtllm, sglang, claude-cli, codex-cli, grok-cli)',
     ),
 });
 
@@ -275,6 +276,7 @@ const GetCouncilConfigInput = z.object({});
 const SetupCouncilInput = z.object({
   chatgpt: z.string().optional().describe('ChatGPT tier: free | plus | pro5x | pro20x'),
   claude: z.string().optional().describe('Claude tier: free | pro | max5x | max20x'),
+  grok: z.string().optional().describe('Grok (X.AI subscription CLI) tier: free | supergrok | premiumplus | heavy'),
   ollama: z.string().optional().describe('Ollama tier: free | pro | max'),
 });
 
@@ -286,7 +288,8 @@ const TOOLS = [
     annotations: { title: 'List models', readOnlyHint: true },
     description:
       'List all AI models available across every configured provider ' +
-      '(Ollama, OpenAI, Anthropic, X.AI Grok, vLLM, TRT-LLM, SGLang). ' +
+      '(Ollama, OpenAI, Anthropic, X.AI Grok (API key), vLLM, TRT-LLM, SGLang, plus ' +
+      'subscription-CLI providers: Claude, ChatGPT/Codex, Grok). ' +
       'Use the returned model IDs when calling configure_council.',
     inputSchema: {
       type: 'object' as const,
@@ -294,7 +297,7 @@ const TOOLS = [
         filter_provider: {
           type: 'string',
           description:
-            'Optional provider filter: ollama | openai | anthropic | xai | vllm | trtllm | sglang',
+            'Optional provider filter: ollama | openai | anthropic | xai | vllm | trtllm | sglang | claude-cli | codex-cli | grok-cli',
         },
       },
     },
@@ -482,8 +485,8 @@ const TOOLS = [
     annotations: { title: 'Council status', readOnlyHint: true },
     description:
       'Report the detected environment and current setup: local Ollama models, ' +
-      'whether Ollama cloud is reachable on this plan, whether the Claude and Codex ' +
-      'CLIs are installed AND logged in, the current council members, resolved ' +
+      'whether Ollama cloud is reachable on this plan, whether the Claude, Codex, and ' +
+      'Grok CLIs are installed AND logged in, the current council members, resolved ' +
       'subscription tiers, per-provider concurrency, and a quota warning. Use this ' +
       'as the welcome/status readout — it works in every client and install method.',
     inputSchema: { type: 'object' as const, properties: {} },
@@ -494,14 +497,16 @@ const TOOLS = [
     description:
       'Set subscription tiers, then re-detect and auto-populate the council with ' +
       'everything usable. Tiers gate cloud availability and per-provider concurrency: ' +
-      'chatgpt (free|plus|pro5x|pro20x), claude (free|pro|max5x|max20x), ollama ' +
-      '(free|pro|max). Choices persist across reloads. Note: registering a NEW ' +
-      'subscription provider or changing concurrency takes full effect after a reload.',
+      'chatgpt (free|plus|pro5x|pro20x), claude (free|pro|max5x|max20x), grok ' +
+      '(free|supergrok|premiumplus|heavy), ollama (free|pro|max). Choices persist ' +
+      'across reloads. Note: registering a NEW subscription provider or changing ' +
+      'concurrency takes full effect after a reload.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         chatgpt: { type: 'string', enum: ['free', 'plus', 'pro5x', 'pro20x'], description: 'ChatGPT subscription tier.' },
         claude: { type: 'string', enum: ['free', 'pro', 'max5x', 'max20x'], description: 'Claude subscription tier.' },
+        grok: { type: 'string', enum: ['free', 'supergrok', 'premiumplus', 'heavy'], description: 'Grok (X.AI subscription CLI) tier.' },
         ollama: { type: 'string', enum: ['free', 'pro', 'max'], description: 'Ollama subscription tier.' },
       },
     },
@@ -513,15 +518,16 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.17',
+    version: '0.2.18',
   },
   {
     capabilities: { tools: {} },
     instructions:
       'model-council fans a question out to a council of local (Ollama) and ' +
-      'subscription models — Claude via the local `claude` CLI and ChatGPT via the ' +
-      'local `codex` CLI — and reconciles the answers (individual / categorized / ' +
-      'deconflicted / pooled / dialectic). It auto-configures on first use. On a ' +
+      'subscription models — Claude via the local `claude` CLI, ChatGPT via the ' +
+      'local `codex` CLI, and Grok via the local `grok` CLI — and reconciles the ' +
+      'answers (individual / categorized / deconflicted / pooled / dialectic). ' +
+      'It auto-configures on first use. On a ' +
       'new session or when the user asks about setup, call `council_status` to show ' +
       'detected models, subscription login state, per-provider concurrency, and quota ' +
       'usage; use `setup_council` to pick subscription tiers, `configure_council` to ' +
@@ -841,12 +847,16 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     CLAUDE_TIER: 'Claude plan: free | pro | max5x | max20x (drives Claude concurrency + membership)',
                     CHATGPT_TIER: 'ChatGPT plan: free | plus | pro5x | pro20x (drives Codex concurrency + membership)',
                     OLLAMA_TIER: 'Ollama plan: free | pro | max (free = local only; pro/max = cloud + 3/10 concurrency)',
+                    GROK_TIER: 'Grok (X.AI subscription CLI) plan: free | supergrok | premiumplus | heavy (default free — opt in explicitly)',
                     CLAUDE_CLI: 'true → add a subscription-backed Claude member via the local `claude` CLI (no API key/billing)',
                     CLAUDE_CLI_MODELS: 'Comma-separated model aliases for the CLI member (default: opus,sonnet)',
                     CLAUDE_CLI_PATH: 'Path to the claude executable (default: claude)',
                     CODEX_CLI: 'true → add a ChatGPT-subscription member via the local `codex exec` CLI (coding-agent; no API key)',
                     CODEX_CLI_MODELS: 'Comma-separated model names for the Codex member ("default" = codex default)',
                     CODEX_CLI_PATH: 'Path to the codex executable (default: codex)',
+                    GROK_CLI: 'true → add a Grok-subscription member via the local `grok` CLI (no API key/billing)',
+                    GROK_CLI_MODELS: 'Comma-separated model names for the Grok CLI member (default: grok-4.5)',
+                    GROK_CLI_PATH: 'Path to the grok executable (default: grok)',
                     MAX_TOKENS: 'Max tokens per completion (default: 16000)',
                     CLOUD_CONCURRENCY: 'Optional override: caps ALL cloud pools (overrides per-tier limits). Unset = tiers drive it.',
                     LOCAL_CONCURRENCY: 'Max concurrent local requests (default: 1; 0 = unlimited)',
@@ -877,6 +887,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         else if (!report.claude.usable) hints.push('Claude CLI is installed but not usable — run `claude` then `/login` (or `claude setup-token`).');
         if (!report.codex.installed) hints.push('Codex CLI not found — `npm i -g @openai/codex` then `codex login` to add ChatGPT members.');
         else if (!report.codex.usable) hints.push('Codex CLI is installed but not signed in — run `codex login`.');
+        if (!report.grok.installed) hints.push('Grok CLI not found — install it (curl -fsSL https://x.ai/cli/install.sh | bash) and log in to add Grok members.');
+        // Grok defaults to the 'free' tier (opt-in, unlike claude/chatgpt) so a
+        // real (quota-metered) login probe never runs until this gate passes —
+        // check it BEFORE report.grok.usable, which is unverified (left false)
+        // below this gate. See detectGrok() in detect.ts.
+        else if (!tierAllowsCloud('grok', tiers.grok, subs)) hints.push('Grok CLI is installed — set GROK_TIER (supergrok | premiumplus | heavy) or run setup_council to add Grok members (defaults to free/opt-in).');
+        else if (!report.grok.usable) hints.push('Grok CLI is installed but not usable — run `grok login`.');
         if (report.ollama.cloud === 'failed') hints.push('Ollama cloud models did not respond — your plan may not include cloud (needs Ollama Pro/Max).');
         if (!report.ollama.reachable) hints.push(`Ollama not reachable at ${ollamaUrl}.`);
         // Concurrency/registration are fixed at boot; a tier changed since then needs a reload.
@@ -919,6 +936,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         };
         applyTier('chatgpt', input.chatgpt);
         applyTier('claude', input.claude);
+        applyTier('grok', input.grok);
         applyTier('ollama', input.ollama);
         saveState({ tiers });
 

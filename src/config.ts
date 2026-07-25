@@ -110,7 +110,7 @@ function buildServer(
  *   vllm/vllm-gpu1:meta-llama/Llama-3-8B
  */
 const KNOWN_PROVIDERS: ReadonlySet<string> = new Set<ProviderType>([
-  'ollama', 'openai', 'anthropic', 'xai', 'vllm', 'trtllm', 'sglang', 'claude-cli', 'codex-cli',
+  'ollama', 'openai', 'anthropic', 'xai', 'vllm', 'trtllm', 'sglang', 'claude-cli', 'codex-cli', 'grok-cli',
 ]);
 
 export function parseModelId(str: string): ModelId | null {
@@ -162,7 +162,7 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function envBool(name: string, fallback: boolean): boolean {
+export function envBool(name: string, fallback: boolean): boolean {
   const v = envClean(name);
   if (v === undefined) return fallback;
   return ['true', '1', 'yes', 'on'].includes(v.toLowerCase());
@@ -184,6 +184,7 @@ export function loadConfig(): AppConfig {
   const tiers = {
     chatgpt: resolveTier('chatgpt', 'CHATGPT_TIER', 'plus'),
     claude: resolveTier('claude', 'CLAUDE_TIER', 'pro'),
+    grok: resolveTier('grok', 'GROK_TIER', 'free'),
     ollama: resolveTier('ollama', 'OLLAMA_TIER', 'pro'),
   };
 
@@ -278,6 +279,29 @@ export function loadConfig(): AppConfig {
       label: 'Codex (ChatGPT subscription CLI)',
       command: envClean('CODEX_CLI_PATH') ?? 'codex',
       models: codexModels.length ? codexModels : ['default'],
+    });
+  }
+
+  // ── Grok subscription via the first-party Grok Build CLI ──────────────────
+  // Registered when the Grok tier grants cloud (default 'free' — opt-in via
+  // GROK_TIER or setup_council, unlike claude/chatgpt's paid defaults, since
+  // this is a newer provider added on top of an existing install base) or the
+  // legacy GROK_CLI boolean is set.
+  if (tierAllowsCloud('grok', tiers.grok, subs) || envBool('GROK_CLI', false)) {
+    const defModels =
+      (Array.isArray(subs.providers.grok.models) ? subs.providers.grok.models.join(',') : '') ||
+      'grok-4.5';
+    const grokModels = (envClean('GROK_CLI_MODELS') ?? defModels)
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+    servers.push({
+      id: 'grok-cli',
+      type: 'grok-cli',
+      baseUrl: '(subscription via grok CLI)',
+      label: 'Grok (X.AI subscription CLI)',
+      command: envClean('GROK_CLI_PATH') ?? 'grok',
+      models: grokModels.length ? grokModels : ['grok-4.5'],
     });
   }
 

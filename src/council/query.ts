@@ -34,6 +34,7 @@ export function poolKey(m: Member): PoolKey {
   switch (type) {
     case 'codex-cli': return 'chatgpt';
     case 'claude-cli': return 'claude';
+    case 'grok-cli': return 'grok';
     case 'openai': return 'openai';
     case 'anthropic': return 'anthropic';
     case 'xai': return 'xai';

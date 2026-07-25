@@ -60,10 +60,12 @@ async function main() {
   const sEnv = (state && typeof state.env === 'object' && state.env) || {};
   const claudeCmd = clean(process.env.CLAUDE_CLI_PATH) ?? clean(sEnv.claudeCliPath) ?? 'claude';
   const codexCmd = clean(process.env.CODEX_CLI_PATH) ?? clean(sEnv.codexCliPath) ?? 'codex';
+  const grokCmd = clean(process.env.GROK_CLI_PATH) ?? clean(sEnv.grokCliPath) ?? 'grok';
   const ollamaUrl = clean(process.env.OLLAMA_ADDRESS) ?? clean(sEnv.ollamaAddress) ?? 'http://localhost:11434';
-  const [claude, codex, ollama] = await Promise.all([
+  const [claude, codex, grok, ollama] = await Promise.all([
     cliInstalled(claudeCmd),
     cliInstalled(codexCmd),
+    cliInstalled(grokCmd),
     ollamaLocalCount(ollamaUrl),
   ]);
   const n = Array.isArray(state.members) ? state.members.length : null;
@@ -72,6 +74,7 @@ async function main() {
     ollama != null ? `Ollama up (${ollama} local)` : 'Ollama offline',
     `Claude CLI ${claude ? '✓' : '✗'}`,
     `Codex CLI ${codex ? '✓' : '✗'}`,
+    `Grok CLI ${grok ? '✓' : '✗'}`,
   ];
   process.stdout.write(
     `[model-council] ${parts.join(' · ')}. Run /model-council:status for login + quota detail, ` +

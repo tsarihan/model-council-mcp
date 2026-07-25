@@ -24424,7 +24424,7 @@ var import_node_path = require("node:path");
 var import_node_url = require("node:url");
 var import_meta = {};
 var EMBEDDED = {
-  version: "2026-07-14",
+  version: "2026-07-20",
   providers: {
     chatgpt: {
       cliType: "codex-cli",
@@ -24445,6 +24445,16 @@ var EMBEDDED = {
         max20x: { cloud: true, concurrency: 8 }
       },
       models: ["opus", "sonnet", "haiku"]
+    },
+    grok: {
+      cliType: "grok-cli",
+      tiers: {
+        free: { cloud: false },
+        supergrok: { cloud: true, concurrency: 2 },
+        premiumplus: { cloud: true, concurrency: 3 },
+        heavy: { cloud: true, concurrency: 6 }
+      },
+      models: ["grok-4.5"]
     },
     ollama: {
       tiers: {
@@ -24501,7 +24511,7 @@ function isValid2(s2) {
   };
   const d2 = o2?.defaults;
   const defaultsOk = !!d2 && typeof d2.cloudConcurrency === "number" && typeof d2.apiConcurrency === "number" && typeof d2.localConcurrency === "number";
-  return !!o2 && !!o2.providers && provOk(o2.providers.chatgpt) && provOk(o2.providers.claude) && provOk(o2.providers.ollama) && Array.isArray(o2.curatedCloudModels) && defaultsOk;
+  return !!o2 && !!o2.providers && provOk(o2.providers.chatgpt) && provOk(o2.providers.claude) && provOk(o2.providers.grok) && provOk(o2.providers.ollama) && Array.isArray(o2.curatedCloudModels) && defaultsOk;
 }
 var cached2 = null;
 function loadSubscriptions() {
@@ -24535,6 +24545,7 @@ function resolvePoolLimits(tiers, overrides = {}, subs = loadSubscriptions()) {
   return {
     chatgpt: cloud ?? tierConcurrency("chatgpt", tiers.chatgpt, subs),
     claude: cloud ?? tierConcurrency("claude", tiers.claude, subs),
+    grok: cloud ?? tierConcurrency("grok", tiers.grok, subs),
     "ollama-cloud": cloud ?? tierConcurrency("ollama", tiers.ollama, subs),
     openai: cloud ?? subs.defaults.apiConcurrency,
     anthropic: cloud ?? subs.defaults.apiConcurrency,
@@ -24629,7 +24640,8 @@ var KNOWN_PROVIDERS = /* @__PURE__ */ new Set([
   "trtllm",
   "sglang",
   "claude-cli",
-  "codex-cli"
+  "codex-cli",
+  "grok-cli"
 ]);
 function parseModelId(str2) {
   const colonIdx = str2.indexOf(":");
@@ -24677,6 +24689,7 @@ function loadConfig() {
   const tiers = {
     chatgpt: resolveTier("chatgpt", "CHATGPT_TIER", "plus"),
     claude: resolveTier("claude", "CLAUDE_TIER", "pro"),
+    grok: resolveTier("grok", "GROK_TIER", "free"),
     ollama: resolveTier("ollama", "OLLAMA_TIER", "pro")
   };
   const ollamaAddr = envClean("OLLAMA_ADDRESS");
@@ -24743,6 +24756,18 @@ function loadConfig() {
       label: "Codex (ChatGPT subscription CLI)",
       command: envClean("CODEX_CLI_PATH") ?? "codex",
       models: codexModels.length ? codexModels : ["default"]
+    });
+  }
+  if (tierAllowsCloud("grok", tiers.grok, subs) || envBool("GROK_CLI", false)) {
+    const defModels = (Array.isArray(subs.providers.grok.models) ? subs.providers.grok.models.join(",") : "") || "grok-4.5";
+    const grokModels = (envClean("GROK_CLI_MODELS") ?? defModels).split(",").map((s2) => s2.trim()).filter(Boolean);
+    servers.push({
+      id: "grok-cli",
+      type: "grok-cli",
+      baseUrl: "(subscription via grok CLI)",
+      label: "Grok (X.AI subscription CLI)",
+      command: envClean("GROK_CLI_PATH") ?? "grok",
+      models: grokModels.length ? grokModels : ["grok-4.5"]
     });
   }
   const members = (envClean("COUNCIL_MODELS") ?? "").split(",").map((s2) => s2.trim()).filter(Boolean).flatMap((s2) => {
@@ -35362,6 +35387,181 @@ var CodexCliProvider = class {
   }
 };
 
+// src/providers/grok-cli.ts
+var import_node_child_process3 = require("node:child_process");
+var DEFAULT_MODELS3 = ["grok-4.5"];
+var DEFAULT_TIMEOUT_MS3 = 3e5;
+function killTree3(child) {
+  try {
+    if (child.pid) process.kill(-child.pid, "SIGKILL");
+    else child.kill("SIGKILL");
+  } catch {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+    }
+  }
+}
+var GrokCliProvider = class {
+  serverId;
+  config;
+  command;
+  models;
+  /** Per-model OCR-challenge-verified vision result; only set once definitive. */
+  visionVerifiedCache = /* @__PURE__ */ new Map();
+  constructor(config2) {
+    this.config = config2;
+    this.serverId = config2.id;
+    this.command = config2.command?.trim() || "grok";
+    this.models = config2.models && config2.models.length ? config2.models : DEFAULT_MODELS3;
+  }
+  async ping() {
+    try {
+      const { code } = await this.run(["--version"], void 0, 8e3);
+      return code === 0;
+    } catch {
+      return false;
+    }
+  }
+  async listModels() {
+    return this.models.map((m2) => ({
+      provider: "grok-cli",
+      model: m2,
+      label: `Grok ${m2} (subscription)`
+    }));
+  }
+  /**
+   * There's no cheap capability signal for a CLI subprocess (no metadata
+   * endpoint, no accept/reject probe), so this goes straight to the OCR
+   * challenge — a real subprocess call once per model, cached after. Grok-4.5
+   * is genuinely vision-capable and `complete()`'s native `image` content
+   * block should always resolve true — but it stays a real behavioral check
+   * rather than a hardcoded assumption, consistent with every other provider.
+   */
+  async supportsVision(model) {
+    const cached3 = this.visionVerifiedCache.get(model);
+    if (cached3 !== void 0) return cached3;
+    const outcome = await verifyVisionChallenge(
+      (challenge) => this.complete(
+        model,
+        [{ role: "user", content: CHALLENGE_PROMPT, images: [{ base64: challenge.base64, mimeType: challenge.mimeType }] }],
+        { maxTokens: 2e3, timeoutMs: 6e4 }
+      )
+    );
+    if (outcome === "pass") {
+      this.visionVerifiedCache.set(model, true);
+      return true;
+    }
+    if (outcome === "fail") {
+      this.visionVerifiedCache.set(model, false);
+      return false;
+    }
+    return false;
+  }
+  getVisionCache() {
+    return Object.fromEntries(this.visionVerifiedCache);
+  }
+  seedVisionCache(entries) {
+    for (const [model, vision] of Object.entries(entries)) {
+      if (!this.visionVerifiedCache.has(model)) this.visionVerifiedCache.set(model, vision);
+    }
+  }
+  async complete(model, messages, opts = {}) {
+    const systemParts = messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n");
+    const images = messages.find((m2) => m2.role === "user" && m2.images?.length)?.images ?? [];
+    const convo = messages.filter((m2) => m2.role !== "system").map((m2) => m2.role === "assistant" ? `Assistant: ${m2.content}` : m2.content).join("\n\n");
+    const base = "You are a member of a model council. Answer the question directly, neutrally, and concisely. Do not use tools or ask follow-up questions.";
+    const systemText = [
+      base,
+      systemParts,
+      opts.jsonMode ? "Respond with valid JSON only." : ""
+    ].filter(Boolean).join("\n\n");
+    const blocks = [
+      { type: "text", text: convo },
+      ...images.map((img) => ({ type: "image", data: img.base64, mimeType: img.mimeType }))
+    ];
+    const args = [
+      "-m",
+      model,
+      "--output-format",
+      "json",
+      "--prompt-json",
+      JSON.stringify(blocks),
+      "--tools",
+      "",
+      // fully locked down — native image blocks need no tool access
+      "--permission-mode",
+      "bypassPermissions",
+      // required in headless mode, see file header
+      "--system-prompt-override",
+      systemText
+    ];
+    const timeoutMs = Math.max(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS3, DEFAULT_TIMEOUT_MS3);
+    const { code, stdout, stderr } = await this.run(args, void 0, timeoutMs);
+    if (code !== 0) {
+      throw new Error(
+        `grok CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || stdout.trim().slice(0, 500) || "(no output)"}`
+      );
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(stdout);
+    } catch {
+      throw new Error(
+        `grok CLI returned non-JSON output: ${stdout.trim().slice(0, 300)}`
+      );
+    }
+    if (parsed.type === "error") {
+      throw new Error(`grok CLI reported an error: ${String(parsed.message ?? "(no detail)").slice(0, 300)}`);
+    }
+    const text = typeof parsed.text === "string" ? parsed.text : "";
+    if (parsed.stopReason !== "EndTurn" && !text) {
+      throw new Error(`grok CLI did not complete the turn (stopReason: ${String(parsed.stopReason)})`);
+    }
+    return text;
+  }
+  run(args, input, timeoutMs) {
+    return new Promise((resolve3, reject) => {
+      const env = { ...process.env };
+      delete env.XAI_API_KEY;
+      const child = (0, import_node_child_process3.spawn)(this.command, args, {
+        env,
+        stdio: ["pipe", "pipe", "pipe"],
+        // Own process group so a timeout reaps any subprocesses grok spawns.
+        detached: true
+      });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const timer = setTimeout(() => {
+        settled = true;
+        killTree3(child);
+        reject(new Error(`grok CLI timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (d2) => stdout += d2);
+      child.stderr.on("data", (d2) => stderr += d2);
+      child.stdin.on("error", () => {
+      });
+      child.on("error", (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      });
+      child.on("close", (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve3({ code: code ?? 1, stdout, stderr });
+      });
+      if (input !== void 0) child.stdin.write(input);
+      child.stdin.end();
+    });
+  }
+};
+
 // src/providers/registry.ts
 var ProviderRegistry = class {
   providers = /* @__PURE__ */ new Map();
@@ -35380,6 +35580,9 @@ var ProviderRegistry = class {
           break;
         case "codex-cli":
           provider = new CodexCliProvider(srv);
+          break;
+        case "grok-cli":
+          provider = new GrokCliProvider(srv);
           break;
         case "openai":
         case "xai":
@@ -35423,6 +35626,8 @@ function poolKey(m2) {
       return "chatgpt";
     case "claude-cli":
       return "claude";
+    case "grok-cli":
+      return "grok";
     case "openai":
       return "openai";
     case "anthropic":
@@ -36514,7 +36719,7 @@ var CouncilOrchestrator = class {
 };
 
 // src/detect.ts
-var import_node_child_process3 = require("node:child_process");
+var import_node_child_process4 = require("node:child_process");
 var isCloudModel = (m2) => m2.endsWith(":cloud") || m2.endsWith("-cloud");
 function runCli(command, args, opts = { timeoutMs: 8e3 }) {
   return new Promise((resolve3) => {
@@ -36527,9 +36732,12 @@ function runCli(command, args, opts = { timeoutMs: 8e3 }) {
       delete env.OPENAI_API_KEY;
       delete env.CODEX_API_KEY;
     }
+    if (opts.stripKeys === "xai") {
+      delete env.XAI_API_KEY;
+    }
     let child;
     try {
-      child = (0, import_node_child_process3.spawn)(command, args, { env, stdio: ["pipe", "pipe", "pipe"] });
+      child = (0, import_node_child_process4.spawn)(command, args, { env, stdio: ["pipe", "pipe", "pipe"] });
     } catch {
       resolve3({ code: 127, stdout: "", stderr: "spawn failed" });
       return;
@@ -36630,13 +36838,43 @@ ${st2.stderr}`;
   const usable = /logged in/i.test(out) && !/not logged in/i.test(out);
   return { installed: true, usable };
 }
+async function detectGrok(tiers, subs) {
+  const cmd = cliPath("GROK_CLI_PATH", "grok");
+  const installed = (await runCli(cmd, ["--version"], { timeoutMs: 8e3 })).code === 0;
+  if (!installed) return { installed: false, usable: false };
+  if (!tierAllowsCloud("grok", tiers.grok, subs) && !envBool("GROK_CLI", false)) {
+    return { installed: true, usable: false };
+  }
+  const probe = await runCli(
+    cmd,
+    [
+      "-p",
+      "Reply with the single word READY",
+      "--output-format",
+      "json",
+      "--tools",
+      "",
+      "--permission-mode",
+      "bypassPermissions"
+    ],
+    { timeoutMs: 2e4, stripKeys: "xai" }
+  );
+  if (probe.code !== 0) return { installed: true, usable: false };
+  try {
+    const parsed = JSON.parse(probe.stdout);
+    return { installed: true, usable: parsed.stopReason === "EndTurn" && typeof parsed.text === "string" && parsed.text.trim().length > 0 };
+  } catch {
+    return { installed: true, usable: false };
+  }
+}
 async function detectEnvironment(registry3, tiers, subs) {
-  const [ollama, claude, codex] = await Promise.all([
+  const [ollama, claude, codex, grok] = await Promise.all([
     detectOllama(registry3, tiers, subs),
     detectClaude(),
-    detectCodex()
+    detectCodex(),
+    detectGrok(tiers, subs)
   ]);
-  return { ollama, claude, codex };
+  return { ollama, claude, codex, grok };
 }
 function autoPopulatedMembers(report, tiers, subs) {
   const out = [];
@@ -36650,6 +36888,9 @@ function autoPopulatedMembers(report, tiers, subs) {
   if (report.codex.usable && tierAllowsCloud("chatgpt", tiers.chatgpt, subs)) {
     for (const m2 of subs.providers.chatgpt.models ?? []) out.push(`codex-cli:${m2}`);
   }
+  if (report.grok.usable && tierAllowsCloud("grok", tiers.grok, subs)) {
+    for (const m2 of subs.providers.grok.models ?? []) out.push(`grok-cli:${m2}`);
+  }
   return [...new Set(out)];
 }
 function quotaWarning(report, tiers, subs) {
@@ -36657,6 +36898,7 @@ function quotaWarning(report, tiers, subs) {
   if (report.ollama.cloud === "ok") paid.push("Ollama cloud");
   if (report.claude.usable && tierAllowsCloud("claude", tiers.claude, subs)) paid.push("Claude subscription");
   if (report.codex.usable && tierAllowsCloud("chatgpt", tiers.chatgpt, subs)) paid.push("ChatGPT/Codex subscription");
+  if (report.grok.usable && tierAllowsCloud("grok", tiers.grok, subs)) paid.push("Grok (X.AI) subscription");
   if (paid.length === 0) return null;
   return `The council includes ${paid.join(", ")} members \u2014 asking it consumes your ${paid.length > 1 ? "quotas" : "quota"}. Remove any you don't want with configure_council (or /model-council:setup) to reduce usage.`;
 }
@@ -36853,7 +37095,8 @@ try {
     env: {
       ollamaAddress: appConfig.servers.find((s2) => s2.type === "ollama")?.baseUrl,
       claudeCliPath: appConfig.servers.find((s2) => s2.type === "claude-cli")?.command,
-      codexCliPath: appConfig.servers.find((s2) => s2.type === "codex-cli")?.command
+      codexCliPath: appConfig.servers.find((s2) => s2.type === "codex-cli")?.command,
+      grokCliPath: appConfig.servers.find((s2) => s2.type === "grok-cli")?.command
     }
   });
 } catch {
@@ -36884,7 +37127,7 @@ function effectiveTiers(subs = loadSubscriptions()) {
     const v2 = stateTiers[p2] ?? appConfig.tiers[p2];
     return validTiers(p2, subs).includes(v2) ? v2 : appConfig.tiers[p2];
   };
-  return { chatgpt: guard("chatgpt"), claude: guard("claude"), ollama: guard("ollama") };
+  return { chatgpt: guard("chatgpt"), claude: guard("claude"), grok: guard("grok"), ollama: guard("ollama") };
 }
 async function initCouncil() {
   if (orchestrator.getConfig().members.length > 0) return;
@@ -36908,7 +37151,7 @@ async function initCouncil() {
 }
 var ListModelsInput = external_exports.object({
   filter_provider: external_exports.string().optional().describe(
-    "Optional provider to filter by (ollama, openai, anthropic, xai, vllm, trtllm, sglang)"
+    "Optional provider to filter by (ollama, openai, anthropic, xai, vllm, trtllm, sglang, claude-cli, codex-cli, grok-cli)"
   )
 });
 var ConfigureCouncilInput = external_exports.object({
@@ -36950,19 +37193,20 @@ var GetCouncilConfigInput = external_exports.object({});
 var SetupCouncilInput = external_exports.object({
   chatgpt: external_exports.string().optional().describe("ChatGPT tier: free | plus | pro5x | pro20x"),
   claude: external_exports.string().optional().describe("Claude tier: free | pro | max5x | max20x"),
+  grok: external_exports.string().optional().describe("Grok (X.AI subscription CLI) tier: free | supergrok | premiumplus | heavy"),
   ollama: external_exports.string().optional().describe("Ollama tier: free | pro | max")
 });
 var TOOLS = [
   {
     name: "list_models",
     annotations: { title: "List models", readOnlyHint: true },
-    description: "List all AI models available across every configured provider (Ollama, OpenAI, Anthropic, X.AI Grok, vLLM, TRT-LLM, SGLang). Use the returned model IDs when calling configure_council.",
+    description: "List all AI models available across every configured provider (Ollama, OpenAI, Anthropic, X.AI Grok (API key), vLLM, TRT-LLM, SGLang, plus subscription-CLI providers: Claude, ChatGPT/Codex, Grok). Use the returned model IDs when calling configure_council.",
     inputSchema: {
       type: "object",
       properties: {
         filter_provider: {
           type: "string",
-          description: "Optional provider filter: ollama | openai | anthropic | xai | vllm | trtllm | sglang"
+          description: "Optional provider filter: ollama | openai | anthropic | xai | vllm | trtllm | sglang | claude-cli | codex-cli | grok-cli"
         }
       }
     }
@@ -37107,18 +37351,19 @@ var TOOLS = [
   {
     name: "council_status",
     annotations: { title: "Council status", readOnlyHint: true },
-    description: "Report the detected environment and current setup: local Ollama models, whether Ollama cloud is reachable on this plan, whether the Claude and Codex CLIs are installed AND logged in, the current council members, resolved subscription tiers, per-provider concurrency, and a quota warning. Use this as the welcome/status readout \u2014 it works in every client and install method.",
+    description: "Report the detected environment and current setup: local Ollama models, whether Ollama cloud is reachable on this plan, whether the Claude, Codex, and Grok CLIs are installed AND logged in, the current council members, resolved subscription tiers, per-provider concurrency, and a quota warning. Use this as the welcome/status readout \u2014 it works in every client and install method.",
     inputSchema: { type: "object", properties: {} }
   },
   {
     name: "setup_council",
     annotations: { title: "Set up council (tiers + auto-populate)", readOnlyHint: false },
-    description: "Set subscription tiers, then re-detect and auto-populate the council with everything usable. Tiers gate cloud availability and per-provider concurrency: chatgpt (free|plus|pro5x|pro20x), claude (free|pro|max5x|max20x), ollama (free|pro|max). Choices persist across reloads. Note: registering a NEW subscription provider or changing concurrency takes full effect after a reload.",
+    description: "Set subscription tiers, then re-detect and auto-populate the council with everything usable. Tiers gate cloud availability and per-provider concurrency: chatgpt (free|plus|pro5x|pro20x), claude (free|pro|max5x|max20x), grok (free|supergrok|premiumplus|heavy), ollama (free|pro|max). Choices persist across reloads. Note: registering a NEW subscription provider or changing concurrency takes full effect after a reload.",
     inputSchema: {
       type: "object",
       properties: {
         chatgpt: { type: "string", enum: ["free", "plus", "pro5x", "pro20x"], description: "ChatGPT subscription tier." },
         claude: { type: "string", enum: ["free", "pro", "max5x", "max20x"], description: "Claude subscription tier." },
+        grok: { type: "string", enum: ["free", "supergrok", "premiumplus", "heavy"], description: "Grok (X.AI subscription CLI) tier." },
         ollama: { type: "string", enum: ["free", "pro", "max"], description: "Ollama subscription tier." }
       }
     }
@@ -37127,11 +37372,11 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.17"
+    version: "0.2.18"
   },
   {
     capabilities: { tools: {} },
-    instructions: "model-council fans a question out to a council of local (Ollama) and subscription models \u2014 Claude via the local `claude` CLI and ChatGPT via the local `codex` CLI \u2014 and reconciles the answers (individual / categorized / deconflicted / pooled / dialectic). It auto-configures on first use. On a new session or when the user asks about setup, call `council_status` to show detected models, subscription login state, per-provider concurrency, and quota usage; use `setup_council` to pick subscription tiers, `configure_council` to edit members, and `ask_council` to ask. Council members run under the user's own subscription quotas."
+    instructions: "model-council fans a question out to a council of local (Ollama) and subscription models \u2014 Claude via the local `claude` CLI, ChatGPT via the local `codex` CLI, and Grok via the local `grok` CLI \u2014 and reconciles the answers (individual / categorized / deconflicted / pooled / dialectic). It auto-configures on first use. On a new session or when the user asks about setup, call `council_status` to show detected models, subscription login state, per-provider concurrency, and quota usage; use `setup_council` to pick subscription tiers, `configure_council` to edit members, and `ask_council` to ask. Council members run under the user's own subscription quotas."
   }
 );
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
@@ -37370,12 +37615,16 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     CLAUDE_TIER: "Claude plan: free | pro | max5x | max20x (drives Claude concurrency + membership)",
                     CHATGPT_TIER: "ChatGPT plan: free | plus | pro5x | pro20x (drives Codex concurrency + membership)",
                     OLLAMA_TIER: "Ollama plan: free | pro | max (free = local only; pro/max = cloud + 3/10 concurrency)",
+                    GROK_TIER: "Grok (X.AI subscription CLI) plan: free | supergrok | premiumplus | heavy (default free \u2014 opt in explicitly)",
                     CLAUDE_CLI: "true \u2192 add a subscription-backed Claude member via the local `claude` CLI (no API key/billing)",
                     CLAUDE_CLI_MODELS: "Comma-separated model aliases for the CLI member (default: opus,sonnet)",
                     CLAUDE_CLI_PATH: "Path to the claude executable (default: claude)",
                     CODEX_CLI: "true \u2192 add a ChatGPT-subscription member via the local `codex exec` CLI (coding-agent; no API key)",
                     CODEX_CLI_MODELS: 'Comma-separated model names for the Codex member ("default" = codex default)',
                     CODEX_CLI_PATH: "Path to the codex executable (default: codex)",
+                    GROK_CLI: "true \u2192 add a Grok-subscription member via the local `grok` CLI (no API key/billing)",
+                    GROK_CLI_MODELS: "Comma-separated model names for the Grok CLI member (default: grok-4.5)",
+                    GROK_CLI_PATH: "Path to the grok executable (default: grok)",
                     MAX_TOKENS: "Max tokens per completion (default: 16000)",
                     CLOUD_CONCURRENCY: "Optional override: caps ALL cloud pools (overrides per-tier limits). Unset = tiers drive it.",
                     LOCAL_CONCURRENCY: "Max concurrent local requests (default: 1; 0 = unlimited)",
@@ -37404,6 +37653,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         else if (!report.claude.usable) hints.push("Claude CLI is installed but not usable \u2014 run `claude` then `/login` (or `claude setup-token`).");
         if (!report.codex.installed) hints.push("Codex CLI not found \u2014 `npm i -g @openai/codex` then `codex login` to add ChatGPT members.");
         else if (!report.codex.usable) hints.push("Codex CLI is installed but not signed in \u2014 run `codex login`.");
+        if (!report.grok.installed) hints.push("Grok CLI not found \u2014 install it (curl -fsSL https://x.ai/cli/install.sh | bash) and log in to add Grok members.");
+        else if (!tierAllowsCloud("grok", tiers.grok, subs)) hints.push("Grok CLI is installed \u2014 set GROK_TIER (supergrok | premiumplus | heavy) or run setup_council to add Grok members (defaults to free/opt-in).");
+        else if (!report.grok.usable) hints.push("Grok CLI is installed but not usable \u2014 run `grok login`.");
         if (report.ollama.cloud === "failed") hints.push("Ollama cloud models did not respond \u2014 your plan may not include cloud (needs Ollama Pro/Max).");
         if (!report.ollama.reachable) hints.push(`Ollama not reachable at ${ollamaUrl}.`);
         const reloadPending = JSON.stringify(tiers) !== JSON.stringify(appConfig.tiers);
@@ -37444,6 +37696,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         };
         applyTier("chatgpt", input.chatgpt);
         applyTier("claude", input.claude);
+        applyTier("grok", input.grok);
         applyTier("ollama", input.ollama);
         saveState({ tiers });
         const report = await detectEnvironment(registry2, tiers, subs);

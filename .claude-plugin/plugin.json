@@ -1,7 +1,7 @@
 {
   "name": "model-council",
   "description": "Ask a council of local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, X.AI Grok) AI models. Get individual, categorized (agreement / complementary / conflicting), or fully deconflicted answers with a resolution score.",
-  "version": "0.2.17",
+  "version": "0.2.18",
   "author": {
     "name": "Tom Sarihan"
   },
@@ -52,6 +52,12 @@
       "title": "Ollama subscription tier",
       "description": "Your Ollama plan: free | pro | max. free = local models only (no cloud). pro = cloud on, 3 concurrent; max = cloud on, 10 concurrent.",
       "default": "pro"
+    },
+    "grok_tier": {
+      "type": "string",
+      "title": "Grok subscription tier",
+      "description": "Your X.AI Grok plan: free | supergrok | premiumplus | heavy. Adds Grok members via the local `grok` CLI (only if it is installed AND logged in). Defaults to free (opt-in) since this is a newer provider added on top of an existing install base — set this or run /model-council:setup to add Grok members.",
+      "default": "free"
     },
     "judge_model": {
       "type": "string",
@@ -189,6 +195,24 @@
       "title": "codex executable path",
       "description": "Path to the codex binary if it is not on PATH.",
       "default": "codex"
+    },
+    "grok_cli": {
+      "type": "boolean",
+      "title": "Grok subscription (CLI)",
+      "description": "Add subscription-backed Grok members via the local `grok` CLI instead of an X.AI API key. Requires xAI's Grok Build CLI installed and logged in to a SuperGrok/X Premium+/Heavy subscription. Members appear as grok-cli:<model>. Only works where the CLI runs (this machine).",
+      "default": false
+    },
+    "grok_cli_models": {
+      "type": "string",
+      "title": "Grok CLI models",
+      "description": "Comma-separated model names for the subscription CLI member, e.g. 'grok-4.5'.",
+      "default": "grok-4.5"
+    },
+    "grok_cli_path": {
+      "type": "string",
+      "title": "grok executable path",
+      "description": "Path to the grok binary if it is not on PATH.",
+      "default": "grok"
     }
   }
 }

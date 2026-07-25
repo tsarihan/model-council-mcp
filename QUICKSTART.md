@@ -1,11 +1,11 @@
 # Quickstart
 
 `model-council-mcp` fans one question out to a **council of models** — local (Ollama),
-self-hosted (vLLM / SGLang / TRT-LLM), your **Claude** and **ChatGPT** subscriptions
-(via the first-party `claude` / `codex` CLIs, no API key), and cloud APIs — then
-reconciles their answers. It is designed to **just work** the moment you install it:
-it auto-discovers what you already have and asks you to configure only what it can't
-detect.
+self-hosted (vLLM / SGLang / TRT-LLM), your **Claude**, **ChatGPT**, and **Grok**
+subscriptions (via the first-party `claude` / `codex` / `grok` CLIs, no API key), and
+cloud APIs — then reconciles their answers. It is designed to **just work** the moment
+you install it: it auto-discovers what you already have and asks you to configure only
+what it can't detect.
 
 - **Install (Claude Code plugin):**
   ```
@@ -61,9 +61,19 @@ Codex members (`gpt-5.6-sol`, `gpt-5.6-luna`, `gpt-5.6-terra`) are added **only 
 CLI is detected as signed in**. Note: Codex is a coding agent, so its answers carry a
 coding-agent flavor. Override with `codex_cli_models`.
 
-### 4) Everything — Ollama + Claude + Codex + vLLM + SGLang + TRT-LLM
+### 4) Ollama + Grok (your X.AI subscription, via the Grok Build CLI)
 
-Do scenarios 1–3, **plus** point the plugin at your self-hosted OpenAI-compatible
+- Install xAI's **Grok Build CLI** and log in (`grok`, then follow its sign-in flow).
+- Set `grok_tier` to match your plan (`supergrok` · `premiumplus` · `heavy`).
+
+Unlike Claude/ChatGPT, **Grok is opt-in even when the CLI is detected as logged
+in** — its tier defaults to `free` (no Grok members) since it's a newer provider added
+on top of an existing install base. Set `grok_tier` above `free` and the `grok-4.5`
+member is added. Override the model list with `grok_cli_models`.
+
+### 5) Everything — Ollama + Claude + Codex + Grok + vLLM + SGLang + TRT-LLM
+
+Do scenarios 1–4, **plus** point the plugin at your self-hosted OpenAI-compatible
 servers. These are the one thing the plugin cannot discover on its own (it doesn't scan
 your network), so you name them:
 
@@ -86,7 +96,8 @@ configure_council(models=[
   "trtllm/gpu1:my-model",
   "ollama:llama3.1:8b",
   "claude-cli:opus", "claude-cli:sonnet", "claude-cli:haiku",
-  "codex-cli:gpt-5.6-sol", "codex-cli:gpt-5.6-luna", "codex-cli:gpt-5.6-terra"
+  "codex-cli:gpt-5.6-sol", "codex-cli:gpt-5.6-luna", "codex-cli:gpt-5.6-terra",
+  "grok-cli:grok-4.5"
 ])
 ask_council(question="…", mode="pooled")
 ```
@@ -111,15 +122,16 @@ server or a logged-in CLI, it figures out the rest.
 | vLLM / SGLang context window | ✅ auto | `max_model_len` from `/v1/models` → clamps `max_tokens` |
 | TRT-LLM model names | ✅ auto | `/v1/models` |
 | **TRT-LLM context window** | ⚠️ not advertised | TRT-LLM's `/v1/models` omits it; your `max_tokens` is sent as-is — size it yourself |
-| Claude / Codex **login state** | ✅ auto | detected; subscription members are added only when logged in |
+| Claude / Codex / Grok **login state** | ✅ auto | detected; subscription members are added only when logged in |
 | Judge model | ✅ auto | largest council member (override with `judge_model`) |
 | Claude CLI model list | ⚙️ preset | `opus, sonnet, haiku` from bundled reference data — override with `claude_cli_models` |
 | Codex CLI model list | ⚙️ preset | `gpt-5.6-*` from bundled reference data — override with `codex_cli_models` |
+| Grok CLI model list | ⚙️ preset | `grok-4.5` from bundled reference data — override with `grok_cli_models` |
 | Curated Ollama **cloud** models | ⚙️ preset | a top set from bundled reference data (needs `ollama_tier` pro/max) |
 | **Self-hosted server address** | ❌ you set | `vllm_servers` / `trtllm_servers` / `sglang_servers` (`name:host:port`) |
 | **API keys** | ❌ you set | `openai_api_key` / `anthropic_api_key` / `xai_api_key` |
-| **Subscription tiers** | ❌ you set (has defaults) | `claude_tier` / `chatgpt_tier` / `ollama_tier` — set to your real plan (drives cloud access + concurrency) |
-| CLI executable paths | ❌ you set (has defaults) | `claude_cli_path` / `codex_cli_path` if not on `PATH` |
+| **Subscription tiers** | ❌ you set (has defaults) | `claude_tier` / `chatgpt_tier` / `ollama_tier` / `grok_tier` — set to your real plan (drives cloud access + concurrency; `grok_tier` defaults to `free` — opt-in) |
+| CLI executable paths | ❌ you set (has defaults) | `claude_cli_path` / `codex_cli_path` / `grok_cli_path` if not on `PATH` |
 
 ⚙️ **preset** = comes from `config/subscriptions.json`, a checked-in reference file the
 CLIs can't enumerate on their own. It's updated by pulling the repo, or override per
@@ -158,10 +170,11 @@ small rendered image with a random 4-digit code and graded on whether it reads i
 back correctly — before a "yes" is trusted. This catches two real failure modes:
 a server accepting an image request without the model actually reading it, and
 Ollama capability metadata that's stale for custom/quantized builds. `codex-cli`
-uses its native `-i` image flag; `claude-cli` has no image flag, so the image goes
-to a fresh temp dir with a narrowly-scoped, permission-enforced `Read`. **Only
-vision-capable members are queried**; the rest are skipped and reported in the
-result's `visionRouting`:
+uses its native `-i` image flag; `grok-cli` passes a native `image` content block
+via `--prompt-json`; `claude-cli` has no image flag, so the image goes to a fresh
+temp dir with a narrowly-scoped, permission-enforced `Read`. **Only vision-capable
+members are queried**; the rest are skipped and reported in the result's
+`visionRouting`:
 
 ```
 ask_council(question="What does this chart show?", images=["/Users/me/chart.png"])
@@ -170,8 +183,9 @@ Caps: 8 MB/image, 24 MB total, 6 images. The OCR-challenge check runs once per
 member (cached after) — the first vision question against a given member costs
 one extra round trip. In practice, small local vision models vary a lot in
 reading accuracy on dense text/screenshots even once verified (they may engage
-with the image but misread specifics); Claude/ChatGPT (`claude-cli`/`codex-cli`)
-and a properly-sized self-hosted vision model both read fine text accurately.
+with the image but misread specifics); Claude/ChatGPT/Grok
+(`claude-cli`/`codex-cli`/`grok-cli`) and a properly-sized self-hosted vision
+model both read fine text accurately.
 
 **Run it in the background.** A deconfliction/dialectic run over slow local models
 can take a while — `ask_council_async` returns a `job_id` immediately so you keep
@@ -206,7 +220,7 @@ Handy tools & commands:
 | Cap output length | `max_tokens` (auto-clamped down to each server's context) |
 | Change default answer style | `response_mode` |
 | Pin an exact council | `council_models` (or `configure_council`) |
-| Match your real plans | `claude_tier` / `chatgpt_tier` / `ollama_tier` |
+| Match your real plans | `claude_tier` / `chatgpt_tier` / `grok_tier` / `ollama_tier` |
 | Tune parallelism | `local_concurrency` / `cloud_concurrency` (per-provider limits come from your tiers) |
 
 Members run under **your own** subscription quotas and local hardware — the plugin adds

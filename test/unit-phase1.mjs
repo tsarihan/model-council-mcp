@@ -28,27 +28,36 @@ console.log('▶ tier → cloud + concurrency');
 check('chatgpt/plus cloud on, conc 6', tierAllowsCloud('chatgpt', 'plus') && tierConcurrency('chatgpt', 'plus') === 6);
 check('claude/max20x conc 8', tierConcurrency('claude', 'max20x') === 8);
 check('ollama/pro conc 3, max conc 10', tierConcurrency('ollama', 'pro') === 3 && tierConcurrency('ollama', 'max') === 10);
-check('free tiers deny cloud', !tierAllowsCloud('ollama', 'free') && !tierAllowsCloud('claude', 'free') && !tierAllowsCloud('chatgpt', 'free'));
+check('grok/supergrok conc 2, premiumplus conc 3, heavy conc 6', tierConcurrency('grok', 'supergrok') === 2 && tierConcurrency('grok', 'premiumplus') === 3 && tierConcurrency('grok', 'heavy') === 6);
+check('free tiers deny cloud', !tierAllowsCloud('ollama', 'free') && !tierAllowsCloud('claude', 'free') && !tierAllowsCloud('chatgpt', 'free') && !tierAllowsCloud('grok', 'free'));
 check('unknown tier denies cloud (safe)', !tierAllowsCloud('ollama', 'bogus'));
 check('validTiers lists ollama tiers', validTiers('ollama').includes('max') && validTiers('ollama').includes('free'));
+check('validTiers lists grok tiers', validTiers('grok').includes('supergrok') && validTiers('grok').includes('free'));
 
 console.log('▶ resolvePoolLimits');
-const limits = resolvePoolLimits({ chatgpt: 'plus', claude: 'pro', ollama: 'max' });
+const limits = resolvePoolLimits({ chatgpt: 'plus', claude: 'pro', grok: 'heavy', ollama: 'max' });
 check('chatgpt pool = 6', limits.chatgpt === 6, `got ${limits.chatgpt}`);
 check('claude pool = 2', limits.claude === 2, `got ${limits.claude}`);
+check('grok pool = 6', limits.grok === 6, `got ${limits.grok}`);
 check('ollama-cloud pool = 10', limits['ollama-cloud'] === 10, `got ${limits['ollama-cloud']}`);
 check('api pools = apiConcurrency default', limits.openai === subs.defaults.apiConcurrency && limits.xai === subs.defaults.apiConcurrency);
 check('local pool = default 1', limits.local === subs.defaults.localConcurrency);
-const overridden = resolvePoolLimits({ chatgpt: 'plus', claude: 'pro', ollama: 'max' }, { cloud: 2, local: 0 });
-check('explicit cloud override collapses cloud pools', overridden.chatgpt === 2 && overridden.claude === 2 && overridden['ollama-cloud'] === 2 && overridden.openai === 2);
+// grok defaults to 'free' (opt-in), unlike claude/chatgpt — a free tier must
+// still resolve to a sane concurrency number (not undefined/NaN) even though
+// cloud access is denied, since resolvePoolLimits doesn't gate on cloud itself.
+const freeGrok = resolvePoolLimits({ chatgpt: 'plus', claude: 'pro', grok: 'free', ollama: 'max' });
+check('grok/free still resolves to a positive concurrency', Number.isFinite(freeGrok.grok) && freeGrok.grok > 0, `got ${freeGrok.grok}`);
+const overridden = resolvePoolLimits({ chatgpt: 'plus', claude: 'pro', grok: 'heavy', ollama: 'max' }, { cloud: 2, local: 0 });
+check('explicit cloud override collapses cloud pools', overridden.chatgpt === 2 && overridden.claude === 2 && overridden.grok === 2 && overridden['ollama-cloud'] === 2 && overridden.openai === 2);
 check('explicit local override applied', overridden.local === 0);
 // Regression: an override equal to the cloud default must still apply to API pools.
-const eqDefault = resolvePoolLimits({ chatgpt: 'plus', claude: 'pro', ollama: 'max' }, { cloud: subs.defaults.cloudConcurrency });
+const eqDefault = resolvePoolLimits({ chatgpt: 'plus', claude: 'pro', grok: 'heavy', ollama: 'max' }, { cloud: subs.defaults.cloudConcurrency });
 check('override == default still applies to API pools', eqDefault.openai === subs.defaults.cloudConcurrency, `got ${eqDefault.openai}`);
 
 console.log('▶ poolKey bucketing');
 check('codex-cli → chatgpt', poolKey(member('codex-cli', 'gpt-5.6-sol')) === 'chatgpt');
 check('claude-cli → claude', poolKey(member('claude-cli', 'opus')) === 'claude');
+check('grok-cli → grok', poolKey(member('grok-cli', 'grok-4.5')) === 'grok');
 check('openai → openai', poolKey(member('openai', 'gpt-4o')) === 'openai');
 check('anthropic → anthropic', poolKey(member('anthropic', 'claude-opus-4-8')) === 'anthropic');
 check('xai → xai', poolKey(member('xai', 'grok-4')) === 'xai');

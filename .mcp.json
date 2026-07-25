@@ -28,8 +28,12 @@
         "CODEX_CLI": "${user_config.codex_cli}",
         "CODEX_CLI_MODELS": "${user_config.codex_cli_models}",
         "CODEX_CLI_PATH": "${user_config.codex_cli_path}",
+        "GROK_CLI": "${user_config.grok_cli}",
+        "GROK_CLI_MODELS": "${user_config.grok_cli_models}",
+        "GROK_CLI_PATH": "${user_config.grok_cli_path}",
         "CLAUDE_TIER": "${user_config.claude_tier}",
         "CHATGPT_TIER": "${user_config.chatgpt_tier}",
+        "GROK_TIER": "${user_config.grok_tier}",
         "OLLAMA_TIER": "${user_config.ollama_tier}"
       }
     }

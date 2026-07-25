@@ -26,6 +26,7 @@ export interface Subscriptions {
   providers: {
     chatgpt: ProviderInfo;
     claude: ProviderInfo;
+    grok: ProviderInfo;
     ollama: ProviderInfo;
   };
   curatedCloudModels: string[];
@@ -34,7 +35,7 @@ export interface Subscriptions {
 
 /** Embedded fallback — mirror of config/subscriptions.json. */
 const EMBEDDED: Subscriptions = {
-  version: '2026-07-14',
+  version: '2026-07-20',
   providers: {
     chatgpt: {
       cliType: 'codex-cli',
@@ -55,6 +56,16 @@ const EMBEDDED: Subscriptions = {
         max20x: { cloud: true, concurrency: 8 },
       },
       models: ['opus', 'sonnet', 'haiku'],
+    },
+    grok: {
+      cliType: 'grok-cli',
+      tiers: {
+        free: { cloud: false },
+        supergrok: { cloud: true, concurrency: 2 },
+        premiumplus: { cloud: true, concurrency: 3 },
+        heavy: { cloud: true, concurrency: 6 },
+      },
+      models: ['grok-4.5'],
     },
     ollama: {
       tiers: {
@@ -122,7 +133,7 @@ function isValid(s: unknown): s is Subscriptions {
     typeof d.localConcurrency === 'number';
   return (
     !!o && !!o.providers &&
-    provOk(o.providers.chatgpt) && provOk(o.providers.claude) && provOk(o.providers.ollama) &&
+    provOk(o.providers.chatgpt) && provOk(o.providers.claude) && provOk(o.providers.grok) && provOk(o.providers.ollama) &&
     Array.isArray(o.curatedCloudModels) && defaultsOk
   );
 }
@@ -148,7 +159,7 @@ export function loadSubscriptions(): Subscriptions {
 }
 
 /** Provider key → the pool key used for concurrency bucketing. */
-export type SubProvider = 'chatgpt' | 'claude' | 'ollama';
+export type SubProvider = 'chatgpt' | 'claude' | 'grok' | 'ollama';
 
 /** Does `tier` grant cloud access for `provider`? Unknown tier → false (safe). */
 export function tierAllowsCloud(provider: SubProvider, tier: string, subs = loadSubscriptions()): boolean {
@@ -174,7 +185,7 @@ export function validTiers(provider: SubProvider, subs = loadSubscriptions()): s
  * CLOUD_CONCURRENCY/LOCAL_CONCURRENCY) win when provided.
  */
 export function resolvePoolLimits(
-  tiers: { chatgpt: string; claude: string; ollama: string },
+  tiers: { chatgpt: string; claude: string; grok: string; ollama: string },
   overrides: { cloud?: number; local?: number } = {},
   subs = loadSubscriptions(),
 ): Record<PoolKey, number> {
@@ -185,6 +196,7 @@ export function resolvePoolLimits(
   return {
     chatgpt: cloud ?? tierConcurrency('chatgpt', tiers.chatgpt, subs),
     claude: cloud ?? tierConcurrency('claude', tiers.claude, subs),
+    grok: cloud ?? tierConcurrency('grok', tiers.grok, subs),
     'ollama-cloud': cloud ?? tierConcurrency('ollama', tiers.ollama, subs),
     openai: cloud ?? subs.defaults.apiConcurrency,
     anthropic: cloud ?? subs.defaults.apiConcurrency,

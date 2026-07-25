@@ -13,6 +13,7 @@ import { ProviderRegistry } from './providers/registry.js';
 import { isEmbeddingModel } from './council/orchestrator.js';
 import { Subscriptions, tierAllowsCloud } from './subscriptions.js';
 import { SubscriptionTiers } from './types.js';
+import { envBool } from './config.js';
 
 export interface EnvReport {
   ollama: {
@@ -23,6 +24,7 @@ export interface EnvReport {
   };
   claude: { installed: boolean; usable: boolean };
   codex: { installed: boolean; usable: boolean };
+  grok: { installed: boolean; usable: boolean };
 }
 
 const isCloudModel = (m: string): boolean => m.endsWith(':cloud') || m.endsWith('-cloud');
@@ -33,12 +35,13 @@ interface CliResult { code: number; stdout: string; stderr: string; }
 function runCli(
   command: string,
   args: string[],
-  opts: { timeoutMs: number; input?: string; stripKeys?: 'anthropic' | 'openai' } = { timeoutMs: 8000 },
+  opts: { timeoutMs: number; input?: string; stripKeys?: 'anthropic' | 'openai' | 'xai' } = { timeoutMs: 8000 },
 ): Promise<CliResult> {
   return new Promise(resolve => {
     const env = { ...process.env };
     if (opts.stripKeys === 'anthropic') { delete env.ANTHROPIC_API_KEY; delete env.ANTHROPIC_AUTH_TOKEN; }
     if (opts.stripKeys === 'openai') { delete env.OPENAI_API_KEY; delete env.CODEX_API_KEY; }
+    if (opts.stripKeys === 'xai') { delete env.XAI_API_KEY; }
 
     let child: ReturnType<typeof spawn>;
     try {
@@ -138,18 +141,57 @@ async function detectCodex(): Promise<EnvReport['codex']> {
   return { installed: true, usable };
 }
 
+async function detectGrok(tiers: SubscriptionTiers, subs: Subscriptions): Promise<EnvReport['grok']> {
+  const cmd = cliPath('GROK_CLI_PATH', 'grok');
+  const installed = (await runCli(cmd, ['--version'], { timeoutMs: 8000 })).code === 0;
+  if (!installed) return { installed: false, usable: false };
+  // Unlike Claude/ChatGPT (which default to a paid tier — the user already
+  // opted in just by installing), Grok defaults to 'free' precisely so a user
+  // who already has the CLI installed and logged in isn't unexpectedly charged
+  // against their X.AI quota by this new provider. The login probe below is a
+  // REAL completion call (no free "login status" subcommand exists for this
+  // CLI) — so it must not run at all until the same opt-in gate that governs
+  // registration (config.ts) also allows cloud, or a "free" user pays for a
+  // probe they never asked for just by running council_status.
+  if (!tierAllowsCloud('grok', tiers.grok, subs) && !envBool('GROK_CLI', false)) {
+    return { installed: true, usable: false };
+  }
+  // No dedicated "login status" subcommand exists for this CLI (unlike codex),
+  // and `grok login` itself would trigger a real OAuth/device-code flow rather
+  // than just reporting state — so, like detectClaude, this is a real minimal
+  // completion probe: only a genuinely logged-in, working CLI returns a
+  // completed turn. Locked down the same way the real completion path is
+  // (src/providers/grok-cli.ts): no tools, bypassPermissions (required in
+  // headless mode or the call silently cancels), subscription auth forced by
+  // stripping XAI_API_KEY.
+  const probe = await runCli(
+    cmd,
+    ['-p', 'Reply with the single word READY', '--output-format', 'json',
+      '--tools', '', '--permission-mode', 'bypassPermissions'],
+    { timeoutMs: 20000, stripKeys: 'xai' },
+  );
+  if (probe.code !== 0) return { installed: true, usable: false };
+  try {
+    const parsed = JSON.parse(probe.stdout) as { text?: unknown; stopReason?: unknown };
+    return { installed: true, usable: parsed.stopReason === 'EndTurn' && typeof parsed.text === 'string' && parsed.text.trim().length > 0 };
+  } catch {
+    return { installed: true, usable: false };
+  }
+}
+
 /** Detect everything the council could use, given the resolved tiers. Probes run concurrently. */
 export async function detectEnvironment(
   registry: ProviderRegistry,
   tiers: SubscriptionTiers,
   subs: Subscriptions,
 ): Promise<EnvReport> {
-  const [ollama, claude, codex] = await Promise.all([
+  const [ollama, claude, codex, grok] = await Promise.all([
     detectOllama(registry, tiers, subs),
     detectClaude(),
     detectCodex(),
+    detectGrok(tiers, subs),
   ]);
-  return { ollama, claude, codex };
+  return { ollama, claude, codex, grok };
 }
 
 /**
@@ -174,6 +216,9 @@ export function autoPopulatedMembers(
   if (report.codex.usable && tierAllowsCloud('chatgpt', tiers.chatgpt, subs)) {
     for (const m of subs.providers.chatgpt.models ?? []) out.push(`codex-cli:${m}`);
   }
+  if (report.grok.usable && tierAllowsCloud('grok', tiers.grok, subs)) {
+    for (const m of subs.providers.grok.models ?? []) out.push(`grok-cli:${m}`);
+  }
   return [...new Set(out)];
 }
 
@@ -191,6 +236,7 @@ export function quotaWarning(
   if (report.ollama.cloud === 'ok') paid.push('Ollama cloud');
   if (report.claude.usable && tierAllowsCloud('claude', tiers.claude, subs)) paid.push('Claude subscription');
   if (report.codex.usable && tierAllowsCloud('chatgpt', tiers.chatgpt, subs)) paid.push('ChatGPT/Codex subscription');
+  if (report.grok.usable && tierAllowsCloud('grok', tiers.grok, subs)) paid.push('Grok (X.AI) subscription');
   if (paid.length === 0) return null;
   return `The council includes ${paid.join(', ')} members — asking it consumes your ${paid.length > 1 ? 'quotas' : 'quota'}. ` +
     `Remove any you don't want with configure_council (or /model-council:setup) to reduce usage.`;

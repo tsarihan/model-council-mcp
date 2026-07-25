@@ -8,8 +8,12 @@
  * Vision: also collects every repeated `-i <path>` (the CLI's first-party
  * image-attach flag) and actually reads each file, proving the provider wrote
  * real, accessible image bytes at the paths it passed.
+ *
+ * Full repo access: reports the `-C <dir>` working root it was given and
+ * genuinely lists it (readdirSync), so a test can prove the provider pointed
+ * codex at a real repo instead of the usual empty ephemeral dir.
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { CHALLENGE_IMAGES, CHALLENGE_PROMPT } from '../dist/vision-challenge.js';
 
 const CHALLENGE_BY_BASE64 = new Map(CHALLENGE_IMAGES.map(c => [c.base64, c.code]));
@@ -38,8 +42,21 @@ const flag = (...names) => {
 const outFile = flag('-o', '--output-last-message');
 const model = flag('-m', '--model') ?? 'default';
 const sandbox = flag('-s', '--sandbox') ?? '?';
+const cwd = flag('-C', '--cd');
 const okey = process.env.OPENAI_API_KEY ? 'set' : 'unset';
 const ckey = process.env.CODEX_API_KEY ? 'set' : 'unset';
+
+// Full repo access: genuinely list the -C working root, proving the provider
+// pointed codex at a real, listable repo directory (vs. the usual empty
+// ephemeral dir, which lists as empty).
+let cwdListing = 'nocwd';
+if (cwd) {
+  try {
+    cwdListing = `cwdlist:${readdirSync(cwd).sort().join('|')}`;
+  } catch {
+    cwdListing = 'cwdlist:ERROR';
+  }
+}
 
 // Collect every `-i <path>` (repeated for multiple images).
 const imagePaths = args.reduce((acc, a, i) => {
@@ -66,7 +83,7 @@ process.stdin.on('end', () => {
     try { challengeAnswer = CHALLENGE_BY_BASE64.get(readFileSync(imagePaths[0]).toString('base64')); } catch { /* fall through */ }
   }
   const result = challengeAnswer ??
-    `mock-codex model=${model} okey=${okey} ckey=${ckey} sandbox=${sandbox} ${imageSummary} ` +
+    `mock-codex model=${model} okey=${okey} ckey=${ckey} sandbox=${sandbox} ${imageSummary} ${cwdListing} ` +
     `:: ${input.trim().slice(0, 500)}`;
   if (outFile) {
     try { writeFileSync(outFile, result); } catch { /* ignore */ }

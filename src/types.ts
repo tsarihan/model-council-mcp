@@ -100,6 +100,14 @@ export interface RuntimeConfig {
   requestTimeoutMs: number;
   /** Default value of the verbose flag for deconflicted results. */
   verbose: boolean;
+  /**
+   * Absolute repo root granted to full-repo-access-capable CLI members
+   * (claude-cli/codex-cli) for the current ask() call, or undefined when off.
+   * Set per-call by orchestrator.ask() on a shallow clone of this config —
+   * never mutated on the shared server-wide RuntimeConfig, so concurrent
+   * ask_council calls can't leak this into each other.
+   */
+  fullRepoAccess?: string;
 }
 
 // ─── Raw responses ────────────────────────────────────────────────────────────

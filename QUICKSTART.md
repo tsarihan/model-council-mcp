@@ -181,6 +181,28 @@ brand-new untracked files, same as plain `git diff`. This doesn't give any
 council member live git access — it's a local `git diff` read on the server's
 own machine, same trust model as `files`.
 
+**Reviewing the whole repo, not just a diff?** `full_repo_access: true` grants
+`claude-cli`/`codex-cli` members repo exploration for that call — but the two
+enforce it differently. `claude-cli` gets `Read`/`Grep`/`Glob` **confined** to
+the repo root (`--add-dir` is a real enforced boundary, verified empirically).
+`codex-cli` points its working directory at the real repo instead of an empty
+one, but stays in its `read-only` sandbox — which blocks all writes everywhere,
+but does **not** confine reads to the repo (verified live: it can read any
+file the OS user can read, anywhere on the machine — that's pre-existing
+behavior of every codex-cli call, not something this mode adds; it's told to
+stay in the repo root as a soft, unenforced guardrail). **⚠️ This is a real
+permission grant** — off by default, and the calling agent should confirm with
+the user before setting it true for an interactive request (autonomous use is
+fine for an unattended review step you already control, e.g. end-of-workflow).
+Other members (`openai`/`anthropic`/`xai`/`ollama`/self-hosted, `grok-cli`) are
+unaffected — no filesystem access to grant. Neither member can write or run
+mutating commands.
+
+```
+ask_council(question="Review the whole repo: architecture, risky areas, what you'd improve.",
+            mode="individual", full_repo_access=true)
+```
+
 **Ask a vision question.** Add `images` (local png/jpg/jpeg/gif/webp paths) and the
 plugin auto-detects which configured members can actually see, with a two-stage
 check: a cheap prefilter (Ollama's `/api/show` capabilities, a functional probe for
@@ -215,7 +237,7 @@ on `/reload-plugins`.
 
 Handy tools & commands:
 
-- `ask_council` — ask the council (modes above; `context` / `files` / `git_ref` / `images` optional).
+- `ask_council` — ask the council (modes above; `context` / `files` / `git_ref` / `full_repo_access` / `images` optional).
 - `ask_council_async` / `get_council_result` — background runs + fetch/list.
 - `council_status` — detected environment, current members, tiers, per-provider
   concurrency, quota warning. (`/model-council:status` in the Claude Code plugin.)
@@ -236,6 +258,7 @@ Handy tools & commands:
 | Give slow local models more time | `request_timeout_ms` (ms; default 120000) |
 | Review a file / add background | `ask_council(files=[…], context="…")` |
 | Review a diff (repo review) | `ask_council(git_ref="uncommitted")` |
+| Review the whole repo (⚠️ real permission grant) | `ask_council(full_repo_access=true)` |
 | Ask about an image | `ask_council(images=[…])` — routed only to vision-capable members |
 | Not block on a long run | `ask_council_async` → `get_council_result(job_id)` |
 | Cap output length | `max_tokens` (auto-clamped down to each server's context) |

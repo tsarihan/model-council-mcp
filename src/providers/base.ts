@@ -32,6 +32,23 @@ export interface CompletionOptions {
   jsonMode?: boolean;
   /** Per-attempt wall-clock timeout (ms). Bounds a hung server/subprocess. */
   timeoutMs?: number;
+  /**
+   * Absolute repo root to grant repo exploration access to, for the CLI
+   * providers that support it — enforced DIFFERENTLY per provider:
+   *   - claude-cli: Read/Grep/Glob CONFINED to this root via --add-dir, a
+   *     real enforced boundary (verified empirically — a Read attempt
+   *     outside it is denied by the CLI itself).
+   *   - codex-cli: --cd points its working root here, but its read-only
+   *     sandbox does NOT confine reads to it — it can read any file the OS
+   *     user can read, anywhere on the machine (verified live; this is
+   *     pre-existing codex-cli behavior, not added by this option — only
+   *     writes are blocked, everywhere, regardless of this value).
+   * Undefined (the default) keeps a provider fully locked down as before.
+   * Providers that don't support this (everything except claude-cli/
+   * codex-cli) simply ignore it — they have no filesystem/tool concept to
+   * grant in the first place.
+   */
+  fullRepoAccess?: string;
 }
 
 /** Default per-attempt completion timeout when a caller supplies none. */

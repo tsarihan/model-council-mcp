@@ -8,8 +8,12 @@
  * back the actual bytes of any image path referenced in the prompt (proving
  * the mock, standing in for the real Read tool, genuinely could access the
  * file at that path) and reports whether each path fell inside --add-dir.
+ *
+ * Full repo access: simulates `--tools Read,Grep,Glob --add-dir <repoRoot>`
+ * by genuinely listing the granted directory (readdirSync), proving the mock
+ * could actually reach a real repo path, not just receive the flag.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { CHALLENGE_IMAGES, CHALLENGE_PROMPT } from '../dist/vision-challenge.js';
 
@@ -27,6 +31,16 @@ const flag = (name) => {
   return i !== -1 ? args[i + 1] : undefined;
 };
 
+// --add-dir is variadic in the real CLI (`--add-dir <directories...>`) — full
+// repo access mode can pass more than one (image temp dir + repo root).
+const flagMulti = (name) => {
+  const i = args.indexOf(name);
+  if (i === -1) return [];
+  const out = [];
+  for (let j = i + 1; j < args.length && !args[j].startsWith('--'); j++) out.push(args[j]);
+  return out;
+};
+
 let input = '';
 process.stdin.on('data', (d) => (input += d));
 process.stdin.on('end', () => {
@@ -42,7 +56,9 @@ process.stdin.on('end', () => {
   const toolsValue = toolsIdx !== -1 ? args[toolsIdx + 1] : undefined;
   const toolsOff = toolsValue === '';
   const toolsReadOnly = toolsValue === 'Read';
-  const addDir = flag('--add-dir');
+  const toolsRepoAccess = toolsValue === 'Read,Grep,Glob';
+  const addDirs = flagMulti('--add-dir');
+  const addDir = addDirs[0]; // back-compat for the single-dir vision path below
   const strictMcp = args.includes('--strict-mcp-config');
   const sysReplace = args.includes('--system-prompt');
   const key = process.env.ANTHROPIC_API_KEY ? 'KEYSET' : 'nokey';
@@ -84,9 +100,24 @@ process.stdin.on('end', () => {
     process.exit(0);
   }
 
+  // Full repo access: genuinely list the granted repo root (the LAST --add-dir
+  // when an image dir is also granted), proving the mock could actually reach
+  // a real directory, not just receive the flag — same discipline as the
+  // vision Read-tool proof above.
+  let repoListing = 'norepoaccess';
+  if (toolsRepoAccess && addDirs.length) {
+    const repoDir = addDirs[addDirs.length - 1];
+    try {
+      repoListing = `repolist:${readdirSync(repoDir).sort().join('|')}`;
+    } catch {
+      repoListing = 'repolist:ERROR';
+    }
+  }
+
+  const toolsTag = toolsOff ? 'off' : toolsReadOnly ? 'read' : toolsRepoAccess ? 'repo' : 'on';
   const result =
-    `mock-claude model=${model} key=${key} tools=${toolsOff ? 'off' : toolsReadOnly ? 'read' : 'on'} ` +
-    `mcp=${strictMcp ? 'strict' : 'default'} sys=${sysReplace ? 'replace' : 'default'} ${readSummary} :: ${input.trim().slice(0, 80)}`;
+    `mock-claude model=${model} key=${key} tools=${toolsTag} ` +
+    `mcp=${strictMcp ? 'strict' : 'default'} sys=${sysReplace ? 'replace' : 'default'} ${readSummary} ${repoListing} :: ${input.trim().slice(0, 80)}`;
   process.stdout.write(
     JSON.stringify({
       type: 'result',

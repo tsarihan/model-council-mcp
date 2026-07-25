@@ -200,7 +200,12 @@ export async function queryMembersVarying(
           member.provider,
           member.modelId.model,
           [userMessage],
-          { maxTokens: runtime.maxTokens, timeoutMs: runtime.requestTimeoutMs, ...opts },
+          {
+            maxTokens: runtime.maxTokens,
+            timeoutMs: runtime.requestTimeoutMs,
+            fullRepoAccess: runtime.fullRepoAccess,
+            ...opts,
+          },
           runtime.retries,
         );
         results[i] = { modelId: member.modelId, label, response, latencyMs: Date.now() - t0 };

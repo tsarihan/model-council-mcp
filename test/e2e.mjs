@@ -734,6 +734,44 @@ async function main() {
     } finally {
       rmSync(cliImgDir, { recursive: true, force: true });
     }
+
+    // full_repo_access: tools widen to Read,Grep,Glob and --add-dir grants the
+    // real repo root — the mock genuinely lists it, proving real access (not
+    // just the flag reaching the CLI).
+    await cliClient.callTool({ name: 'configure_council', arguments: { models: ['claude-cli:opus'], response_mode: 'individual' } });
+    const repoDir = mkdtempSync(join(tmpdir(), 'mc-clirepo-'));
+    writeFileSync(join(repoDir, 'alpha.txt'), 'a');
+    writeFileSync(join(repoDir, 'beta.txt'), 'b');
+    try {
+      const repoAsk = parseToolResult(await cliClient.callTool({
+        name: 'ask_council',
+        arguments: { question: 'how many files?', mode: 'individual', full_repo_access: true, git_repo: repoDir },
+      }));
+      const repoResp = repoAsk.responses?.[0]?.response ?? '';
+      check('claude-cli full_repo_access: tools widened to Read,Grep,Glob', /tools=repo\b/.test(repoResp), repoResp);
+      check('claude-cli full_repo_access: mock genuinely listed the granted repo root', /repolist:alpha\.txt\|beta\.txt/.test(repoResp), repoResp);
+      check('claude-cli full_repo_access: still strict MCP (no recursion)', /mcp=strict\b/.test(repoResp), repoResp);
+
+      // Concurrency safety: a call WITHOUT full_repo_access run at the same time
+      // must NOT see it — the per-call clone in orchestrator.ask() must never
+      // leak into the shared server-wide runtime.
+      const [withAccess, withoutAccess] = await Promise.all([
+        cliClient.callTool({
+          name: 'ask_council',
+          arguments: { question: 'x', mode: 'individual', full_repo_access: true, git_repo: repoDir },
+        }),
+        cliClient.callTool({
+          name: 'ask_council',
+          arguments: { question: 'y', mode: 'individual' },
+        }),
+      ]);
+      const withResp = parseToolResult(withAccess).responses?.[0]?.response ?? '';
+      const withoutResp = parseToolResult(withoutAccess).responses?.[0]?.response ?? '';
+      check('full_repo_access concurrency: the opted-in call got repo tools', /tools=repo\b/.test(withResp), withResp);
+      check('full_repo_access concurrency: the concurrent non-opted-in call stayed locked down (no leak)', /tools=off\b/.test(withoutResp), withoutResp);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
   } finally {
     await cliClient.close();
   }
@@ -792,6 +830,24 @@ async function main() {
       check('codex-cli vision: -i flag carried a real, readable image file', /images:OK\(/.test(cxVisResp) && !/MISSING/.test(cxVisResp), cxVisResp);
     } finally {
       rmSync(cxImgDir, { recursive: true, force: true });
+    }
+
+    // full_repo_access: -C points at the real repo root instead of the usual
+    // empty ephemeral dir — the mock genuinely lists it, proving real access —
+    // while --sandbox stays read-only regardless.
+    const cxRepoDir = mkdtempSync(join(tmpdir(), 'mc-codexrepo-'));
+    writeFileSync(join(cxRepoDir, 'gamma.txt'), 'g');
+    writeFileSync(join(cxRepoDir, 'delta.txt'), 'd');
+    try {
+      const cxRepoAsk = parseToolResult(await codexClient.callTool({
+        name: 'ask_council',
+        arguments: { question: 'how many files?', mode: 'individual', full_repo_access: true, git_repo: cxRepoDir },
+      }));
+      const cxRepoResp = cxRepoAsk.responses?.[0]?.response ?? '';
+      check('codex-cli full_repo_access: -C points at the real repo root', /cwdlist:delta\.txt\|gamma\.txt/.test(cxRepoResp), cxRepoResp);
+      check('codex-cli full_repo_access: sandbox still read-only', /sandbox=read-only\b/.test(cxRepoResp), cxRepoResp);
+    } finally {
+      rmSync(cxRepoDir, { recursive: true, force: true });
     }
   } finally {
     await codexClient.close();

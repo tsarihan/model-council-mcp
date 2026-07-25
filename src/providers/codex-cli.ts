@@ -19,6 +19,29 @@
  * `-i/--image <FILE>...` flag — no tool-loosening workaround needed. Each
  * attached image is written into the same per-call temp dir already used for
  * the isolated working directory, then passed via `-i`.
+ *
+ * Full repo access (opts.fullRepoAccess): an explicit, caller-opted-in mode
+ * (ask_council's full_repo_access param) for repo-wide review. `-C` (working
+ * root) points at the REAL repo instead of the empty ephemeral dir, so the
+ * agent can explore it — and `--sandbox read-only` still applies
+ * unconditionally, so it can never WRITE there or anywhere else.
+ *
+ * IMPORTANT (verified live before shipping): unlike claude-cli's `--add-dir`,
+ * `-C` is only a starting point, NOT a read boundary — codex's `read-only`
+ * sandbox permits reading any file the OS-level user can read, anywhere on
+ * the machine (confirmed empirically: a shell command reading a file well
+ * outside `-C` succeeded). This is pre-existing behavior of every codex-cli
+ * call, not something full-repo-access mode introduces — codex could always
+ * read the whole disk if a prompt led it to try; this mode just changes the
+ * SYSTEM PROMPT to actively invite exploration, so the practical likelihood
+ * of it wandering outside the repo goes up even though the technical
+ * capability was always there. The preamble below tells it to stay inside
+ * the repo root as a soft, unenforced guardrail — real containment for
+ * reads would need OS-level sandboxing (chroot/container), which is out of
+ * scope here. The `-o` output file and any attached images still go to a
+ * separate, unrelated temp dir (never inside the user's repo), since `-C`
+ * only sets the agent's own exploration root, not where the parent CLI
+ * process writes its own housekeeping files.
  */
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -139,10 +162,18 @@ export class CodexCliProvider implements Provider {
       .map(m => (m.role === 'assistant' ? `Assistant: ${m.content}` : m.content))
       .join('\n\n');
 
+    const repoRoot = opts.fullRepoAccess;
+
     // Codex has no system-prompt flag in exec mode; prepend a neutral persona.
     const preamble =
       'You are a member of a model council. Answer the question directly, ' +
-      'neutrally, and concisely. Do not run commands or modify files — just answer.';
+      'neutrally, and concisely. ' +
+      (repoRoot
+        ? `You have read-only access to explore the repository at ${repoRoot} — the ` +
+          'sandbox will not let you write or modify anything regardless. Stay inside ' +
+          `${repoRoot}; do not read files elsewhere on the system. Do not run commands ` +
+          'that mutate state; just explore and answer.'
+        : 'Do not run commands or modify files — just answer.');
     const prompt = [
       preamble,
       systemParts,
@@ -152,8 +183,9 @@ export class CodexCliProvider implements Provider {
       .filter(Boolean)
       .join('\n\n');
 
-    // Run in a fresh empty dir with the final message written to a file, so the
-    // agent has nothing to explore and we read a clean answer.
+    // Own temp dir for -o/images regardless of fullRepoAccess — -C only sets the
+    // agent's exploration root, not where the parent process writes its own
+    // housekeeping files, so this never touches the user's actual repo.
     const dir = mkdtempSync(join(tmpdir(), 'codex-council-'));
     const outFile = join(dir, 'out.txt');
     const args = [
@@ -163,7 +195,7 @@ export class CodexCliProvider implements Provider {
       '--ephemeral',
       '--color', 'never',
       '-c', 'approval_policy=never',
-      '-C', dir,
+      '-C', repoRoot || dir, // real repo root in full-repo-access mode; empty dir otherwise
       '-o', outFile,
     ];
     if (model && model !== 'default') {

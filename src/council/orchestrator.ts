@@ -145,10 +145,16 @@ export class CouncilOrchestrator {
     verboseOverride?: boolean,
     images?: ChatImage[],
     onProgress?: ProgressReporter,
+    fullRepoAccessRepo?: string,
   ): Promise<CouncilResult> {
     const mode = modeOverride ?? this.config.responseMode;
     const maxRounds = maxRoundsOverride ?? this.config.maxDeconflictRounds;
     const verbose = verboseOverride ?? this.runtime.verbose;
+    // A shallow per-call clone — never mutate the shared this.runtime, or a
+    // concurrent ask_council call without full_repo_access would see it too.
+    const runtime: RuntimeConfig = fullRepoAccessRepo
+      ? { ...this.runtime, fullRepoAccess: fullRepoAccessRepo }
+      : this.runtime;
 
     // ── Determine council membership ──────────────────────────────────────
     // If explicitly configured, use those. Otherwise (zero-config) auto-
@@ -215,7 +221,7 @@ export class CouncilOrchestrator {
         }
       }
 
-      const checked = await checkVisionPooled(members, this.runtime, onProgress);
+      const checked = await checkVisionPooled(members, runtime, onProgress);
       const visionMembers = checked.filter(c => c.vision).map(c => c.member);
       const skippedNonVision = checked.filter(c => !c.vision).map(c => modelIdLabel(c.member.modelId));
 
@@ -252,7 +258,7 @@ export class CouncilOrchestrator {
     }
 
     // ── Query all members (bounded concurrency) ───────────────────────────
-    const responses = await queryMembers(question, queryTargets, this.runtime, {}, images, onProgress);
+    const responses = await queryMembers(question, queryTargets, runtime, {}, images, onProgress);
 
     // ── Individual mode — done ─────────────────────────────────────────────
     if (mode === 'individual') {
@@ -316,7 +322,7 @@ export class CouncilOrchestrator {
           members: queryTargets,
           judgeModelId,
           judgeProvider,
-          runtime: this.runtime,
+          runtime,
           verbose,
         });
         return visionRouting ? { ...pooled, visionRouting } : pooled;
@@ -331,7 +337,7 @@ export class CouncilOrchestrator {
           members: queryTargets,
           judgeModelId,
           judgeProvider,
-          runtime: this.runtime,
+          runtime,
           verbose,
         });
         return visionRouting ? { ...dialectic, visionRouting } : dialectic;
@@ -366,7 +372,7 @@ export class CouncilOrchestrator {
         members: queryTargets,
         judgeModelId,
         judgeProvider,
-        runtime: this.runtime,
+        runtime,
         verbose,
       })) as DeconflictedResult;
       return visionRouting ? { ...dec, visionRouting } : dec;

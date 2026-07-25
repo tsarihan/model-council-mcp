@@ -20,20 +20,27 @@ export interface GitDiffInput {
   repo?: string;
 }
 
+// Disable repo-configured external diff/textconv helpers (.gitattributes
+// diff=<driver> / diff.<driver>.command, diff.<driver>.textconv) — without
+// this, a plain `git diff` on an untrusted repo can execute an arbitrary
+// command the repo itself configured. This is a read-only context-extraction
+// feature; it should never run anything the repo defines.
+const NO_HELPERS = ['--no-ext-diff', '--no-textconv'];
+
 /** Map a friendly alias to `git diff` args; anything else is passed through as a revision/range. */
 function diffArgsForRef(ref: string): string[] {
   switch (ref) {
     case 'staged':
-      return ['diff', '--cached'];
+      return ['diff', ...NO_HELPERS, '--cached'];
     case 'unstaged':
-      return ['diff'];
+      return ['diff', ...NO_HELPERS];
     case 'uncommitted':
-      return ['diff', 'HEAD'];
+      return ['diff', ...NO_HELPERS, 'HEAD'];
     default:
       // '--end-of-options' is belt-and-suspenders: the leading-dash check above
       // already rejects anything git could parse as a flag, so this defends
       // only against git version differences in how that check is enforced.
-      return ['diff', '--end-of-options', ref];
+      return ['diff', ...NO_HELPERS, '--end-of-options', ref];
   }
 }
 

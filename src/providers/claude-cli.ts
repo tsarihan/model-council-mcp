@@ -26,6 +26,15 @@
  * of). Every other property of the lockdown (no MCP, no other tools, no
  * session persistence) is unchanged. Calls with no images keep the original
  * `--tools ""` — nothing is loosened unless there's an image to show it.
+ *
+ * Full repo access (opts.fullRepoAccess): an explicit, caller-opted-in mode
+ * (ask_council's full_repo_access param) for repo-wide review, where this
+ * member is granted `--tools Read,Grep,Glob --add-dir <repoRoot>` instead of
+ * the fully locked-down default — read-only exploration of the whole repo,
+ * never Bash/Write/Edit. `--strict-mcp-config` stays on regardless (still no
+ * recursion into this plugin). Verified live against the real CLI before
+ * shipping: a scoped `Read,Grep,Glob` call correctly answered a real
+ * "how many files" question about this very repo.
  */
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -172,15 +181,22 @@ export class ClaudeCliProvider implements Provider {
         .map(m => (m.role === 'assistant' ? `Assistant: ${m.content}` : m.content))
         .join('\n\n') + imageNote;
 
+      const repoRoot = opts.fullRepoAccess;
+
       // Replace Claude Code's default (coding-agent) system prompt with a neutral
       // council-member persona so `claude-cli:*` members behave like a plain model
       // — matching the `anthropic:*` API provider rather than the CLI's harness.
+      const toolNote = repoRoot
+        ? `You have read-only access to explore the repository at ${repoRoot} using ` +
+          'the Read, Grep, and Glob tools to inform your answer. Do not attempt to run ' +
+          'commands or modify any files, and do not ask follow-up questions.' +
+          (imagePaths.length ? ` Also use Read to view the attached image(s): ${imagePaths.join(', ')}.` : '')
+        : imagePaths.length
+          ? 'Use the Read tool only to view the attached image(s); do not use it for anything else, and do not ask follow-up questions.'
+          : 'Do not use tools or ask follow-up questions.';
       const base =
         'You are a member of a model council. Answer the question directly, ' +
-        'neutrally, and concisely. ' +
-        (imagePaths.length
-          ? 'Use the Read tool only to view the attached image(s); do not use it for anything else, and do not ask follow-up questions.'
-          : 'Do not use tools or ask follow-up questions.');
+        'neutrally, and concisely. ' + toolNote;
       const systemText = [
         base,
         systemParts,
@@ -189,15 +205,16 @@ export class ClaudeCliProvider implements Provider {
         .filter(Boolean)
         .join('\n\n');
 
+      // Tool scope, widest to narrowest: full repo access (Read/Grep/Glob) >
+      // vision-only (Read, scoped to the image temp dir) > fully locked down.
+      const toolsValue = repoRoot ? 'Read,Grep,Glob' : imagePaths.length ? 'Read' : '';
+      const addDirs = [imageDir, repoRoot].filter((d): d is string => !!d);
       const args = [
         '-p',
         '--model', model,
         '--output-format', 'json',
-        // No images: fully locked down (no tools at all). With images: the
-        // single narrowest tool needed (Read), scoped to a directory holding
-        // nothing but the image(s) — see the file header for why this is safe.
-        '--tools', imagePaths.length ? 'Read' : '',
-        ...(imageDir ? ['--add-dir', imageDir] : []),
+        '--tools', toolsValue,
+        ...(addDirs.length ? ['--add-dir', ...addDirs] : []),
         '--strict-mcp-config',    // no MCP servers (no recursion into this plugin)
         '--no-session-persistence',
         '--system-prompt', systemText, // replace the default coding-agent persona

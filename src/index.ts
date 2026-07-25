@@ -14,10 +14,13 @@
  *
  * ask_council / ask_council_async also accept `context` (inline text), `files`
  * (local paths), and `git_ref` (auto-attaches a local `git diff` — see
- * src/git.ts) to attach as labelled context for every member, and `images`
- * (local image paths) which are routed only to council members auto-detected
- * as vision-capable (see src/images.ts, providers/*.supportsVision).
+ * src/git.ts) to attach as labelled context for every member; `full_repo_access`
+ * (WARNING: read-only repo-wide browse access for claude-cli/codex-cli members
+ * only — see CompletionOptions.fullRepoAccess in providers/base.ts); and
+ * `images` (local image paths) which are routed only to council members
+ * auto-detected as vision-capable (see src/images.ts, providers/*.supportsVision).
  */
+import { resolve } from 'node:path';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -91,6 +94,7 @@ async function runCouncil(
     images?: string[];
     git_ref?: string;
     git_repo?: string;
+    full_repo_access?: boolean;
   },
   onProgress?: ProgressReporter,
 ) {
@@ -101,6 +105,11 @@ async function runCouncil(
     gitRepo: input.git_repo,
   });
   const images = await loadImages(input.images);
+  // Reuses git_repo as the granted root when both are set, so a git_ref review
+  // and full_repo_access point at the same repo by default.
+  const fullRepoAccessRepo = input.full_repo_access
+    ? resolve(input.git_repo?.trim() || process.cwd())
+    : undefined;
   return orchestrator.ask(
     question,
     input.mode as ResponseMode | undefined,
@@ -108,6 +117,7 @@ async function runCouncil(
     input.verbose,
     images.length ? images : undefined,
     onProgress,
+    fullRepoAccessRepo,
   );
 }
 
@@ -265,6 +275,23 @@ const AskCouncilInput = z.object({
     .string()
     .optional()
     .describe('Repo directory to run git_ref in. Defaults to the server\'s working directory.'),
+  full_repo_access: z
+    .boolean()
+    .optional()
+    .describe(
+      'WARNING: grants claude-cli/codex-cli council members repo exploration for a repo-wide ' +
+        'review, instead of their normal fully locked-down mode — enforced DIFFERENTLY per ' +
+        'provider. claude-cli gets Read/Grep/Glob CONFINED to the repo root (--add-dir is a real ' +
+        'enforced boundary). codex-cli points its cwd at the real repo but its read-only sandbox ' +
+        'does NOT confine reads to it — it can read any file the OS user can read, anywhere on ' +
+        'the machine (this is pre-existing codex-cli behavior, not added by this flag; writes ' +
+        'stay blocked everywhere). Defaults to false; never set true without the user\'s consent ' +
+        'for an interactive call (safe to set autonomously for an unattended review step you ' +
+        'already control, e.g. an end-of-workflow review). Other council members ' +
+        '(openai/anthropic/xai/ollama/self-hosted, and grok-cli) are unaffected — they have no ' +
+        'filesystem access to grant. Repo root is git_repo if set, else the server\'s working ' +
+        'directory.',
+    ),
   images: z
     .array(z.string())
     .optional()
@@ -381,7 +408,9 @@ const TOOLS = [
       'Attach images to ask a vision question — only auto-detected vision-capable members are ' +
       'queried; the rest are skipped and reported in visionRouting. For a repo review, pass ' +
       'git_ref (e.g. "uncommitted", "main..HEAD") instead of hand-listing files — the server ' +
-      'runs `git diff` locally and attaches it as context.',
+      'runs `git diff` locally and attaches it as context. For a full repo-wide review (not just ' +
+      'a diff), full_repo_access (default false, WARNING: read access to the whole repo — see ' +
+      'its param description) grants claude-cli/codex-cli members read-only browse/read access.',
     inputSchema: {
       type: 'object' as const,
       required: ['question'],
@@ -427,6 +456,18 @@ const TOOLS = [
         git_repo: {
           type: 'string',
           description: 'Repo directory to run git_ref in. Defaults to the working directory.',
+        },
+        full_repo_access: {
+          type: 'boolean',
+          description:
+            'WARNING: grants claude-cli/codex-cli repo exploration for a repo-wide review — ' +
+            'ENFORCED DIFFERENTLY per provider. claude-cli: Read/Grep/Glob CONFINED to the repo ' +
+            'root (real enforced boundary). codex-cli: cwd points at the repo, but its read-only ' +
+            'sandbox does NOT confine reads to it — can read anywhere the OS user can (pre-' +
+            'existing behavior, not added by this flag; writes stay blocked everywhere). Defaults ' +
+            'false; confirm with the user before setting true for an interactive call (an ' +
+            'unattended review step you already control, e.g. end-of-workflow, may set it ' +
+            'autonomously). Other members are unaffected. Repo root: git_repo, else cwd.',
         },
         images: {
           type: 'array',
@@ -483,6 +524,10 @@ const TOOLS = [
         git_repo: {
           type: 'string',
           description: 'Repo directory to run git_ref in. Defaults to the working directory.',
+        },
+        full_repo_access: {
+          type: 'boolean',
+          description: 'WARNING: grants repo-wide read access to claude-cli/codex-cli members — same behavior as ask_council.',
         },
         images: {
           type: 'array',
@@ -559,7 +604,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.19',
+    version: '0.2.20',
   },
   {
     capabilities: { tools: {} },

@@ -2984,7 +2984,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve4.call(this, root, ref);
+      let _sch = resolve5.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a3 = root.localRefs) === null || _a3 === void 0 ? void 0 : _a3[ref];
         const { schemaId } = this.opts;
@@ -3011,7 +3011,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve4(root, ref) {
+    function resolve5(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3642,7 +3642,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve4(baseURI, relativeURI, options) {
+    function resolve5(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const resolved = resolveComponent(parse3(baseURI, schemelessOptions), parse3(relativeURI, schemelessOptions), schemelessOptions, true);
       schemelessOptions.skipEscape = true;
@@ -3900,7 +3900,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize,
-      resolve: resolve4,
+      resolve: resolve5,
       resolveComponent,
       equal,
       serialize,
@@ -8948,7 +8948,7 @@ var require_lib2 = __commonJS({
       let accum = [];
       let accumBytes = 0;
       let abort = false;
-      return new Body.Promise(function(resolve4, reject) {
+      return new Body.Promise(function(resolve5, reject) {
         let resTimeout;
         if (_this4.timeout) {
           resTimeout = setTimeout(function() {
@@ -8982,7 +8982,7 @@ var require_lib2 = __commonJS({
           }
           clearTimeout(resTimeout);
           try {
-            resolve4(Buffer.concat(accum, accumBytes));
+            resolve5(Buffer.concat(accum, accumBytes));
           } catch (err) {
             reject(new FetchError(`Could not create Buffer from response body for ${_this4.url}: ${err.message}`, "system", err));
           }
@@ -9657,7 +9657,7 @@ var require_lib2 = __commonJS({
         throw new Error("native promise missing, set fetch.Promise to your favorite alternative");
       }
       Body.Promise = fetch4.Promise;
-      return new fetch4.Promise(function(resolve4, reject) {
+      return new fetch4.Promise(function(resolve5, reject) {
         const request = new Request5(url, opts);
         const options = getNodeRequestOptions(request);
         const send = (options.protocol === "https:" ? https : http).request;
@@ -9790,7 +9790,7 @@ var require_lib2 = __commonJS({
                   requestOpts.body = void 0;
                   requestOpts.headers.delete("content-length");
                 }
-                resolve4(fetch4(new Request5(locationURL, requestOpts)));
+                resolve5(fetch4(new Request5(locationURL, requestOpts)));
                 finalize();
                 return;
             }
@@ -9811,7 +9811,7 @@ var require_lib2 = __commonJS({
           const codings = headers.get("Content-Encoding");
           if (!request.compress || request.method === "HEAD" || codings === null || res.statusCode === 204 || res.statusCode === 304) {
             response = new Response5(body, response_options);
-            resolve4(response);
+            resolve5(response);
             return;
           }
           const zlibOptions = {
@@ -9821,7 +9821,7 @@ var require_lib2 = __commonJS({
           if (codings == "gzip" || codings == "x-gzip") {
             body = body.pipe(zlib.createGunzip(zlibOptions));
             response = new Response5(body, response_options);
-            resolve4(response);
+            resolve5(response);
             return;
           }
           if (codings == "deflate" || codings == "x-deflate") {
@@ -9833,12 +9833,12 @@ var require_lib2 = __commonJS({
                 body = body.pipe(zlib.createInflateRaw());
               }
               response = new Response5(body, response_options);
-              resolve4(response);
+              resolve5(response);
             });
             raw.on("end", function() {
               if (!response) {
                 response = new Response5(body, response_options);
-                resolve4(response);
+                resolve5(response);
               }
             });
             return;
@@ -9846,11 +9846,11 @@ var require_lib2 = __commonJS({
           if (codings == "br" && typeof zlib.createBrotliDecompress === "function") {
             body = body.pipe(zlib.createBrotliDecompress());
             response = new Response5(body, response_options);
-            resolve4(response);
+            resolve5(response);
             return;
           }
           response = new Response5(body, response_options);
-          resolve4(response);
+          resolve5(response);
         });
         writeToStream(req, request);
       });
@@ -13288,6 +13288,9 @@ var init_fileFromPath = __esm({
     };
   }
 });
+
+// src/index.ts
+var import_node_path8 = require("node:path");
 
 // node_modules/zod/v3/external.js
 var external_exports = {};
@@ -23176,7 +23179,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve4) => setTimeout(resolve4, pollInterval));
+        await new Promise((resolve5) => setTimeout(resolve5, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -23193,7 +23196,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -23271,7 +23274,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve4(parseResult.data);
+            resolve5(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -23532,12 +23535,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve4, interval);
+      const timeoutId = setTimeout(resolve5, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -24407,12 +24410,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve4) => {
+    return new Promise((resolve5) => {
       const json = serializeMessage(message);
       if (this._stdout.write(json)) {
-        resolve4();
+        resolve5();
       } else {
-        this._stdout.once("drain", resolve4);
+        this._stdout.once("drain", resolve5);
       }
     });
   }
@@ -26569,8 +26572,8 @@ function _addRequestID(value, response) {
 }
 var APIPromise = class _APIPromise extends Promise {
   constructor(responsePromise, parseResponse2 = defaultParseResponse) {
-    super((resolve4) => {
-      resolve4(null);
+    super((resolve5) => {
+      resolve5(null);
     });
     this.responsePromise = responsePromise;
     this.parseResponse = parseResponse2;
@@ -27145,7 +27148,7 @@ var startsWithSchemeRegexp = /^[a-z][a-z0-9+.-]*:/i;
 var isAbsoluteURL = (url) => {
   return startsWithSchemeRegexp.test(url);
 };
-var sleep = (ms) => new Promise((resolve4) => setTimeout(resolve4, ms));
+var sleep = (ms) => new Promise((resolve5) => setTimeout(resolve5, ms));
 var validatePositiveInteger = (name, n2) => {
   if (typeof n2 !== "number" || !Number.isInteger(n2)) {
     throw new OpenAIError(`${name} must be an integer`);
@@ -27578,12 +27581,12 @@ var EventStream = class {
     _EventStream_errored.set(this, false);
     _EventStream_aborted.set(this, false);
     _EventStream_catchingPromiseCreated.set(this, false);
-    __classPrivateFieldSet7(this, _EventStream_connectedPromise, new Promise((resolve4, reject) => {
-      __classPrivateFieldSet7(this, _EventStream_resolveConnectedPromise, resolve4, "f");
+    __classPrivateFieldSet7(this, _EventStream_connectedPromise, new Promise((resolve5, reject) => {
+      __classPrivateFieldSet7(this, _EventStream_resolveConnectedPromise, resolve5, "f");
       __classPrivateFieldSet7(this, _EventStream_rejectConnectedPromise, reject, "f");
     }), "f");
-    __classPrivateFieldSet7(this, _EventStream_endPromise, new Promise((resolve4, reject) => {
-      __classPrivateFieldSet7(this, _EventStream_resolveEndPromise, resolve4, "f");
+    __classPrivateFieldSet7(this, _EventStream_endPromise, new Promise((resolve5, reject) => {
+      __classPrivateFieldSet7(this, _EventStream_resolveEndPromise, resolve5, "f");
       __classPrivateFieldSet7(this, _EventStream_rejectEndPromise, reject, "f");
     }), "f");
     __classPrivateFieldGet8(this, _EventStream_connectedPromise, "f").catch(() => {
@@ -27667,11 +27670,11 @@ var EventStream = class {
    *   const message = await stream.emitted('message') // rejects if the stream errors
    */
   emitted(event) {
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       __classPrivateFieldSet7(this, _EventStream_catchingPromiseCreated, true, "f");
       if (event !== "error")
         this.once("error", reject);
-      this.once(event, resolve4);
+      this.once(event, resolve5);
     });
   }
   async done() {
@@ -27824,7 +27827,7 @@ var AssistantStream = class _AssistantStream extends EventStream {
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve4, reject) => readQueue.push({ resolve: resolve4, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve5, reject) => readQueue.push({ resolve: resolve5, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
         }
         const chunk = pushQueue.shift();
         return { value: chunk, done: false };
@@ -29442,7 +29445,7 @@ var ChatCompletionStream = class _ChatCompletionStream extends AbstractChatCompl
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve4, reject) => readQueue.push({ resolve: resolve4, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve5, reject) => readQueue.push({ resolve: resolve5, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
         }
         const chunk = pushQueue.shift();
         return { value: chunk, done: false };
@@ -31093,7 +31096,7 @@ var ResponseStream = class _ResponseStream extends EventStream {
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve4, reject) => readQueue.push({ resolve: resolve4, reject })).then((event2) => event2 ? { value: event2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve5, reject) => readQueue.push({ resolve: resolve5, reject })).then((event2) => event2 ? { value: event2, done: false } : { value: void 0, done: true });
         }
         const event = pushQueue.shift();
         return { value: event, done: false };
@@ -32515,8 +32518,8 @@ async function defaultParseResponse2(props) {
 }
 var APIPromise2 = class _APIPromise extends Promise {
   constructor(responsePromise, parseResponse2 = defaultParseResponse2) {
-    super((resolve4) => {
-      resolve4(null);
+    super((resolve5) => {
+      resolve5(null);
     });
     this.responsePromise = responsePromise;
     this.parseResponse = parseResponse2;
@@ -33077,7 +33080,7 @@ var startsWithSchemeRegexp2 = new RegExp("^(?:[a-z]+:)?//", "i");
 var isAbsoluteURL2 = (url) => {
   return startsWithSchemeRegexp2.test(url);
 };
-var sleep2 = (ms) => new Promise((resolve4) => setTimeout(resolve4, ms));
+var sleep2 = (ms) => new Promise((resolve5) => setTimeout(resolve5, ms));
 var validatePositiveInteger2 = (name, n2) => {
   if (typeof n2 !== "number" || !Number.isInteger(n2)) {
     throw new AnthropicError(`${name} must be an integer`);
@@ -33788,12 +33791,12 @@ var PromptCachingBetaMessageStream = class _PromptCachingBetaMessageStream {
       }
       return this._emit("error", new AnthropicError(String(error2)));
     });
-    __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_connectedPromise, new Promise((resolve4, reject) => {
-      __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_resolveConnectedPromise, resolve4, "f");
+    __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_connectedPromise, new Promise((resolve5, reject) => {
+      __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_resolveConnectedPromise, resolve5, "f");
       __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_rejectConnectedPromise, reject, "f");
     }), "f");
-    __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_endPromise, new Promise((resolve4, reject) => {
-      __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_resolveEndPromise, resolve4, "f");
+    __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_endPromise, new Promise((resolve5, reject) => {
+      __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_resolveEndPromise, resolve5, "f");
       __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_rejectEndPromise, reject, "f");
     }), "f");
     __classPrivateFieldGet14(this, _PromptCachingBetaMessageStream_connectedPromise, "f").catch(() => {
@@ -33922,11 +33925,11 @@ var PromptCachingBetaMessageStream = class _PromptCachingBetaMessageStream {
    *   const message = await stream.emitted('message') // rejects if the stream errors
    */
   emitted(event) {
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_catchingPromiseCreated, true, "f");
       if (event !== "error")
         this.once("error", reject);
-      this.once(event, resolve4);
+      this.once(event, resolve5);
     });
   }
   async done() {
@@ -34153,7 +34156,7 @@ var PromptCachingBetaMessageStream = class _PromptCachingBetaMessageStream {
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve4, reject) => readQueue.push({ resolve: resolve4, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve5, reject) => readQueue.push({ resolve: resolve5, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
         }
         const chunk = pushQueue.shift();
         return { value: chunk, done: false };
@@ -34307,12 +34310,12 @@ var MessageStream = class _MessageStream {
       }
       return this._emit("error", new AnthropicError(String(error2)));
     });
-    __classPrivateFieldSet13(this, _MessageStream_connectedPromise, new Promise((resolve4, reject) => {
-      __classPrivateFieldSet13(this, _MessageStream_resolveConnectedPromise, resolve4, "f");
+    __classPrivateFieldSet13(this, _MessageStream_connectedPromise, new Promise((resolve5, reject) => {
+      __classPrivateFieldSet13(this, _MessageStream_resolveConnectedPromise, resolve5, "f");
       __classPrivateFieldSet13(this, _MessageStream_rejectConnectedPromise, reject, "f");
     }), "f");
-    __classPrivateFieldSet13(this, _MessageStream_endPromise, new Promise((resolve4, reject) => {
-      __classPrivateFieldSet13(this, _MessageStream_resolveEndPromise, resolve4, "f");
+    __classPrivateFieldSet13(this, _MessageStream_endPromise, new Promise((resolve5, reject) => {
+      __classPrivateFieldSet13(this, _MessageStream_resolveEndPromise, resolve5, "f");
       __classPrivateFieldSet13(this, _MessageStream_rejectEndPromise, reject, "f");
     }), "f");
     __classPrivateFieldGet15(this, _MessageStream_connectedPromise, "f").catch(() => {
@@ -34441,11 +34444,11 @@ var MessageStream = class _MessageStream {
    *   const message = await stream.emitted('message') // rejects if the stream errors
    */
   emitted(event) {
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       __classPrivateFieldSet13(this, _MessageStream_catchingPromiseCreated, true, "f");
       if (event !== "error")
         this.once("error", reject);
-      this.once(event, resolve4);
+      this.once(event, resolve5);
     });
   }
   async done() {
@@ -34672,7 +34675,7 @@ var MessageStream = class _MessageStream {
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve4, reject) => readQueue.push({ resolve: resolve4, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve5, reject) => readQueue.push({ resolve: resolve5, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
         }
         const chunk = pushQueue.shift();
         return { value: chunk, done: false };
@@ -35090,24 +35093,25 @@ var ClaudeCliProvider = class {
 
 (${imagePaths.length} image(s) are attached. Read each one with the Read tool before answering: ${imagePaths.join(", ")})` : "";
       const prompt = messages.filter((m2) => m2.role !== "system").map((m2) => m2.role === "assistant" ? `Assistant: ${m2.content}` : m2.content).join("\n\n") + imageNote;
-      const base = "You are a member of a model council. Answer the question directly, neutrally, and concisely. " + (imagePaths.length ? "Use the Read tool only to view the attached image(s); do not use it for anything else, and do not ask follow-up questions." : "Do not use tools or ask follow-up questions.");
+      const repoRoot = opts.fullRepoAccess;
+      const toolNote = repoRoot ? `You have read-only access to explore the repository at ${repoRoot} using the Read, Grep, and Glob tools to inform your answer. Do not attempt to run commands or modify any files, and do not ask follow-up questions.` + (imagePaths.length ? ` Also use Read to view the attached image(s): ${imagePaths.join(", ")}.` : "") : imagePaths.length ? "Use the Read tool only to view the attached image(s); do not use it for anything else, and do not ask follow-up questions." : "Do not use tools or ask follow-up questions.";
+      const base = "You are a member of a model council. Answer the question directly, neutrally, and concisely. " + toolNote;
       const systemText = [
         base,
         systemParts,
         opts.jsonMode ? "Respond with valid JSON only." : ""
       ].filter(Boolean).join("\n\n");
+      const toolsValue = repoRoot ? "Read,Grep,Glob" : imagePaths.length ? "Read" : "";
+      const addDirs = [imageDir, repoRoot].filter((d2) => !!d2);
       const args = [
         "-p",
         "--model",
         model,
         "--output-format",
         "json",
-        // No images: fully locked down (no tools at all). With images: the
-        // single narrowest tool needed (Read), scoped to a directory holding
-        // nothing but the image(s) — see the file header for why this is safe.
         "--tools",
-        imagePaths.length ? "Read" : "",
-        ...imageDir ? ["--add-dir", imageDir] : [],
+        toolsValue,
+        ...addDirs.length ? ["--add-dir", ...addDirs] : [],
         "--strict-mcp-config",
         // no MCP servers (no recursion into this plugin)
         "--no-session-persistence",
@@ -35147,7 +35151,7 @@ var ClaudeCliProvider = class {
     }
   }
   run(args, input, timeoutMs) {
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       const env = { ...process.env };
       delete env.ANTHROPIC_API_KEY;
       delete env.ANTHROPIC_AUTH_TOKEN;
@@ -35182,7 +35186,7 @@ var ClaudeCliProvider = class {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve4({ code: code ?? 1, stdout, stderr });
+        resolve5({ code: code ?? 1, stdout, stderr });
       });
       if (input !== void 0) child.stdin.write(input);
       child.stdin.end();
@@ -35281,7 +35285,8 @@ var CodexCliProvider = class {
   async complete(model, messages, opts = {}) {
     const systemParts = messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n");
     const convo = messages.filter((m2) => m2.role !== "system").map((m2) => m2.role === "assistant" ? `Assistant: ${m2.content}` : m2.content).join("\n\n");
-    const preamble = "You are a member of a model council. Answer the question directly, neutrally, and concisely. Do not run commands or modify files \u2014 just answer.";
+    const repoRoot = opts.fullRepoAccess;
+    const preamble = "You are a member of a model council. Answer the question directly, neutrally, and concisely. " + (repoRoot ? `You have read-only access to explore the repository at ${repoRoot} \u2014 the sandbox will not let you write or modify anything regardless. Stay inside ${repoRoot}; do not read files elsewhere on the system. Do not run commands that mutate state; just explore and answer.` : "Do not run commands or modify files \u2014 just answer.");
     const prompt = [
       preamble,
       systemParts,
@@ -35301,7 +35306,8 @@ var CodexCliProvider = class {
       "-c",
       "approval_policy=never",
       "-C",
-      dir,
+      repoRoot || dir,
+      // real repo root in full-repo-access mode; empty dir otherwise
       "-o",
       outFile
     ];
@@ -35344,7 +35350,7 @@ var CodexCliProvider = class {
     }
   }
   run(args, input, timeoutMs) {
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       const env = { ...process.env };
       delete env.OPENAI_API_KEY;
       delete env.CODEX_API_KEY;
@@ -35379,7 +35385,7 @@ var CodexCliProvider = class {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve4({ code: code ?? 1, stdout, stderr });
+        resolve5({ code: code ?? 1, stdout, stderr });
       });
       if (input !== void 0) child.stdin.write(input);
       child.stdin.end();
@@ -35521,7 +35527,7 @@ var GrokCliProvider = class {
     return text;
   }
   run(args, input, timeoutMs) {
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       const env = { ...process.env };
       delete env.XAI_API_KEY;
       const child = (0, import_node_child_process3.spawn)(this.command, args, {
@@ -35554,7 +35560,7 @@ var GrokCliProvider = class {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve4({ code: code ?? 1, stdout, stderr });
+        resolve5({ code: code ?? 1, stdout, stderr });
       });
       if (input !== void 0) child.stdin.write(input);
       child.stdin.end();
@@ -35677,7 +35683,7 @@ var EmptyCompletionError = class extends Error {
     this.name = "EmptyCompletionError";
   }
 };
-var sleep3 = (ms) => new Promise((resolve4) => setTimeout(resolve4, ms));
+var sleep3 = (ms) => new Promise((resolve5) => setTimeout(resolve5, ms));
 async function pooled(tasks, limit2) {
   if (tasks.length === 0) return;
   const width = limit2 && limit2 > 0 ? Math.min(limit2, tasks.length) : tasks.length;
@@ -35726,7 +35732,12 @@ async function queryMembersVarying(promptFor, members, runtime, opts = {}, image
           member.provider,
           member.modelId.model,
           [userMessage],
-          { maxTokens: runtime.maxTokens, timeoutMs: runtime.requestTimeoutMs, ...opts },
+          {
+            maxTokens: runtime.maxTokens,
+            timeoutMs: runtime.requestTimeoutMs,
+            fullRepoAccess: runtime.fullRepoAccess,
+            ...opts
+          },
           runtime.retries
         );
         results[i2] = { modelId: member.modelId, label, response, latencyMs: Date.now() - t0 };
@@ -36536,10 +36547,11 @@ var CouncilOrchestrator = class {
     return this.modelCache.filter((m2) => m2.provider === "ollama" && !isEmbeddingModel(m2)).map((m2) => ({ provider: "ollama", serverId: m2.serverId, model: m2.model }));
   }
   /** Ask the council and return a result in the configured (or overridden) mode */
-  async ask(question, modeOverride, maxRoundsOverride, verboseOverride, images, onProgress) {
+  async ask(question, modeOverride, maxRoundsOverride, verboseOverride, images, onProgress, fullRepoAccessRepo) {
     const mode = modeOverride ?? this.config.responseMode;
     const maxRounds = maxRoundsOverride ?? this.config.maxDeconflictRounds;
     const verbose = verboseOverride ?? this.runtime.verbose;
+    const runtime = fullRepoAccessRepo ? { ...this.runtime, fullRepoAccess: fullRepoAccessRepo } : this.runtime;
     let memberIds = this.config.members.map((m2) => m2.modelId);
     let autoUsed = false;
     if (memberIds.length === 0 && this.config.autoCouncil) {
@@ -36579,7 +36591,7 @@ var CouncilOrchestrator = class {
           m2.provider.seedVisionCache({ [m2.modelId.model]: persistedVision[label] });
         }
       }
-      const checked = await checkVisionPooled(members, this.runtime, onProgress);
+      const checked = await checkVisionPooled(members, runtime, onProgress);
       const visionMembers = checked.filter((c2) => c2.vision).map((c2) => c2.member);
       const skippedNonVision = checked.filter((c2) => !c2.vision).map((c2) => modelIdLabel(c2.member.modelId));
       const nextPersisted = { ...persistedVision };
@@ -36606,7 +36618,7 @@ var CouncilOrchestrator = class {
         skippedNonVision
       };
     }
-    const responses = await queryMembers(question, queryTargets, this.runtime, {}, images, onProgress);
+    const responses = await queryMembers(question, queryTargets, runtime, {}, images, onProgress);
     if (mode === "individual") {
       return {
         mode: "individual",
@@ -36655,7 +36667,7 @@ var CouncilOrchestrator = class {
           members: queryTargets,
           judgeModelId,
           judgeProvider,
-          runtime: this.runtime,
+          runtime,
           verbose
         });
         return visionRouting ? { ...pooled2, visionRouting } : pooled2;
@@ -36667,7 +36679,7 @@ var CouncilOrchestrator = class {
           members: queryTargets,
           judgeModelId,
           judgeProvider,
-          runtime: this.runtime,
+          runtime,
           verbose
         });
         return visionRouting ? { ...dialectic, visionRouting } : dialectic;
@@ -36697,7 +36709,7 @@ var CouncilOrchestrator = class {
         members: queryTargets,
         judgeModelId,
         judgeProvider,
-        runtime: this.runtime,
+        runtime,
         verbose
       });
       return visionRouting ? { ...dec, visionRouting } : dec;
@@ -36722,7 +36734,7 @@ var CouncilOrchestrator = class {
 var import_node_child_process4 = require("node:child_process");
 var isCloudModel = (m2) => m2.endsWith(":cloud") || m2.endsWith("-cloud");
 function runCli(command, args, opts = { timeoutMs: 8e3 }) {
-  return new Promise((resolve4) => {
+  return new Promise((resolve5) => {
     const env = { ...process.env };
     if (opts.stripKeys === "anthropic") {
       delete env.ANTHROPIC_API_KEY;
@@ -36739,7 +36751,7 @@ function runCli(command, args, opts = { timeoutMs: 8e3 }) {
     try {
       child = (0, import_node_child_process4.spawn)(command, args, { env, stdio: ["pipe", "pipe", "pipe"] });
     } catch {
-      resolve4({ code: 127, stdout: "", stderr: "spawn failed" });
+      resolve5({ code: 127, stdout: "", stderr: "spawn failed" });
       return;
     }
     let stdout = "", stderr = "", settled = false;
@@ -36747,7 +36759,7 @@ function runCli(command, args, opts = { timeoutMs: 8e3 }) {
       if (!settled) {
         settled = true;
         clearTimeout(timer);
-        resolve4(r2);
+        resolve5(r2);
       }
     };
     const timer = setTimeout(() => {
@@ -36771,8 +36783,8 @@ function runCli(command, args, opts = { timeoutMs: 8e3 }) {
 }
 async function withTimeout(p2, ms, fallback) {
   let timer;
-  const t2 = new Promise((resolve4) => {
-    timer = setTimeout(() => resolve4(fallback), ms);
+  const t2 = new Promise((resolve5) => {
+    timer = setTimeout(() => resolve5(fallback), ms);
   });
   try {
     return await Promise.race([p2, t2]);
@@ -36913,16 +36925,17 @@ var import_node_util = require("node:util");
 var import_node_path5 = require("node:path");
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process5.execFile);
 var MAX_DIFF_BYTES = 512 * 1024;
+var NO_HELPERS = ["--no-ext-diff", "--no-textconv"];
 function diffArgsForRef(ref) {
   switch (ref) {
     case "staged":
-      return ["diff", "--cached"];
+      return ["diff", ...NO_HELPERS, "--cached"];
     case "unstaged":
-      return ["diff"];
+      return ["diff", ...NO_HELPERS];
     case "uncommitted":
-      return ["diff", "HEAD"];
+      return ["diff", ...NO_HELPERS, "HEAD"];
     default:
-      return ["diff", "--end-of-options", ref];
+      return ["diff", ...NO_HELPERS, "--end-of-options", ref];
   }
 }
 async function assertGitRepo(repoPath) {
@@ -37174,13 +37187,15 @@ async function runCouncil(input, onProgress) {
     gitRepo: input.git_repo
   });
   const images = await loadImages(input.images);
+  const fullRepoAccessRepo = input.full_repo_access ? (0, import_node_path8.resolve)(input.git_repo?.trim() || process.cwd()) : void 0;
   return orchestrator.ask(
     question,
     input.mode,
     input.max_deconflict_rounds,
     input.verbose,
     images.length ? images : void 0,
-    onProgress
+    onProgress,
+    fullRepoAccessRepo
   );
 }
 var labelsToMembers = (labels) => labels.flatMap((s2) => {
@@ -37251,6 +37266,9 @@ var AskCouncilInput = external_exports.object({
     'Auto-attach a local `git diff` as context \u2014 for repo reviews, instead of hand-listing every changed file via "files". One of "uncommitted" (staged + unstaged vs HEAD), "staged", "unstaged", or any git revision/range (e.g. "main..HEAD", "HEAD~3..HEAD"). Errors clearly if the ref/repo is invalid, there are no changes, or the diff is too large (> 512 KB \u2014 narrow the range or use "files" instead).'
   ),
   git_repo: external_exports.string().optional().describe("Repo directory to run git_ref in. Defaults to the server's working directory."),
+  full_repo_access: external_exports.boolean().optional().describe(
+    "WARNING: grants claude-cli/codex-cli council members repo exploration for a repo-wide review, instead of their normal fully locked-down mode \u2014 enforced DIFFERENTLY per provider. claude-cli gets Read/Grep/Glob CONFINED to the repo root (--add-dir is a real enforced boundary). codex-cli points its cwd at the real repo but its read-only sandbox does NOT confine reads to it \u2014 it can read any file the OS user can read, anywhere on the machine (this is pre-existing codex-cli behavior, not added by this flag; writes stay blocked everywhere). Defaults to false; never set true without the user's consent for an interactive call (safe to set autonomously for an unattended review step you already control, e.g. an end-of-workflow review). Other council members (openai/anthropic/xai/ollama/self-hosted, and grok-cli) are unaffected \u2014 they have no filesystem access to grant. Repo root is git_repo if set, else the server's working directory."
+  ),
   images: external_exports.array(external_exports.string()).optional().describe(
     "Optional local image paths (png/jpg/jpeg/gif/webp). Auto-detected vision-capable council members are queried with the image(s); members without vision support are automatically skipped for this call (see visionRouting in the result). Caps: 8 MB/image, 24 MB total, 6 images."
   )
@@ -37317,7 +37335,7 @@ var TOOLS = [
   {
     name: "ask_council",
     annotations: { title: "Ask the council", readOnlyHint: false },
-    description: 'Send a question to the model council and get a structured response. Mode: individual (each model answers separately), categorized (judge groups responses into agreement/complementary/conflicting), deconflicted (iterative loop \u2014 judge orchestrates re-questioning until conflicts resolve, returns a deconfliction score 0\u2013100%), pooled (Delphi-style \u2014 members reconsider against a neutral, deduplicated, attribution-free pool of answers; no winner is forced, so genuine divergence is preserved), or dialectic (thesis/antithesis/synthesis \u2014 members defend their pick and critique the rest, the judge compiles a pros/cons dossier per option, then members re-select a ranked top-3). Attach images to ask a vision question \u2014 only auto-detected vision-capable members are queried; the rest are skipped and reported in visionRouting. For a repo review, pass git_ref (e.g. "uncommitted", "main..HEAD") instead of hand-listing files \u2014 the server runs `git diff` locally and attaches it as context.',
+    description: 'Send a question to the model council and get a structured response. Mode: individual (each model answers separately), categorized (judge groups responses into agreement/complementary/conflicting), deconflicted (iterative loop \u2014 judge orchestrates re-questioning until conflicts resolve, returns a deconfliction score 0\u2013100%), pooled (Delphi-style \u2014 members reconsider against a neutral, deduplicated, attribution-free pool of answers; no winner is forced, so genuine divergence is preserved), or dialectic (thesis/antithesis/synthesis \u2014 members defend their pick and critique the rest, the judge compiles a pros/cons dossier per option, then members re-select a ranked top-3). Attach images to ask a vision question \u2014 only auto-detected vision-capable members are queried; the rest are skipped and reported in visionRouting. For a repo review, pass git_ref (e.g. "uncommitted", "main..HEAD") instead of hand-listing files \u2014 the server runs `git diff` locally and attaches it as context. For a full repo-wide review (not just a diff), full_repo_access (default false, WARNING: read access to the whole repo \u2014 see its param description) grants claude-cli/codex-cli members read-only browse/read access.',
     inputSchema: {
       type: "object",
       required: ["question"],
@@ -37355,6 +37373,10 @@ var TOOLS = [
         git_repo: {
           type: "string",
           description: "Repo directory to run git_ref in. Defaults to the working directory."
+        },
+        full_repo_access: {
+          type: "boolean",
+          description: "WARNING: grants claude-cli/codex-cli repo exploration for a repo-wide review \u2014 ENFORCED DIFFERENTLY per provider. claude-cli: Read/Grep/Glob CONFINED to the repo root (real enforced boundary). codex-cli: cwd points at the repo, but its read-only sandbox does NOT confine reads to it \u2014 can read anywhere the OS user can (pre-existing behavior, not added by this flag; writes stay blocked everywhere). Defaults false; confirm with the user before setting true for an interactive call (an unattended review step you already control, e.g. end-of-workflow, may set it autonomously). Other members are unaffected. Repo root: git_repo, else cwd."
         },
         images: {
           type: "array",
@@ -37402,6 +37424,10 @@ var TOOLS = [
         git_repo: {
           type: "string",
           description: "Repo directory to run git_ref in. Defaults to the working directory."
+        },
+        full_repo_access: {
+          type: "boolean",
+          description: "WARNING: grants repo-wide read access to claude-cli/codex-cli members \u2014 same behavior as ask_council."
         },
         images: {
           type: "array",
@@ -37459,7 +37485,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.19"
+    version: "0.2.20"
   },
   {
     capabilities: { tools: {} },

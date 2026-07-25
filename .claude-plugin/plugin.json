@@ -1,7 +1,7 @@
 {
   "name": "model-council",
-  "description": "Ask a council of local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, Groq) AI models. Get individual, categorized (agreement / complementary / conflicting), or fully deconflicted answers with a resolution score.",
-  "version": "0.2.16",
+  "description": "Ask a council of local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, X.AI Grok) AI models. Get individual, categorized (agreement / complementary / conflicting), or fully deconflicted answers with a resolution score.",
+  "version": "0.2.17",
   "author": {
     "name": "Tom Sarihan"
   },
@@ -85,10 +85,10 @@
       "description": "Optional. Enables Anthropic Claude models in the council.",
       "sensitive": true
     },
-    "groq_api_key": {
+    "xai_api_key": {
       "type": "string",
-      "title": "Groq API key",
-      "description": "Optional. Enables Groq-hosted models (fast inference) in the council.",
+      "title": "X.AI (Grok) API key",
+      "description": "Optional. Enables X.AI's Grok models in the council.",
       "sensitive": true
     },
     "vllm_servers": {

@@ -37,7 +37,7 @@ const limits = resolvePoolLimits({ chatgpt: 'plus', claude: 'pro', ollama: 'max'
 check('chatgpt pool = 6', limits.chatgpt === 6, `got ${limits.chatgpt}`);
 check('claude pool = 2', limits.claude === 2, `got ${limits.claude}`);
 check('ollama-cloud pool = 10', limits['ollama-cloud'] === 10, `got ${limits['ollama-cloud']}`);
-check('api pools = apiConcurrency default', limits.openai === subs.defaults.apiConcurrency && limits.groq === subs.defaults.apiConcurrency);
+check('api pools = apiConcurrency default', limits.openai === subs.defaults.apiConcurrency && limits.xai === subs.defaults.apiConcurrency);
 check('local pool = default 1', limits.local === subs.defaults.localConcurrency);
 const overridden = resolvePoolLimits({ chatgpt: 'plus', claude: 'pro', ollama: 'max' }, { cloud: 2, local: 0 });
 check('explicit cloud override collapses cloud pools', overridden.chatgpt === 2 && overridden.claude === 2 && overridden['ollama-cloud'] === 2 && overridden.openai === 2);
@@ -51,7 +51,7 @@ check('codex-cli → chatgpt', poolKey(member('codex-cli', 'gpt-5.6-sol')) === '
 check('claude-cli → claude', poolKey(member('claude-cli', 'opus')) === 'claude');
 check('openai → openai', poolKey(member('openai', 'gpt-4o')) === 'openai');
 check('anthropic → anthropic', poolKey(member('anthropic', 'claude-opus-4-8')) === 'anthropic');
-check('groq → groq', poolKey(member('groq', 'llama-3')) === 'groq');
+check('xai → xai', poolKey(member('xai', 'grok-4')) === 'xai');
 check('ollama :cloud → ollama-cloud', poolKey(member('ollama', 'glm-5.2:cloud')) === 'ollama-cloud');
 check('ollama -cloud → ollama-cloud', poolKey(member('ollama', 'qwen3-coder:480b-cloud')) === 'ollama-cloud');
 check('ollama local → local', poolKey(member('ollama', 'gemma4:31b-mlx')) === 'local');
@@ -79,7 +79,7 @@ console.log('▶ per-provider pools drain independently at their own limits');
   ];
   const runtime = {
     maxTokens: 50, retries: 1, cloudConcurrency: 3, localConcurrency: 1, verbose: false,
-    poolLimits: { chatgpt: 1, claude: 1, openai: 6, anthropic: 1, groq: 1, 'ollama-cloud': 3, local: 1 },
+    poolLimits: { chatgpt: 1, claude: 1, openai: 6, anthropic: 1, xai: 1, 'ollama-cloud': 3, local: 1 },
   };
   const res = await queryMembersVarying(() => 'q', members, runtime);
   check('drain: all 10 members answered', res.length === 10 && res.every(r => r.response === 'ok'));
@@ -96,7 +96,7 @@ console.log('▶ openai-compatible baseURL normalization (vLLM/SGLang/TRT-LLM /v
   check('bare host:port → append /v1', openaiBaseURL('http://192.168.8.234:30000') === 'http://192.168.8.234:30000/v1');
   check('trailing slash handled', openaiBaseURL('http://h:30000/') === 'http://h:30000/v1');
   check('already /v1 → unchanged (openai)', openaiBaseURL('https://api.openai.com/v1') === 'https://api.openai.com/v1');
-  check('already /v1 → unchanged (groq path)', openaiBaseURL('https://api.groq.com/openai/v1') === 'https://api.groq.com/openai/v1');
+  check('already /v1 → unchanged (xai path)', openaiBaseURL('https://api.x.ai/v1') === 'https://api.x.ai/v1');
 }
 
 console.log('▶ stripThinkBlocks (reasoning-model <think> leakage)');
@@ -206,7 +206,7 @@ console.log('▶ per-provider wire format for images (the "wrong format = garble
   check('ollama: no images → no images field', olNone[0].images === undefined);
 
   // OpenAI-compatible: content becomes an array with a text part + an
-  // image_url part carrying a data: URI (this is the part vLLM/SGLang/OpenAI/Groq
+  // image_url part carrying a data: URI (this is the part vLLM/SGLang/OpenAI/X.AI
   // all expect; passing bare base64 here would not be recognized as an image).
   const oa = toOpenAIMessages(withImage);
   check('openai: content becomes a multipart array', Array.isArray(oa[0].content));

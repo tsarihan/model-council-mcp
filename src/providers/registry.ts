@@ -26,7 +26,7 @@ export class ProviderRegistry {
           provider = new CodexCliProvider(srv);
           break;
         case 'openai':
-        case 'groq':
+        case 'xai':
         case 'vllm':
         case 'trtllm':
         case 'sglang':

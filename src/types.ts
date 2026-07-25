@@ -4,7 +4,7 @@ export type ProviderType =
   | 'ollama'
   | 'openai'
   | 'anthropic'
-  | 'groq'
+  | 'xai'
   | 'vllm'
   | 'trtllm'
   | 'sglang'
@@ -68,7 +68,7 @@ export type PoolKey =
   | 'claude'
   | 'openai'
   | 'anthropic'
-  | 'groq'
+  | 'xai'
   | 'ollama-cloud'
   | 'local';
 

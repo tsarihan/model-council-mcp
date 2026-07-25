@@ -1,6 +1,6 @@
 /**
- * Covers: OpenAI, Groq, vLLM, TRT-LLM, SGLang — all speak the OpenAI Chat
- * Completions API.  The only difference is the base URL, auth header, and
+ * Covers: OpenAI, X.AI (Grok), vLLM, TRT-LLM, SGLang — all speak the OpenAI
+ * Chat Completions API. The only difference is the base URL, auth header, and
  * which models are available via /v1/models.
  */
 import OpenAI from 'openai';
@@ -11,20 +11,9 @@ import {
 } from './base.js';
 import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
 
-// Known-static model lists for cloud providers that don't enumerate via API
-// (OpenAI's /models endpoint returns many but we surface common ones)
-const GROQ_MODELS = [
-  'llama-3.3-70b-versatile',
-  'llama-3.1-8b-instant',
-  'mixtral-8x7b-32768',
-  'gemma2-9b-it',
-  'llama3-70b-8192',
-  'llama3-8b-8192',
-];
-
 /**
  * The OpenAI SDK appends `/models`, `/chat/completions`, etc. to its baseURL, so
- * the baseURL must already include the API version segment. OpenAI/Groq base
+ * the baseURL must already include the API version segment. OpenAI/X.AI base
  * URLs carry `/v1`; self-hosted vLLM/SGLang/TRT-LLM are configured as bare
  * `host:port`, so append `/v1` when it's missing (they serve at /v1/*).
  */
@@ -216,15 +205,6 @@ export class OpenAICompatibleProvider implements Provider {
 
   async listModels(): Promise<ModelInfo[]> {
     const type = this.config.type;
-
-    // Groq: return curated list (their /models endpoint is rate-limited)
-    if (type === 'groq') {
-      return GROQ_MODELS.map(m => ({
-        provider: 'groq' as ProviderType,
-        model: m,
-        label: m,
-      }));
-    }
 
     try {
       // Generous enough not to drop a slow-enumerating server, still bounded.

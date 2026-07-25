@@ -1,6 +1,6 @@
 # model-council-mcp
 
-An MCP server that routes a question to a **council** of AI models — local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, Groq) — and synthesizes their answers in five configurable modes:
+An MCP server that routes a question to a **council** of AI models — local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, X.AI Grok) — and synthesizes their answers in five configurable modes:
 
 | Mode | What you get |
 |---|---|
@@ -65,7 +65,7 @@ claude --plugin-dir /path/to/model-council-mcp
 | Judge model | Categorizer/deconflicter, or `auto` (largest) | `auto` |
 | Default response mode | `individual` / `categorized` / `deconflicted` / `pooled` / `dialectic` | `categorized` |
 | Max deconfliction rounds | 1–10 | `3` |
-| OpenAI / Anthropic / Groq API key | Enable cloud models (stored in keychain) | — |
+| OpenAI / Anthropic / X.AI API key | Enable cloud models (stored in keychain) | — |
 | vLLM / TRT-LLM / SGLang servers | `name:host:port` entries | — |
 | Max response tokens | Tokens per completion | `16000` |
 | Cloud concurrency (override) | Optional; caps all cloud pools, overriding the per-tier limits | *(unset → tiers)* |
@@ -132,7 +132,7 @@ Or add to `~/.claude.json` → `mcpServers`:
 | `OLLAMA_ADDRESS` | Ollama server URL | `http://localhost:11434` |
 | `OPENAI_API_KEY` | Enables OpenAI models | — |
 | `ANTHROPIC_API_KEY` | Enables Anthropic Claude models | — |
-| `GROQ_API_KEY` | Enables Groq models | — |
+| `XAI_API_KEY` | Enables X.AI Grok models | — |
 | `VLLM_SERVERS` | vLLM servers (see below) | — |
 | `TRTLLM_SERVERS` | TRT-LLM servers | — |
 | `SGLANG_SERVERS` | SGLang servers | — |
@@ -201,7 +201,7 @@ Full URLs also work: `gpu3:http://10.0.0.5:9000`
 | Variable | Description | Default |
 |---|---|---|
 | `MAX_TOKENS` | Max tokens requested per model completion | `16000` |
-| `CLOUD_CONCURRENCY` | Max simultaneous requests to cloud members (Ollama cloud `:cloud`/`-cloud`, OpenAI, Anthropic, Groq). Ollama cloud needs Pro (3 concurrent) or Max (10) | `3` |
+| `CLOUD_CONCURRENCY` | Max simultaneous requests to cloud members (Ollama cloud `:cloud`/`-cloud`, OpenAI, Anthropic, X.AI). Ollama cloud needs Pro (3 concurrent) or Max (10) | `3` |
 | `LOCAL_CONCURRENCY` | Max simultaneous requests to local models; `1` runs them one at a time to avoid contention, `0` = unlimited | `1` |
 | `COMPLETION_RETRIES` | Attempts per completion before giving up on an empty/failed response | `3` |
 | `DECONFLICT_VERBOSE` | `true` → deconflicted results include per-round detail by default | `false` |
@@ -222,7 +222,7 @@ ollama:mistral:7b-instruct-q4_K_M
 openai:gpt-4o
 openai:o1-mini
 anthropic:claude-opus-4-5
-groq:llama-3.3-70b-versatile
+xai:grok-4
 vllm/gpu1:meta-llama/Meta-Llama-3-8B-Instruct
 trtllm/trt-main:mistralai/Mistral-7B-v0.1
 sglang/sgl1:deepseek-ai/DeepSeek-R1
@@ -288,7 +288,7 @@ Send a question to the full council.
 
 **Attach images (vision).** Add `"images"` (an array of local png/jpg/jpeg/gif/webp paths) to ask a vision question. Vision support is auto-detected per member with a **two-stage check**, then cached:
 
-1. **Cheap negative prefilter** (per provider): Ollama's `/api/show` `capabilities` field; OpenAI-compatible (vLLM/SGLang/TRT-LLM/OpenAI/Groq) and Anthropic send a real functional probe (a small test image + `max_tokens: 1`, since neither advertises vision via metadata). A "no" here is trustworthy and skips stage 2. `claude-cli`/`codex-cli` have no cheap signal and go straight to stage 2.
+1. **Cheap negative prefilter** (per provider): Ollama's `/api/show` `capabilities` field; OpenAI-compatible (vLLM/SGLang/TRT-LLM/OpenAI/X.AI) and Anthropic send a real functional probe (a small test image + `max_tokens: 1`, since neither advertises vision via metadata). A "no" here is trustworthy and skips stage 2. `claude-cli`/`codex-cli` have no cheap signal and go straight to stage 2.
 2. **Behavioral OCR-challenge confirmation**: a stage-1 "yes" is only trusted once the model has proven it can actually read pixels — it's sent a small, high-contrast rendered image containing a random 4-digit code (10 are pre-generated; the exact code is never in the prompt) and graded on whether its reply contains that exact code. This step exists because a stage-1 "yes" is **not** reliable on its own: some OpenAI-compatible servers accept an `image_url` part and silently ignore it for a non-vision model (confirmed live against a self-hosted SGLang endpoint — 200 OK, fabricated answer), and Ollama's `capabilities` metadata can be stale for custom/quantized builds (MLX conversions, GGUF imports) that dropped the vision projector while the tag still says `vision` (documented upstream: ollama#9967, and reproduced live with a local `-mlx` model that claimed vision support but denied ever receiving an image). Two challenge images are tried per model (pass if either is read correctly) to absorb one unlucky misread; only a clean, non-empty wrong answer counts as a real failure — a timeout or empty response is treated as inconclusive and retried next time, never cached as a false negative.
 
 `codex-cli` attaches images via its first-party `-i/--image` flag (written to a temp file, passed directly — no workaround needed). `claude-cli` has no image flag, so images go to a narrowly-scoped `--tools Read --add-dir <freshTempDir>` (a fresh temp directory containing nothing but the image; `--add-dir` is an enforced permission boundary, verified empirically — a Read attempt outside the granted directory is denied by the CLI itself, not merely discouraged; every other lockdown — no MCP, no other tools, no session persistence — is unchanged, and calls with no images keep the original fully-closed `--tools ""`).
@@ -496,10 +496,10 @@ Standalone MCP installs call the `setup_council` / `council_status` **tools** di
         "OLLAMA_ADDRESS": "http://localhost:11434",
         "OPENAI_API_KEY": "sk-...",
         "ANTHROPIC_API_KEY": "sk-ant-...",
-        "GROQ_API_KEY": "gsk_...",
+        "XAI_API_KEY": "xai-...",
         "VLLM_SERVERS": "gpu1:192.168.1.10:8000,gpu2:192.168.1.10:8001",
         "SGLANG_SERVERS": "sgl1:192.168.1.30:30000",
-        "COUNCIL_MODELS": "ollama:llama3,ollama:mistral,openai:gpt-4o,anthropic:claude-sonnet-4-5,groq:llama-3.3-70b-versatile",
+        "COUNCIL_MODELS": "ollama:llama3,ollama:mistral,openai:gpt-4o,anthropic:claude-sonnet-4-5,xai:grok-4",
         "JUDGE_MODEL": "anthropic:claude-opus-4-5",
         "RESPONSE_MODE": "deconflicted",
         "MAX_DECONFLICT_ROUNDS": "3"
@@ -536,7 +536,7 @@ This design is informed by *The Mirror Law*, which shows that a learner trained 
 **How is this different from `claude-council` (hex/claude-council)?**
 They solve different problems. `claude-council` gives Claude Code the opinions of *other* cloud coding agents (Gemini, GPT/Codex, Grok, Perplexity) with a rich coding-workflow UX (roles, vision, tmux streaming). **model-council** convenes a panel across your **own** infrastructure — local **Ollama**, self-hosted **vLLM / SGLang / TensorRT-LLM**, *and* your Claude + ChatGPT subscriptions — and reconciles it with decision-theoretic modes (Delphi **pooled**, **dialectic**, scored **deconfliction**), not just side-by-side + debate. Concretely, only model-council: (a) runs fully **local / offline / private**, (b) auto-discovers self-hosted models and their **context windows**, and (c) puts **Claude itself** on the panel. It also ships as a **standalone MCP server**, so it works in Claude Desktop and any MCP client, not only Claude Code.
 
-**Do I need API keys?** No. Local Ollama and self-hosted servers need none; Claude and ChatGPT members run under your existing subscriptions via the first-party `claude` / `codex` CLIs. API keys are only for the optional OpenAI/Anthropic/Groq cloud members.
+**Do I need API keys?** No. Local Ollama and self-hosted servers need none; Claude and ChatGPT members run under your existing subscriptions via the first-party `claude` / `codex` CLIs. API keys are only for the optional OpenAI/Anthropic/X.AI cloud members.
 
 **Does it work in Cowork / claude.ai?** No — it executes your local `claude`/`codex` CLIs and reaches localhost/LAN model servers, which cloud-hosted surfaces can't do. Use it in **Claude Code** (plugin) or **Claude Desktop** (standalone MCP).
 
@@ -550,7 +550,7 @@ They solve different problems. `claude-council` gives Claude Code the opinions o
 
 model-council runs **entirely locally** and stores nothing off your machine. Full policy: [PRIVACY.md](PRIVACY.md).
 
-- **Where your prompts go.** A question is sent only to the model endpoints you configure: your local Ollama server, any self-hosted vLLM/TRT-LLM/SGLang servers, cloud API providers you supply keys for (OpenAI/Anthropic/Groq), and — for subscription members — your own local `claude` / `codex` CLIs. There is no model-council backend and no telemetry; nothing is sent to the author.
+- **Where your prompts go.** A question is sent only to the model endpoints you configure: your local Ollama server, any self-hosted vLLM/TRT-LLM/SGLang servers, cloud API providers you supply keys for (OpenAI/Anthropic/X.AI), and — for subscription members — your own local `claude` / `codex` CLIs. There is no model-council backend and no telemetry; nothing is sent to the author.
 - **Credentials.** API keys are stored in your client's secure storage (system keychain) and used only to call the provider you gave them for. Subscription members run under **your own** Claude/ChatGPT login via the first-party CLIs; the server strips `ANTHROPIC_*` / `OPENAI_*` / `CODEX_*` keys from those child processes so inference is billed to your subscription, not an API key.
 - **On disk.** The only file written is `~/.config/model-council/state.json` (your selected tiers + council members), plus `~/.codex` / Claude CLI session state owned by those tools. No conversation content is persisted by this server.
 - **Subprocesses.** Detection and subscription inference shell out to the locally-installed `claude` and `codex` binaries (read-only sandbox for Codex; MCP/tools disabled for the Claude probe so it can't recurse or take actions).

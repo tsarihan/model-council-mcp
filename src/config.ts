@@ -110,7 +110,7 @@ function buildServer(
  *   vllm/vllm-gpu1:meta-llama/Llama-3-8B
  */
 const KNOWN_PROVIDERS: ReadonlySet<string> = new Set<ProviderType>([
-  'ollama', 'openai', 'anthropic', 'groq', 'vllm', 'trtllm', 'sglang', 'claude-cli', 'codex-cli',
+  'ollama', 'openai', 'anthropic', 'xai', 'vllm', 'trtllm', 'sglang', 'claude-cli', 'codex-cli',
 ]);
 
 export function parseModelId(str: string): ModelId | null {
@@ -219,14 +219,14 @@ export function loadConfig(): AppConfig {
     });
   }
 
-  const groqKey = envClean('GROQ_API_KEY');
-  if (groqKey) {
+  const xaiKey = envClean('XAI_API_KEY');
+  if (xaiKey) {
     servers.push({
-      id: 'groq',
-      type: 'groq',
-      baseUrl: 'https://api.groq.com/openai/v1',
-      apiKey: groqKey,
-      label: 'Groq',
+      id: 'xai',
+      type: 'xai',
+      baseUrl: 'https://api.x.ai/v1',
+      apiKey: xaiKey,
+      label: 'Grok (xAI)',
     });
   }
 

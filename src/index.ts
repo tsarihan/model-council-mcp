@@ -167,7 +167,7 @@ const ListModelsInput = z.object({
     .string()
     .optional()
     .describe(
-      'Optional provider to filter by (ollama, openai, anthropic, groq, vllm, trtllm, sglang)',
+      'Optional provider to filter by (ollama, openai, anthropic, xai, vllm, trtllm, sglang)',
     ),
 });
 
@@ -286,7 +286,7 @@ const TOOLS = [
     annotations: { title: 'List models', readOnlyHint: true },
     description:
       'List all AI models available across every configured provider ' +
-      '(Ollama, OpenAI, Anthropic, Groq, vLLM, TRT-LLM, SGLang). ' +
+      '(Ollama, OpenAI, Anthropic, X.AI Grok, vLLM, TRT-LLM, SGLang). ' +
       'Use the returned model IDs when calling configure_council.',
     inputSchema: {
       type: 'object' as const,
@@ -294,7 +294,7 @@ const TOOLS = [
         filter_provider: {
           type: 'string',
           description:
-            'Optional provider filter: ollama | openai | anthropic | groq | vllm | trtllm | sglang',
+            'Optional provider filter: ollama | openai | anthropic | xai | vllm | trtllm | sglang',
         },
       },
     },
@@ -513,7 +513,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.16',
+    version: '0.2.17',
   },
   {
     capabilities: { tools: {} },
@@ -829,7 +829,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     OLLAMA_ADDRESS: 'Ollama server URL (default: http://localhost:11434)',
                     OPENAI_API_KEY: 'Enables OpenAI models',
                     ANTHROPIC_API_KEY: 'Enables Anthropic Claude models',
-                    GROQ_API_KEY: 'Enables Groq models',
+                    XAI_API_KEY: 'Enables X.AI Grok models',
                     VLLM_SERVERS: 'Comma-separated "name:host:port" entries for vLLM',
                     TRTLLM_SERVERS: 'Comma-separated "name:host:port" entries for TRT-LLM',
                     SGLANG_SERVERS: 'Comma-separated "name:host:port" entries for SGLang',

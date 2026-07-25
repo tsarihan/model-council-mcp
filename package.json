@@ -1,6 +1,6 @@
 {
   "name": "model-council-mcp",
-  "version": "0.2.16",
+  "version": "0.2.17",
   "description": "MCP server: ask a council of local and cloud AI models, get individual, categorized, or fully deconflicted answers",
   "type": "module",
   "main": "dist/index.js",
@@ -28,7 +28,8 @@
     "sglang",
     "openai",
     "anthropic",
-    "groq",
+    "xai",
+    "grok",
     "deconflict"
   ],
   "author": "Tom Sarihan",

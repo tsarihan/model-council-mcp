@@ -169,7 +169,7 @@ export function validTiers(provider: SubProvider, subs = loadSubscriptions()): s
 
 /**
  * Resolve per-provider concurrency limits from the selected tiers. API-keyed
- * providers (openai/anthropic/groq) use the apiConcurrency default; `local`
+ * providers (openai/anthropic/xai) use the apiConcurrency default; `local`
  * covers local Ollama + self-hosted servers. `overrides` (e.g. an explicit
  * CLOUD_CONCURRENCY/LOCAL_CONCURRENCY) win when provided.
  */
@@ -188,7 +188,7 @@ export function resolvePoolLimits(
     'ollama-cloud': cloud ?? tierConcurrency('ollama', tiers.ollama, subs),
     openai: cloud ?? subs.defaults.apiConcurrency,
     anthropic: cloud ?? subs.defaults.apiConcurrency,
-    groq: cloud ?? subs.defaults.apiConcurrency,
+    xai: cloud ?? subs.defaults.apiConcurrency,
     local: overrides.local ?? subs.defaults.localConcurrency,
   };
 }

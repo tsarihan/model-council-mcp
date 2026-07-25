@@ -74,7 +74,7 @@ your network), so you name them:
 "sglang_servers": "gpu2:192.168.1.51:30000"            // port defaults to 30000
 ```
 
-Optionally add cloud APIs with `openai_api_key` / `anthropic_api_key` / `groq_api_key`.
+Optionally add cloud APIs with `openai_api_key` / `anthropic_api_key` / `xai_api_key`.
 
 Once a server is registered, its **models and context windows are auto-discovered** — you
 only supplied the address. Then build the exact panel you want:
@@ -117,7 +117,7 @@ server or a logged-in CLI, it figures out the rest.
 | Codex CLI model list | ⚙️ preset | `gpt-5.6-*` from bundled reference data — override with `codex_cli_models` |
 | Curated Ollama **cloud** models | ⚙️ preset | a top set from bundled reference data (needs `ollama_tier` pro/max) |
 | **Self-hosted server address** | ❌ you set | `vllm_servers` / `trtllm_servers` / `sglang_servers` (`name:host:port`) |
-| **API keys** | ❌ you set | `openai_api_key` / `anthropic_api_key` / `groq_api_key` |
+| **API keys** | ❌ you set | `openai_api_key` / `anthropic_api_key` / `xai_api_key` |
 | **Subscription tiers** | ❌ you set (has defaults) | `claude_tier` / `chatgpt_tier` / `ollama_tier` — set to your real plan (drives cloud access + concurrency) |
 | CLI executable paths | ❌ you set (has defaults) | `claude_cli_path` / `codex_cli_path` if not on `PATH` |
 

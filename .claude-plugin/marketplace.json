@@ -11,7 +11,7 @@
     {
       "name": "model-council",
       "source": "./",
-      "description": "Ask a council of local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, Groq) models. Individual, categorized, or deconflicted answers with a resolution score."
+      "description": "Ask a council of local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, X.AI Grok) models. Individual, categorized, or deconflicted answers with a resolution score."
     }
   ]
 }

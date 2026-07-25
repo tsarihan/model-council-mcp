@@ -24538,7 +24538,7 @@ function resolvePoolLimits(tiers, overrides = {}, subs = loadSubscriptions()) {
     "ollama-cloud": cloud ?? tierConcurrency("ollama", tiers.ollama, subs),
     openai: cloud ?? subs.defaults.apiConcurrency,
     anthropic: cloud ?? subs.defaults.apiConcurrency,
-    groq: cloud ?? subs.defaults.apiConcurrency,
+    xai: cloud ?? subs.defaults.apiConcurrency,
     local: overrides.local ?? subs.defaults.localConcurrency
   };
 }
@@ -24624,7 +24624,7 @@ var KNOWN_PROVIDERS = /* @__PURE__ */ new Set([
   "ollama",
   "openai",
   "anthropic",
-  "groq",
+  "xai",
   "vllm",
   "trtllm",
   "sglang",
@@ -24706,14 +24706,14 @@ function loadConfig() {
       label: "Anthropic"
     });
   }
-  const groqKey = envClean("GROQ_API_KEY");
-  if (groqKey) {
+  const xaiKey = envClean("XAI_API_KEY");
+  if (xaiKey) {
     servers.push({
-      id: "groq",
-      type: "groq",
-      baseUrl: "https://api.groq.com/openai/v1",
-      apiKey: groqKey,
-      label: "Groq"
+      id: "xai",
+      type: "xai",
+      baseUrl: "https://api.x.ai/v1",
+      apiKey: xaiKey,
+      label: "Grok (xAI)"
     });
   }
   servers.push(
@@ -31707,14 +31707,6 @@ OpenAI.ContainerListResponsesPage = ContainerListResponsesPage;
 var openai_default = OpenAI;
 
 // src/providers/openai-compatible.ts
-var GROQ_MODELS = [
-  "llama-3.3-70b-versatile",
-  "llama-3.1-8b-instant",
-  "mixtral-8x7b-32768",
-  "gemma2-9b-it",
-  "llama3-70b-8192",
-  "llama3-8b-8192"
-];
 function openaiBaseURL(baseUrl) {
   const base = baseUrl.replace(/\/+$/, "");
   return /\/v\d+$/.test(base) ? base : `${base}/v1`;
@@ -31886,13 +31878,6 @@ var OpenAICompatibleProvider = class {
   }
   async listModels() {
     const type = this.config.type;
-    if (type === "groq") {
-      return GROQ_MODELS.map((m2) => ({
-        provider: "groq",
-        model: m2,
-        label: m2
-      }));
-    }
     try {
       const list = await this.client.models.list({ timeout: 3e4 });
       return list.data.map((m2) => ({
@@ -35397,7 +35382,7 @@ var ProviderRegistry = class {
           provider = new CodexCliProvider(srv);
           break;
         case "openai":
-        case "groq":
+        case "xai":
         case "vllm":
         case "trtllm":
         case "sglang":
@@ -35442,8 +35427,8 @@ function poolKey(m2) {
       return "openai";
     case "anthropic":
       return "anthropic";
-    case "groq":
-      return "groq";
+    case "xai":
+      return "xai";
     case "ollama": {
       const model = m2.modelId.model;
       return model.endsWith(":cloud") || model.endsWith("-cloud") ? "ollama-cloud" : "local";
@@ -36923,7 +36908,7 @@ async function initCouncil() {
 }
 var ListModelsInput = external_exports.object({
   filter_provider: external_exports.string().optional().describe(
-    "Optional provider to filter by (ollama, openai, anthropic, groq, vllm, trtllm, sglang)"
+    "Optional provider to filter by (ollama, openai, anthropic, xai, vllm, trtllm, sglang)"
   )
 });
 var ConfigureCouncilInput = external_exports.object({
@@ -36971,13 +36956,13 @@ var TOOLS = [
   {
     name: "list_models",
     annotations: { title: "List models", readOnlyHint: true },
-    description: "List all AI models available across every configured provider (Ollama, OpenAI, Anthropic, Groq, vLLM, TRT-LLM, SGLang). Use the returned model IDs when calling configure_council.",
+    description: "List all AI models available across every configured provider (Ollama, OpenAI, Anthropic, X.AI Grok, vLLM, TRT-LLM, SGLang). Use the returned model IDs when calling configure_council.",
     inputSchema: {
       type: "object",
       properties: {
         filter_provider: {
           type: "string",
-          description: "Optional provider filter: ollama | openai | anthropic | groq | vllm | trtllm | sglang"
+          description: "Optional provider filter: ollama | openai | anthropic | xai | vllm | trtllm | sglang"
         }
       }
     }
@@ -37142,7 +37127,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.16"
+    version: "0.2.17"
   },
   {
     capabilities: { tools: {} },
@@ -37373,7 +37358,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     OLLAMA_ADDRESS: "Ollama server URL (default: http://localhost:11434)",
                     OPENAI_API_KEY: "Enables OpenAI models",
                     ANTHROPIC_API_KEY: "Enables Anthropic Claude models",
-                    GROQ_API_KEY: "Enables Groq models",
+                    XAI_API_KEY: "Enables X.AI Grok models",
                     VLLM_SERVERS: 'Comma-separated "name:host:port" entries for vLLM',
                     TRTLLM_SERVERS: 'Comma-separated "name:host:port" entries for TRT-LLM',
                     SGLANG_SERVERS: 'Comma-separated "name:host:port" entries for SGLang',

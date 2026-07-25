@@ -36,7 +36,7 @@ export function poolKey(m: Member): PoolKey {
     case 'claude-cli': return 'claude';
     case 'openai': return 'openai';
     case 'anthropic': return 'anthropic';
-    case 'groq': return 'groq';
+    case 'xai': return 'xai';
     case 'ollama': {
       const model = m.modelId.model;
       return model.endsWith(':cloud') || model.endsWith('-cloud') ? 'ollama-cloud' : 'local';

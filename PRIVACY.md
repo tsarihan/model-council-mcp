@@ -11,7 +11,7 @@ usage data, no crash reports.
 
 - **Your prompts and the models' responses** are sent only to the model endpoints **you**
   configure: your local Ollama server, any self-hosted vLLM / SGLang / TensorRT-LLM
-  servers, cloud API providers you supply keys for (OpenAI / Anthropic / Groq), and — for
+  servers, cloud API providers you supply keys for (OpenAI / Anthropic / X.AI), and — for
   subscription members — your own locally installed `claude` and `codex` CLIs. Each
   provider processes that data under **its own** privacy policy. There is no
   model-council intermediary.

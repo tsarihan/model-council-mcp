@@ -434,6 +434,31 @@ async function main() {
     check('cross-call: combined in-flight across both calls never exceeded the pool limit (2)',
       dbgCross.maxConcurrent === 2, `maxConcurrent=${dbgCross.maxConcurrent} (4 would mean the cap is only per-call)`);
 
+    // ── Test: JUDGE calls (categorize/pool/dossier/synthesize) share the SAME
+    // pool as member fan-out, not just member calls — previously a judge call
+    // went straight to completeWithRetry, bypassing the semaphore entirely.
+    // With a single-member council under `local` (limit 1), EVERY /api/chat
+    // request — member answer AND judge categorization alike — must be fully
+    // serialized across 3 concurrent ask_council('categorized') calls; a
+    // judge call that bypassed the pool could overlap with another call's
+    // member phase and push maxConcurrent above 1.
+    console.log('\n▶ judge calls share the process-wide semaphore with member fan-out');
+    await resetMock();
+    await client.callTool({
+      name: 'configure_council',
+      arguments: { models: ['ollama:concL1'], response_mode: 'categorized' },
+    });
+    const [judgeA, judgeB, judgeC] = await Promise.all([
+      client.callTool({ name: 'ask_council', arguments: { question: 'judge-sem A', mode: 'categorized' } }),
+      client.callTool({ name: 'ask_council', arguments: { question: 'judge-sem B', mode: 'categorized' } }),
+      client.callTool({ name: 'ask_council', arguments: { question: 'judge-sem C', mode: 'categorized' } }),
+    ]);
+    check('judge-semaphore: all 3 concurrent calls completed',
+      [judgeA, judgeB, judgeC].every(r => parseToolResult(r)?.judgeModel));
+    const dbgJudgeSem = await (await fetch(`${MOCK_URL}/debug`)).json();
+    check('judge-semaphore: member AND judge calls together never exceed the local pool limit (1)',
+      dbgJudgeSem.maxConcurrent === 1, `maxConcurrent=${dbgJudgeSem.maxConcurrent} (>1 would mean a judge call bypassed the pool)`);
+
     // ── Test: deconflicted verbose ────────────────────────────────────────────
     console.log('\n▶ deconflicted verbose');
     await resetMock();

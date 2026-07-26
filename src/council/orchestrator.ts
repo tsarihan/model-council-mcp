@@ -363,6 +363,7 @@ export class CouncilOrchestrator {
         judgeModelId,
         judgeProvider,
         cc,
+        runtime,
       );
 
       if (mode === 'categorized') {

@@ -19,7 +19,7 @@ import { ModelId, PooledDigest, PooledResult, RawResponse, RuntimeConfig } from 
 import { ChatImage, Provider } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
 import { CompleteConfig } from './categorizer.js';
-import { completeWithRetry, EmptyCompletionError, Member, queryMembers } from './query.js';
+import { EmptyCompletionError, Member, pooledComplete, queryMembers } from './query.js';
 import { UNTRUSTED_CONTENT_NOTICE } from './prompt-safety.js';
 
 // ─── Judge prompt: build the neutral pooled digest ───────────────────────────
@@ -79,17 +79,27 @@ export async function poolResponses(
   judgeModelId: ModelId,
   judgeProvider: Provider,
   cc: CompleteConfig,
+  runtime: RuntimeConfig,
 ): Promise<PooledDigest> {
+  // No member actually answered (every response errored, or none were
+  // queried) — nothing genuine to pool. Skip the judge call and flag it like
+  // a judge failure, same as categorize()'s identical guard: an empty digest
+  // from an empty input would otherwise read as "nothing distinct to pool"
+  // rather than "no data existed to pool in the first place."
+  if (responses.length === 0 || responses.every(r => r.error)) {
+    return { options: [], judgeDegraded: true };
+  }
+
   const prompt = buildPoolPrompt(question, responses);
 
   let rawJson: string;
   try {
-    rawJson = await completeWithRetry(
-      judgeProvider,
-      judgeModelId.model,
+    rawJson = await pooledComplete(
+      { modelId: judgeModelId, provider: judgeProvider },
       [{ role: 'user', content: prompt }],
       { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
       cc.retries,
+      runtime,
     );
   } catch (err) {
     // Judge produced nothing usable → empty digest (re-poll falls back to the
@@ -203,6 +213,7 @@ export async function runPooled(input: PooledInput): Promise<PooledResult> {
     judgeModelId,
     judgeProvider,
     cc,
+    runtime,
   );
 
   // 2. Re-poll every member with the neutral digest (no attribution/counts/order).
@@ -217,6 +228,7 @@ export async function runPooled(input: PooledInput): Promise<PooledResult> {
     judgeModelId,
     judgeProvider,
     cc,
+    runtime,
   );
 
   return {

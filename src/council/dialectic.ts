@@ -26,9 +26,9 @@ import { ChatImage, Provider } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
 import { CompleteConfig } from './categorizer.js';
 import {
-  completeWithRetry,
   EmptyCompletionError,
   Member,
+  pooledComplete,
   queryMembers,
   queryMembersVarying,
 } from './query.js';
@@ -167,6 +167,7 @@ async function buildProsCons(
   judgeModelId: ModelId,
   judgeProvider: Provider,
   cc: CompleteConfig,
+  runtime: RuntimeConfig,
 ): Promise<ProsConsResult> {
   // The pooled digest is the CANONICAL option set: seed one entry per distinct
   // option with its champions and a rationale-derived pro as a floor. The judge's
@@ -188,12 +189,12 @@ async function buildProsCons(
   if (digest.options.length > 0) {
     let rawJson = '';
     try {
-      rawJson = await completeWithRetry(
-        judgeProvider,
-        judgeModelId.model,
+      rawJson = await pooledComplete(
+        { modelId: judgeModelId, provider: judgeProvider },
         [{ role: 'user', content: buildDossierPrompt(question, digest, initial, defenses) }],
         { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
         cc.retries,
+        runtime,
       );
     } catch (err) {
       // Empty after retries → degrade to the digest-seeded sheet, flagged so a
@@ -310,6 +311,7 @@ export async function runDialectic(input: DialecticInput): Promise<DialecticResu
     judgeModelId,
     judgeProvider,
     cc,
+    runtime,
   );
   const optionsBlock = renderOptions(digest);
 
@@ -332,6 +334,7 @@ export async function runDialectic(input: DialecticInput): Promise<DialecticResu
     judgeModelId,
     judgeProvider,
     cc,
+    runtime,
   );
   const prosCons = prosConsResult.options;
 

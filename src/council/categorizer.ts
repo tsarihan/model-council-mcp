@@ -11,10 +11,11 @@ import {
   ConflictPosition,
   ModelId,
   RawResponse,
+  RuntimeConfig,
 } from '../types.js';
 import { Provider } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
-import { completeWithRetry, EmptyCompletionError } from './query.js';
+import { EmptyCompletionError, pooledComplete } from './query.js';
 import { UNTRUSTED_CONTENT_NOTICE } from './prompt-safety.js';
 
 /** Completion tuning passed down to judge calls. */
@@ -105,7 +106,16 @@ function parseCategorizationJSON(raw: string): RawCategorizationJSON {
     .replace(/^```(?:json)?\s*/im, '')
     .replace(/\s*```\s*$/im, '')
     .trim();
-  return JSON.parse(stripped) as RawCategorizationJSON;
+  // Tolerate a prose preamble/postamble around the JSON object — matches the
+  // same fallback pool.ts/dialectic.ts's parsers already have. This matters
+  // most exactly where jsonMode is weakest: claude-cli/codex-cli/grok-cli have
+  // no structured-output mode at all (jsonMode there is just an appended
+  // instruction sentence), so a preamble like "Here is the categorization:\n{…}"
+  // is a real, reproducible failure mode for the two DEFAULT response modes.
+  const start = stripped.indexOf('{');
+  const end = stripped.lastIndexOf('}');
+  const json = start !== -1 && end > start ? stripped.slice(start, end + 1) : stripped;
+  return JSON.parse(json) as RawCategorizationJSON;
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -116,19 +126,39 @@ export async function categorize(
   judgeModelId: ModelId,
   judgeProvider: Provider,
   cc: CompleteConfig,
+  runtime: RuntimeConfig,
   existingConflictIds: string[] = [],
   openTopics: string[] = [],
 ): Promise<Omit<CategorizedResult, 'mode' | 'rawResponses'>> {
+  // No member actually answered this round (every response errored, or none
+  // were queried at all) — there is nothing genuine to categorize. Without
+  // this guard, the judge receives an empty "Model responses:" block and can
+  // validly return an empty conflicting[]/complementary[], which reads as a
+  // confident zero-conflict consensus rather than the truth: no data existed
+  // to reach one. Skip the judge call entirely (nothing to spend it on) and
+  // flag it exactly like a judge failure — every caller already treats
+  // judgeDegraded as "don't trust this as genuine convergence."
+  if (responses.length === 0 || responses.every(r => r.error)) {
+    return {
+      question,
+      commonAgreement: null,
+      complementary: [],
+      conflicting: [],
+      judgeModel: modelIdLabel(judgeModelId),
+      judgeDegraded: true,
+    };
+  }
+
   const prompt = buildCategorizationPrompt(question, responses, openTopics);
 
   let rawJson: string;
   try {
-    rawJson = await completeWithRetry(
-      judgeProvider,
-      judgeModelId.model,
+    rawJson = await pooledComplete(
+      { modelId: judgeModelId, provider: judgeProvider },
       [{ role: 'user', content: prompt }],
       { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
       cc.retries,
+      runtime,
     );
   } catch (err) {
     // Judge produced no usable output after all retries → degrade gracefully

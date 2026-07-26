@@ -219,6 +219,49 @@ export async function completeWithRetry(
 }
 
 /**
+ * Like completeWithRetry, but admitted through the SAME process-wide
+ * semaphore as member fan-out (see `pooled`/`Semaphore` above). Judge calls
+ * (categorize/poolResponses/buildProsCons/synthesize) previously called
+ * completeWithRetry directly, bypassing the pool entirely — two concurrent
+ * ask_council calls whose judges shared a tightly-limited provider (e.g.
+ * `claude` at tier `pro`, limit 2) could together spawn far more concurrent
+ * judge subprocesses/requests than that provider's ceiling allows, exactly
+ * the gap the process-wide semaphore exists to close. Safe from deadlock: a
+ * judge call always runs AFTER its round's member fan-out has fully
+ * completed (queryMembers's Promise.all resolves, releasing every member
+ * slot, before a judge call is ever made) — no caller holds a slot in this
+ * pool while trying to acquire another in the same pool.
+ */
+export async function pooledComplete(
+  judge: Member,
+  messages: ChatMessage[],
+  opts: CompletionOptions,
+  retries: number,
+  runtime: RuntimeConfig,
+): Promise<string> {
+  const key = poolKey(judge);
+  let result = '';
+  let error: unknown;
+  let threw = false;
+  await pooled(
+    key,
+    [
+      async () => {
+        try {
+          result = await completeWithRetry(judge.provider, judge.modelId.model, messages, opts, retries);
+        } catch (err) {
+          error = err;
+          threw = true;
+        }
+      },
+    ],
+    limitForPool(key, runtime),
+  );
+  if (threw) throw error;
+  return result;
+}
+
+/**
  * Query every member, building each member's prompt via `promptFor` (so
  * different members can receive personalised prompts), honouring separate
  * cloud/local concurrency limits. Results preserve member order; a member that

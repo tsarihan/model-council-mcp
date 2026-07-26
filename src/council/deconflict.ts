@@ -21,7 +21,7 @@ import {
 import { ChatImage, Provider } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
 import { categorize, buildSynthesisPrompt } from './categorizer.js';
-import { completeWithRetry, Member, queryMembers } from './query.js';
+import { Member, pooledComplete, queryMembers } from './query.js';
 
 // ─── Round-query prompt ───────────────────────────────────────────────────────
 
@@ -73,10 +73,22 @@ Be concise and direct.`;
  * happened. buildCategorizationPrompt() (categorizer.ts) now feeds the round
  * call the current open topics and instructs the judge to reuse them
  * verbatim for a persisting conflict, which is what makes exact matching
- * viable — a judge that ignores the instruction and rewords anyway will
- * (correctly, if pessimistically) read as the old topic having resolved and
- * a new one appearing, rather than silently misattributing wording drift as
- * consensus.
+ * viable.
+ *
+ * CORRECTNESS-CRITICAL: any entry in `newCateg.conflicting` that does NOT
+ * match a previous topic must still be carried into `remaining` — it is
+ * either a genuinely new conflict, or (if the judge ignored the reuse
+ * instruction) the SAME conflict under new wording. An earlier version of
+ * this function only ever looked up matches FROM `previous` and silently
+ * dropped any unmatched new entry, which meant a reworded topic read as
+ * "old resolved" with the reworded replacement simply vanishing — the exact
+ * fabricated-consensus bug this whole exact-match design exists to kill,
+ * reintroduced through a different mechanism. Carrying it forward is
+ * slightly pessimistic when the judge genuinely reworded the SAME conflict
+ * (it then counts as both one resolution and one still-open item), but that
+ * is a strict improvement over silently losing live disagreement — it keeps
+ * `unresolvedConflicts` non-empty and the loop honest rather than letting it
+ * falsely terminate at 100%.
  */
 export function detectResolutions(
   previous: ConflictItem[],
@@ -89,6 +101,7 @@ export function detectResolutions(
 
   const resolved: ConflictItem[] = [];
   const remaining: ConflictItem[] = [];
+  const matchedNewTopics = new Set<string>();
 
   for (const prev of previous) {
     const prevTopic = norm(prev.topic);
@@ -96,13 +109,26 @@ export function detectResolutions(
     const updated = newCateg.conflicting.find(c => norm(c.topic) === prevTopic);
 
     if (updated) {
-      remaining.push(updated);
+      // Keep the ORIGINAL id stable across rounds (a fresh id from this
+      // round's categorize() call would otherwise make the same persisting
+      // conflict look like a different one to any caller correlating ids
+      // across `initialCategorization`/`rounds`/`unresolvedConflicts`).
+      remaining.push({ ...updated, id: prev.id });
+      matchedNewTopics.add(norm(updated.topic));
     } else {
       resolved.push({
         ...prev,
         resolved: true,
         resolution: newCateg.commonAgreement ?? 'Council reached consensus.',
       });
+    }
+  }
+
+  // Anything the judge reported this round that didn't match a previous
+  // topic — see the correctness note above.
+  for (const c of newCateg.conflicting) {
+    if (!matchedNewTopics.has(norm(c.topic))) {
+      remaining.push(c);
     }
   }
 
@@ -113,17 +139,17 @@ export function detectResolutions(
 
 async function synthesize(
   judgeProvider: Provider,
-  model: string,
+  judgeModelId: ModelId,
   prompt: string,
   runtime: RuntimeConfig,
 ): Promise<string> {
   try {
-    return await completeWithRetry(
-      judgeProvider,
-      model,
+    return await pooledComplete(
+      { modelId: judgeModelId, provider: judgeProvider },
       [{ role: 'user', content: prompt }],
       { temperature: 0.3, maxTokens: runtime.maxTokens, timeoutMs: runtime.requestTimeoutMs },
       runtime.retries,
+      runtime,
     );
   } catch {
     // Judge could not synthesize (empty or error after retries) — return the
@@ -202,7 +228,7 @@ export async function deconflict(
     // a confident 100% here would fabricate the flagship convergence metric.
     const synthesis = await synthesize(
       judgeProvider,
-      judgeModelId.model,
+      judgeModelId,
       buildSynthesisPrompt(
         question,
         input.commonAgreement,
@@ -258,6 +284,7 @@ export async function deconflict(
         judgeModelId,
         judgeProvider,
         cc,
+        runtime,
         openConflicts.map(c => c.id),
         openConflicts.map(c => c.topic),
       );
@@ -345,7 +372,7 @@ export async function deconflict(
   // ── Final synthesis ───────────────────────────────────────────────────────
   const synthesis = await synthesize(
     judgeProvider,
-    judgeModelId.model,
+    judgeModelId,
     buildSynthesisPrompt(
       question,
       input.commonAgreement,

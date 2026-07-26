@@ -24838,8 +24838,16 @@ var CappedBuffer = class {
   }
   append(chunk) {
     if (this.bytes >= this.cap) return;
-    this.chunks.push(chunk);
-    this.bytes += Buffer.byteLength(chunk, "utf8");
+    const chunkBytes = Buffer.byteLength(chunk, "utf8");
+    if (this.bytes + chunkBytes <= this.cap) {
+      this.chunks.push(chunk);
+      this.bytes += chunkBytes;
+      return;
+    }
+    const remaining = this.cap - this.bytes;
+    const buf = Buffer.from(chunk, "utf8").subarray(0, remaining);
+    this.chunks.push(buf.toString("utf8"));
+    this.bytes = this.cap;
   }
   toString() {
     return this.chunks.join("");
@@ -35773,6 +35781,28 @@ async function completeWithRetry(provider, model, messages, opts, retries) {
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
+async function pooledComplete(judge, messages, opts, retries, runtime) {
+  const key = poolKey(judge);
+  let result = "";
+  let error2;
+  let threw = false;
+  await pooled(
+    key,
+    [
+      async () => {
+        try {
+          result = await completeWithRetry(judge.provider, judge.modelId.model, messages, opts, retries);
+        } catch (err) {
+          error2 = err;
+          threw = true;
+        }
+      }
+    ],
+    limitForPool(key, runtime)
+  );
+  if (threw) throw error2;
+  return result;
+}
 async function queryMembersVarying(promptFor, members, runtime, opts = {}, images, onProgress) {
   const results = new Array(members.length);
   const buckets = /* @__PURE__ */ new Map();
@@ -35876,18 +35906,31 @@ Rules:
 }
 function parseCategorizationJSON(raw) {
   const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
-  return JSON.parse(stripped);
+  const start = stripped.indexOf("{");
+  const end = stripped.lastIndexOf("}");
+  const json = start !== -1 && end > start ? stripped.slice(start, end + 1) : stripped;
+  return JSON.parse(json);
 }
-async function categorize(question, responses, judgeModelId, judgeProvider, cc, existingConflictIds = [], openTopics = []) {
+async function categorize(question, responses, judgeModelId, judgeProvider, cc, runtime, existingConflictIds = [], openTopics = []) {
+  if (responses.length === 0 || responses.every((r2) => r2.error)) {
+    return {
+      question,
+      commonAgreement: null,
+      complementary: [],
+      conflicting: [],
+      judgeModel: modelIdLabel(judgeModelId),
+      judgeDegraded: true
+    };
+  }
   const prompt = buildCategorizationPrompt(question, responses, openTopics);
   let rawJson;
   try {
-    rawJson = await completeWithRetry(
-      judgeProvider,
-      judgeModelId.model,
+    rawJson = await pooledComplete(
+      { modelId: judgeModelId, provider: judgeProvider },
       [{ role: "user", content: prompt }],
       { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
-      cc.retries
+      cc.retries,
+      runtime
     );
   } catch (err) {
     if (err instanceof EmptyCompletionError) {
@@ -36011,11 +36054,13 @@ function detectResolutions(previous, newCateg) {
   const norm = (s2) => String(s2 ?? "").trim().toLowerCase().replace(/\s+/g, " ");
   const resolved = [];
   const remaining = [];
+  const matchedNewTopics = /* @__PURE__ */ new Set();
   for (const prev of previous) {
     const prevTopic = norm(prev.topic);
     const updated = newCateg.conflicting.find((c2) => norm(c2.topic) === prevTopic);
     if (updated) {
-      remaining.push(updated);
+      remaining.push({ ...updated, id: prev.id });
+      matchedNewTopics.add(norm(updated.topic));
     } else {
       resolved.push({
         ...prev,
@@ -36024,16 +36069,21 @@ function detectResolutions(previous, newCateg) {
       });
     }
   }
+  for (const c2 of newCateg.conflicting) {
+    if (!matchedNewTopics.has(norm(c2.topic))) {
+      remaining.push(c2);
+    }
+  }
   return { resolved, remaining };
 }
-async function synthesize(judgeProvider, model, prompt, runtime) {
+async function synthesize(judgeProvider, judgeModelId, prompt, runtime) {
   try {
-    return await completeWithRetry(
-      judgeProvider,
-      model,
+    return await pooledComplete(
+      { modelId: judgeModelId, provider: judgeProvider },
       [{ role: "user", content: prompt }],
       { temperature: 0.3, maxTokens: runtime.maxTokens, timeoutMs: runtime.requestTimeoutMs },
-      runtime.retries
+      runtime.retries,
+      runtime
     );
   } catch {
     return "(The judge model returned no final synthesis.)";
@@ -36070,7 +36120,7 @@ async function deconflict(input) {
   if (totalConflicts === 0) {
     const synthesis2 = await synthesize(
       judgeProvider,
-      judgeModelId.model,
+      judgeModelId,
       buildSynthesisPrompt(
         question,
         input.commonAgreement,
@@ -36113,6 +36163,7 @@ async function deconflict(input) {
         judgeModelId,
         judgeProvider,
         cc,
+        runtime,
         openConflicts.map((c2) => c2.id),
         openConflicts.map((c2) => c2.topic)
       );
@@ -36185,7 +36236,7 @@ async function deconflict(input) {
   }
   const synthesis = await synthesize(
     judgeProvider,
-    judgeModelId.model,
+    judgeModelId,
     buildSynthesisPrompt(
       question,
       input.commonAgreement,
@@ -36258,16 +36309,19 @@ function parsePoolJSON(raw) {
   const json = start !== -1 && end > start ? stripped.slice(start, end + 1) : stripped;
   return JSON.parse(json);
 }
-async function poolResponses(question, responses, judgeModelId, judgeProvider, cc) {
+async function poolResponses(question, responses, judgeModelId, judgeProvider, cc, runtime) {
+  if (responses.length === 0 || responses.every((r2) => r2.error)) {
+    return { options: [], judgeDegraded: true };
+  }
   const prompt = buildPoolPrompt(question, responses);
   let rawJson;
   try {
-    rawJson = await completeWithRetry(
-      judgeProvider,
-      judgeModelId.model,
+    rawJson = await pooledComplete(
+      { modelId: judgeModelId, provider: judgeProvider },
       [{ role: "user", content: prompt }],
       { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
-      cc.retries
+      cc.retries,
+      runtime
     );
   } catch (err) {
     if (err instanceof EmptyCompletionError) return { options: [], judgeDegraded: true };
@@ -36334,7 +36388,8 @@ async function runPooled(input) {
     initialResponses,
     judgeModelId,
     judgeProvider,
-    cc
+    cc,
+    runtime
   );
   const repollPrompt = buildRepollPrompt(question, initialPool);
   const reconsidered = await queryMembers(repollPrompt, members, runtime, {}, images);
@@ -36343,7 +36398,8 @@ async function runPooled(input) {
     reconsidered,
     judgeModelId,
     judgeProvider,
-    cc
+    cc,
+    runtime
   );
   return {
     mode: "pooled",
@@ -36435,7 +36491,7 @@ function matchOption(answer, byAnswer) {
   }
   return void 0;
 }
-async function buildProsCons(question, digest, initial, defenses, judgeModelId, judgeProvider, cc) {
+async function buildProsCons(question, digest, initial, defenses, judgeModelId, judgeProvider, cc, runtime) {
   const byAnswer = /* @__PURE__ */ new Map();
   for (const o2 of digest.options) {
     byAnswer.set(keyFor(o2.answer), {
@@ -36450,12 +36506,12 @@ async function buildProsCons(question, digest, initial, defenses, judgeModelId, 
   if (digest.options.length > 0) {
     let rawJson = "";
     try {
-      rawJson = await completeWithRetry(
-        judgeProvider,
-        judgeModelId.model,
+      rawJson = await pooledComplete(
+        { modelId: judgeModelId, provider: judgeProvider },
         [{ role: "user", content: buildDossierPrompt(question, digest, initial, defenses) }],
         { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
-        cc.retries
+        cc.retries,
+        runtime
       );
     } catch (err) {
       if (err instanceof EmptyCompletionError) {
@@ -36536,7 +36592,8 @@ async function runDialectic(input) {
     initialResponses,
     judgeModelId,
     judgeProvider,
-    cc
+    cc,
+    runtime
   );
   const optionsBlock = renderOptions(digest);
   const defenses = await queryMembersVarying(
@@ -36553,7 +36610,8 @@ async function runDialectic(input) {
     defenses,
     judgeModelId,
     judgeProvider,
-    cc
+    cc,
+    runtime
   );
   const prosCons = prosConsResult.options;
   const selections = await queryMembers(
@@ -36801,7 +36859,8 @@ var CouncilOrchestrator = class {
         responses,
         judgeModelId,
         judgeProvider,
-        cc
+        cc,
+        runtime
       );
       if (mode === "categorized") {
         return {
@@ -37659,7 +37718,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.33"
+    version: "0.2.34"
   },
   {
     capabilities: { tools: {} },

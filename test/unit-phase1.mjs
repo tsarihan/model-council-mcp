@@ -166,17 +166,25 @@ console.log('▶ judge-JSON shape guards (categorize/pool do not crash on wrong 
   const { poolResponses } = await import('../dist/council/pool.js');
   const judgeId = { provider: 'ollama', model: 'j' };
   const cc = { maxTokens: 100, retries: 1, timeoutMs: 5000 };
+  const runtime = { localConcurrency: 0, cloudConcurrency: 0 };
   const resp = [{ modelId: { provider: 'ollama', model: 'a' }, label: 'ollama:a', response: 'x', latencyMs: 1 }];
   const fakeJudge = (json) => ({ config: { type: 'ollama' }, serverId: 'ollama', complete: async () => json, listModels: async () => [], ping: async () => true });
   // Object where an array is expected — must NOT throw, must yield arrays.
-  const bad = await categorize('q', resp, judgeId, fakeJudge('{"conflicting":{"topic":"x"},"complementary":{"aspect":"a"}}'), cc);
+  const bad = await categorize('q', resp, judgeId, fakeJudge('{"conflicting":{"topic":"x"},"complementary":{"aspect":"a"}}'), cc, runtime);
   check('categorize: object-shaped fields → empty arrays, no crash', Array.isArray(bad.conflicting) && bad.conflicting.length === 0 && Array.isArray(bad.complementary));
   // Non-string topic — must coerce, not crash.
-  const numTopic = await categorize('q', resp, judgeId, fakeJudge('{"conflicting":[{"topic":123,"positions":[{"models":["m"],"position":"p"}]}]}'), cc);
+  const numTopic = await categorize('q', resp, judgeId, fakeJudge('{"conflicting":[{"topic":123,"positions":[{"models":["m"],"position":"p"}]}]}'), cc, runtime);
   check('categorize: non-string topic coerced to string', numTopic.conflicting[0]?.topic === '123');
   // Pool: options as object → empty, no crash.
-  const badPool = await poolResponses('q', resp, judgeId, fakeJudge('{"options":{"answer":"Rust"}}'), cc);
+  const badPool = await poolResponses('q', resp, judgeId, fakeJudge('{"options":{"answer":"Rust"}}'), cc, runtime);
   check('poolResponses: object options → empty, no crash', Array.isArray(badPool.options) && badPool.options.length === 0);
+
+  // All members errored → nothing genuine to pool; must flag judgeDegraded
+  // WITHOUT calling the judge (a throwing judge proves the short-circuit).
+  const throwingJudge = { config: { type: 'ollama' }, serverId: 'ollama', complete: async () => { throw new Error('must not be called'); }, listModels: async () => [], ping: async () => true };
+  const allErrored = [{ modelId: { provider: 'ollama', model: 'a' }, label: 'ollama:a', response: '', error: 'boom', latencyMs: 1 }];
+  const noDataPool = await poolResponses('q', allErrored, judgeId, throwingJudge, cc, runtime);
+  check('poolResponses: all-errored responses → judgeDegraded true, judge never called', noDataPool.judgeDegraded === true && noDataPool.options.length === 0);
 }
 
 console.log('▶ categorize: judgeDegraded flags a judge failure, distinct from genuine consensus');
@@ -184,20 +192,31 @@ console.log('▶ categorize: judgeDegraded flags a judge failure, distinct from 
   const { categorize } = await import('../dist/council/categorizer.js');
   const judgeId = { provider: 'ollama', model: 'j' };
   const cc = { maxTokens: 100, retries: 1, timeoutMs: 5000 };
+  const runtime = { localConcurrency: 0, cloudConcurrency: 0 };
   const resp = [{ modelId: { provider: 'ollama', model: 'a' }, label: 'ollama:a', response: 'x', latencyMs: 1 }];
   const fakeJudge = (json) => ({ config: { type: 'ollama' }, serverId: 'ollama', complete: async () => json, listModels: async () => [], ping: async () => true });
 
-  const malformed = await categorize('q', resp, judgeId, fakeJudge('{not valid json'), cc);
+  const malformed = await categorize('q', resp, judgeId, fakeJudge('{not valid json'), cc, runtime);
   check('malformed JSON → conflicting empty (fallback)', malformed.conflicting.length === 0 && malformed.complementary.length === 0);
   check('malformed JSON → judgeDegraded true', malformed.judgeDegraded === true);
 
   // complete() resolving to '' on every attempt exhausts retries → EmptyCompletionError.
-  const emptyJudge = await categorize('q', resp, judgeId, fakeJudge(''), cc);
+  const emptyJudge = await categorize('q', resp, judgeId, fakeJudge(''), cc, runtime);
   check('empty completion → judgeDegraded true', emptyJudge.judgeDegraded === true);
 
   // A genuine zero-conflict finding must NOT be flagged — only judge failure is.
-  const genuine = await categorize('q', resp, judgeId, fakeJudge('{"commonAgreement":"All agree.","complementary":[],"conflicting":[]}'), cc);
+  const genuine = await categorize('q', resp, judgeId, fakeJudge('{"commonAgreement":"All agree.","complementary":[],"conflicting":[]}'), cc, runtime);
   check('genuine zero-conflict result → judgeDegraded NOT set', genuine.judgeDegraded === undefined);
+
+  // All members errored this round → nothing genuine to categorize; must flag
+  // judgeDegraded WITHOUT even calling the judge (fakeJudge would throw here
+  // if invoked, proving the guard short-circuits before completion).
+  const throwingJudge = { config: { type: 'ollama' }, serverId: 'ollama', complete: async () => { throw new Error('must not be called'); }, listModels: async () => [], ping: async () => true };
+  const allErrored = [{ modelId: { provider: 'ollama', model: 'a' }, label: 'ollama:a', response: '', error: 'boom', latencyMs: 1 }];
+  const noData = await categorize('q', allErrored, judgeId, throwingJudge, cc, runtime);
+  check('categorize: all-errored responses → judgeDegraded true, judge never called', noData.judgeDegraded === true && noData.conflicting.length === 0);
+  const emptyResp = await categorize('q', [], judgeId, throwingJudge, cc, runtime);
+  check('categorize: zero responses → judgeDegraded true, judge never called', emptyResp.judgeDegraded === true);
 }
 
 console.log('▶ deconfliction round: open-topic prompt + exact-match resolution detection (rephrase-drift fix)');
@@ -247,8 +266,34 @@ console.log('▶ deconfliction round: open-topic prompt + exact-match resolution
     [conflictItem('caching approach: write-through vs write-back')],
     { conflicting: [{ topic: 'caching approach: what TTL to use', positions: [] }], commonAgreement: null },
   );
+  // Old topic genuinely gone → resolved. New unmatched topic must be CARRIED
+  // FORWARD into remaining (see below), not silently conflated with the old one.
   check('exact-match: topics sharing a 15-char prefix are NOT conflated (old fuzzy-match bug)',
-    distinctPrefixCollision.resolved.length === 1 && distinctPrefixCollision.remaining.length === 0);
+    distinctPrefixCollision.resolved.length === 1 && distinctPrefixCollision.remaining.length === 1 &&
+    distinctPrefixCollision.remaining[0].topic === 'caching approach: what TTL to use');
+
+  // Regression proof for the round-2 bug: an unmatched new topic (whether
+  // genuinely new, or the SAME conflict reworded despite the reuse
+  // instruction) must be carried into `remaining`, never silently dropped —
+  // dropping it is exactly how a reworded topic used to fabricate consensus
+  // (old marked resolved, replacement vanishes, loop falsely terminates).
+  const reworded = detectResolutions(
+    [conflictItem('retry strategy')],
+    { conflicting: [{ id: 'conflict-9', topic: 'backoff approach for retries', positions: [] }], commonAgreement: null },
+  );
+  check('carry-forward: a reworded topic is NOT silently dropped', reworded.remaining.length === 1, JSON.stringify(reworded));
+  check('carry-forward: the old wording is marked resolved (pessimistic, not silently lost)', reworded.resolved.length === 1);
+
+  // A matched (still-open, verbatim-reused) conflict must keep its ORIGINAL
+  // id across rounds — a fresh id from this round's categorize() call would
+  // make the same persisting conflict look like a different one to a caller
+  // correlating ids across initialCategorization/rounds/unresolvedConflicts.
+  const idStable = detectResolutions(
+    [{ id: 'conflict-1', topic: 'retry strategy', positions: [] }],
+    { conflicting: [{ id: 'conflict-7', topic: 'retry strategy', positions: [] }], commonAgreement: null },
+  );
+  check('id stability: a matched conflict keeps its ORIGINAL id, not the round\'s fresh one',
+    idStable.remaining.length === 1 && idStable.remaining[0].id === 'conflict-1');
 }
 
 console.log('▶ persistent state round-trip');
@@ -675,6 +720,20 @@ console.log('▶ CappedBuffer (bounds CLI subprocess stdout/stderr accumulation)
   const big = 'x'.repeat(1000);
   for (let i = 0; i < 20; i++) unbounded.append(big);
   check('default cap allows normal-sized accumulation', unbounded.toString().length === 20000);
+
+  // Regression: a SINGLE chunk larger than the whole cap must be truncated to
+  // fit, not appended in full — a CLI can write however much it wants in one
+  // pipe write(), and the "hard cap" must actually hold for the first chunk too.
+  const oneShot = new CappedBuffer(10);
+  oneShot.append('x'.repeat(50));
+  check('a single oversized chunk is truncated to the cap, not appended whole', Buffer.byteLength(oneShot.toString(), 'utf8') === 10);
+
+  // Partial fill, then an oversized chunk — must truncate to exactly the
+  // REMAINING budget, not the full cap.
+  const partial = new CappedBuffer(10);
+  partial.append('123'); // 3 bytes used, 7 remaining
+  partial.append('x'.repeat(50));
+  check('an oversized chunk after a partial fill truncates to the remaining budget', partial.toString() === '123xxxxxxx' && Buffer.byteLength(partial.toString(), 'utf8') === 10);
 }
 
 console.log('▶ Semaphore / pooled (process-wide per-provider concurrency ceiling)');

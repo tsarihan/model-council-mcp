@@ -86,8 +86,22 @@ export class CappedBuffer {
 
   append(chunk: string): void {
     if (this.bytes >= this.cap) return;
-    this.chunks.push(chunk);
-    this.bytes += Buffer.byteLength(chunk, 'utf8');
+    const chunkBytes = Buffer.byteLength(chunk, 'utf8');
+    // A single chunk larger than the remaining budget must be TRUNCATED, not
+    // appended whole — otherwise one oversized chunk (a CLI can write however
+    // much it wants to a pipe in one write()) blows straight past the cap,
+    // silently defeating the "hard" bound this class exists to guarantee.
+    if (this.bytes + chunkBytes <= this.cap) {
+      this.chunks.push(chunk);
+      this.bytes += chunkBytes;
+      return;
+    }
+    const remaining = this.cap - this.bytes;
+    // Slice by BYTES, not JS string length (chunk may contain multi-byte
+    // UTF-8 chars) — truncate at the last full character boundary.
+    const buf = Buffer.from(chunk, 'utf8').subarray(0, remaining);
+    this.chunks.push(buf.toString('utf8'));
+    this.bytes = this.cap;
   }
 
   toString(): string {

@@ -1474,6 +1474,66 @@ console.log('▶ loadConfig: CLAUDE_CLI_OLLAMA_MODELS registers a distinct, opt-
   }
 }
 
+console.log('▶ Ollama-harness member: the documented "claude-cli/claude-cli-ollama:model" string actually resolves end-to-end');
+{
+  // This is the exact interface the README tells users to type — a
+  // provider/serverId prefix ON TOP OF a model name that itself contains a
+  // colon (":cloud"). The existing suite covers each half separately
+  // (ollama:glm-5.2:cloud for a colon-model with no serverId; vllm/gpu1:model
+  // for a serverId with no colon-model) but never both together, which is
+  // exactly this feature's real-world shape — verify it doesn't fall through
+  // a boundary neither existing case would catch.
+  const { parseModelId } = await import('../dist/config.js');
+  const { ProviderRegistry } = await import('../dist/providers/registry.js');
+
+  const parsed = parseModelId('claude-cli/claude-cli-ollama:glm-5.2:cloud');
+  check('parseModelId: provider/serverId split correctly despite a colon inside the model name',
+    parsed?.provider === 'claude-cli' && parsed?.serverId === 'claude-cli-ollama' && parsed?.model === 'glm-5.2:cloud',
+    JSON.stringify(parsed));
+
+  // Registry with BOTH the real subscription server and the harness server —
+  // the exact multi-server situation this feature creates.
+  const registry = new ProviderRegistry([
+    { id: 'claude-cli', type: 'claude-cli', baseUrl: '(subscription via claude CLI)', label: 'Claude (subscription CLI)', models: ['opus', 'sonnet'] },
+    { id: 'claude-cli-ollama', type: 'claude-cli', baseUrl: '(Ollama via claude CLI harness)', label: 'Ollama (via claude CLI harness)', models: ['glm-5.2:cloud'], anthropicBaseUrl: 'http://localhost:11434' },
+  ]);
+  const resolved = registry.resolve(parsed);
+  check('resolve(): the parsed id resolves to a provider (not null)', !!resolved);
+  check('resolve(): resolves to the HARNESS provider specifically (anthropicBaseUrl set), not the real subscription one',
+    resolved?.config.id === 'claude-cli-ollama' && !!resolved?.config.anthropicBaseUrl,
+    JSON.stringify(resolved?.config));
+  // A bare (no-serverId) reference to the real subscription server must still
+  // resolve to IT, not accidentally pick up the harness server registered
+  // alongside it — the "first provider of matching type" default-fallback path.
+  const bareParsed = parseModelId('claude-cli:opus');
+  const bareResolved = registry.resolve(bareParsed);
+  check('resolve(): a bare claude-cli:opus (no serverId) still resolves to the REAL subscription server, not the harness one',
+    bareResolved?.config.id === 'claude-cli' && !bareResolved?.config.anthropicBaseUrl,
+    JSON.stringify(bareResolved?.config));
+
+  // The README claims the harness member NEVER joins the zero-config
+  // auto-populated council. autoPopulatedMembers is hardcoded off the
+  // reference-data model list (subs.providers.claude.models), not off
+  // registered servers — confirm it emits only bare "claude-cli:<model>"
+  // strings (which resolve to the real subscription server via the
+  // no-serverId default path above), never anything naming
+  // "claude-cli-ollama", even when Claude is reported usable.
+  const { autoPopulatedMembers } = await import('../dist/detect.js');
+  const { loadSubscriptions } = await import('../dist/subscriptions.js');
+  const subs = loadSubscriptions();
+  const report = {
+    ollama: { installed: true, localModels: [], cloud: 'ok' },
+    claude: { installed: true, usable: true },
+    codex: { installed: true, usable: true },
+    grok: { installed: true, usable: true },
+  };
+  const auto = autoPopulatedMembers(report, { chatgpt: 'plus', claude: 'pro', grok: 'heavy', ollama: 'max' }, subs);
+  check('autoPopulatedMembers: never emits a claude-cli-ollama reference, even with Claude usable',
+    !auto.some(m => m.includes('claude-cli-ollama')), JSON.stringify(auto));
+  check('autoPopulatedMembers: does emit bare claude-cli:<model> entries for the real subscription server',
+    auto.some(m => m.startsWith('claude-cli:') && !m.includes('/')), JSON.stringify(auto));
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
 console.log('ALL PASSED ✅');

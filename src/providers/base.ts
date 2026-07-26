@@ -36,9 +36,24 @@ export interface CompletionOptions {
    * This is strictly stronger than `jsonMode`: json-mode only guarantees
    * PARSEABLE JSON, and a judge under json-mode was observed live returning a
    * valid JSON *schema* instead of an answer. Constrained decoding makes the
-   * shape itself unrepresentable-if-wrong. Surfaces that don't support it (the
-   * CLI providers, and Ollama `:cloud` models, which ignore `format` entirely —
-   * measured) simply omit it and rely on the parse+shape guard instead.
+   * shape itself unrepresentable-if-wrong.
+   *
+   * Support, verified against docs + measured live:
+   *   - Ollama LOCAL: `format: <schema>` (XGrammar), v0.3.0+ — true constraint.
+   *   - Ollama `:cloud`: NOT supported — the proxy silently drops it, so even
+   *     `format:'json'` is a no-op (measured on 0.32.4; matches Ollama's own
+   *     docs: "Ollama's Cloud service does not currently support structured
+   *     outputs"). These fall back to the parse+shape guard.
+   *   - OpenAI / vLLM: `response_format.json_schema` — true constraint. We send
+   *     `strict: false` deliberately: `strict: true` additionally REQUIRES
+   *     `additionalProperties: false` throughout, which these schemas don't set
+   *     and which some OpenAI-compatible servers reject outright.
+   *   - SGLang: works, but is documented to fail SILENTLY when the model has
+   *     reasoning enabled (constrained text lands in `reasoning_content`,
+   *     leaving `content` empty) — another reason the parse+shape guard stays.
+   *   - CLI providers (claude/codex/grok): no constrained decoding at all.
+   *     (`claude --json-schema` is POST-HOC validation, not constraint.)
+   * Surfaces without it simply omit the field and rely on the parse+shape guard.
    */
   jsonSchema?: Record<string, unknown>;
   /** Per-attempt wall-clock timeout (ms). Bounds a hung server/subprocess. */

@@ -24833,7 +24833,13 @@ function loadConfig() {
   const localOverride = strictParseInt(localOverrideRaw);
   const poolLimits = resolvePoolLimits(tiers, { cloud: cloudOverride, local: localOverride }, subs);
   const runtime = {
-    maxTokens: Math.max(1, envInt("MAX_TOKENS", 16e3)),
+    // Output-token budget per completion. Clamped per-model to fit the server's
+    // context window (clampMaxTokens) on Ollama and OpenAI-compatible providers,
+    // so a generous default gives longer answers on large-context models without
+    // risking an over-context request; CLI members ignore it (subscription-
+    // managed). 32K is a generous-but-bounded default (raise via MAX_TOKENS for
+    // even longer answers — slower/costlier, multiplied across members × rounds).
+    maxTokens: Math.max(1, envInt("MAX_TOKENS", 32768)),
     cloudConcurrency: cloudOverride ?? subs.defaults.cloudConcurrency,
     localConcurrency: localOverride ?? subs.defaults.localConcurrency,
     poolLimits,
@@ -37434,11 +37440,11 @@ async function buildGitDiff(input) {
 }
 
 // src/context.ts
-var MAX_FILE_BYTES = 256 * 1024;
-var MAX_TOTAL_BYTES = 768 * 1024;
-var MAX_FILES = 20;
-var MAX_CONTEXT_BYTES = 768 * 1024;
-var MAX_QUESTION_BYTES = 256 * 1024;
+var MAX_FILE_BYTES = envInt("MAX_FILE_KB", 512) * 1024;
+var MAX_TOTAL_BYTES = envInt("MAX_TOTAL_KB", 1536) * 1024;
+var MAX_FILES = envInt("MAX_FILES", 32);
+var MAX_CONTEXT_BYTES = envInt("MAX_CONTEXT_KB", 1024) * 1024;
+var MAX_QUESTION_BYTES = envInt("MAX_QUESTION_KB", 256) * 1024;
 var IMAGE_EXTENSIONS = /* @__PURE__ */ new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif"]);
 async function buildAugmentedQuestion(question, input) {
   const questionBytes = Buffer.byteLength(question, "utf8");

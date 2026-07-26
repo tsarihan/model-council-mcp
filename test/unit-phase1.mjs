@@ -1065,6 +1065,16 @@ console.log('▶ context.ts: "question" and "context" are size-capped (were prev
 
   const okContext = await buildAugmentedQuestion('q', { context: 'small context' });
   check('a normal-sized "context" is unaffected', okContext.includes('small context'));
+
+  // Send-caps were raised for large-context councils and are env-configurable
+  // (MAX_CONTEXT_KB/MAX_TOTAL_KB/MAX_FILE_KB/MAX_FILES via the same envInt path
+  // proven configurable for MAX_TOKENS above). Assert the new defaults so a
+  // regression that reverts them (or breaks the KB math) is caught.
+  const { MAX_TOTAL_BYTES, MAX_FILE_BYTES, MAX_FILES } = await import('../dist/context.js');
+  check('send-cap default: inline context = 1 MB', MAX_CONTEXT_BYTES === 1024 * 1024, MAX_CONTEXT_BYTES);
+  check('send-cap default: all-files total = 1.5 MB', MAX_TOTAL_BYTES === 1536 * 1024, MAX_TOTAL_BYTES);
+  check('send-cap default: per-file = 512 KB', MAX_FILE_BYTES === 512 * 1024, MAX_FILE_BYTES);
+  check('send-cap default: file count = 32', MAX_FILES === 32, MAX_FILES);
 }
 
 console.log('▶ context.ts: per-call random nonce guards fence markers against forgery');
@@ -1565,10 +1575,9 @@ console.log('▶ loadConfig: strictParseInt rejects a numeric PREFIX with traili
   const { loadConfig } = await import('../dist/config.js');
   const saved = { ...process.env };
   try {
-    // envInt: MAX_TOKENS="16000kb" must fall back to the default (16000),
-    // not silently truncate to 16000 as a "successfully parsed" value that
-    // happens to equal the default (use a value that WOULD differ from the
-    // default if truncation "worked", to prove it's really falling back).
+    // envInt: MAX_TOKENS="5000oops" must fall back to the default (32768),
+    // not silently truncate to 5000 as a "successfully parsed" value (the
+    // value differs from the default, proving it's really falling back).
     process.env.MAX_TOKENS = '5000oops';
     process.env.COMPLETION_RETRIES = '7bad';
     process.env.REQUEST_TIMEOUT_MS = '9999xyz';
@@ -1580,8 +1589,8 @@ console.log('▶ loadConfig: strictParseInt rejects a numeric PREFIX with traili
     delete process.env.SGLANG_SERVERS;
     delete process.env.COUNCIL_MODELS;
     const cfg = loadConfig();
-    check('envInt: MAX_TOKENS with trailing garbage falls back to the default, not a truncated value',
-      cfg.runtime.maxTokens === 16000, cfg.runtime.maxTokens);
+    check('envInt: MAX_TOKENS with trailing garbage falls back to the default (32768), not a truncated value',
+      cfg.runtime.maxTokens === 32768, cfg.runtime.maxTokens);
     check('envInt: COMPLETION_RETRIES with trailing garbage falls back to the default',
       cfg.runtime.retries === 3, cfg.runtime.retries);
     check('envInt: REQUEST_TIMEOUT_MS with trailing garbage falls back to the default',
@@ -1596,6 +1605,12 @@ console.log('▶ loadConfig: strictParseInt rejects a numeric PREFIX with traili
     const cfgClean = loadConfig();
     check('envInt: a clean integer still parses normally', cfgClean.runtime.maxTokens === 8000, cfgClean.runtime.maxTokens);
     check('MAX_DECONFLICT_ROUNDS: a clean integer still parses normally', cfgClean.council.maxDeconflictRounds === 5, cfgClean.council.maxDeconflictRounds);
+
+    // MAX_TOKENS is configurable higher for longer answers on large-context models.
+    process.env.MAX_TOKENS = '65536';
+    check('MAX_TOKENS: a higher explicit value is honoured (longer answers on big-context models)',
+      loadConfig().runtime.maxTokens === 65536);
+    process.env.MAX_TOKENS = '8000';
 
     // Self-hosted server port parser: "12345oops" must fall back to the
     // provider's default port (8000 for vllm), not truncate to 12345 — using

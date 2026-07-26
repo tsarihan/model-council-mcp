@@ -188,7 +188,7 @@ function strictParseInt(raw: string | undefined): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
-function envInt(name: string, fallback: number): number {
+export function envInt(name: string, fallback: number): number {
   return strictParseInt(envClean(name)) ?? fallback;
 }
 
@@ -462,7 +462,13 @@ export function loadConfig(): AppConfig {
   const poolLimits = resolvePoolLimits(tiers, { cloud: cloudOverride, local: localOverride }, subs);
 
   const runtime: RuntimeConfig = {
-    maxTokens: Math.max(1, envInt('MAX_TOKENS', 16000)),
+    // Output-token budget per completion. Clamped per-model to fit the server's
+    // context window (clampMaxTokens) on Ollama and OpenAI-compatible providers,
+    // so a generous default gives longer answers on large-context models without
+    // risking an over-context request; CLI members ignore it (subscription-
+    // managed). 32K is a generous-but-bounded default (raise via MAX_TOKENS for
+    // even longer answers — slower/costlier, multiplied across members × rounds).
+    maxTokens: Math.max(1, envInt('MAX_TOKENS', 32768)),
     cloudConcurrency: cloudOverride ?? subs.defaults.cloudConcurrency,
     localConcurrency: localOverride ?? subs.defaults.localConcurrency,
     poolLimits,

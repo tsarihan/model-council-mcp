@@ -245,11 +245,23 @@ Full URLs also work: `gpu3:http://10.0.0.5:9000`
 
 | Variable | Description | Default |
 |---|---|---|
-| `MAX_TOKENS` | Max tokens requested per model completion | `16000` |
+| `MAX_TOKENS` | Max **output** tokens requested per completion. Clamped per-model to fit each server's context window (Ollama `/api/show`, OpenAI-compatible `max_model_len`), so a generous value gives longer answers on large-context models without risking an over-context request. CLI members (`claude-cli`/`codex-cli`/`grok-cli`) ignore it — output is subscription-managed. Raise for even longer answers (slower/costlier, multiplied across members × rounds). | `32768` |
 | `CLOUD_CONCURRENCY` | Max simultaneous requests to cloud members (Ollama cloud `:cloud`/`-cloud`, OpenAI, Anthropic, X.AI). Ollama cloud needs Pro (3 concurrent) or Max (10) | `3` |
 | `LOCAL_CONCURRENCY` | Max simultaneous requests to local models; `1` runs them one at a time to avoid contention, `0` = unlimited | `1` |
 | `COMPLETION_RETRIES` | Attempts per completion before giving up on an empty/failed response | `3` |
 | `DECONFLICT_VERBOSE` | `true` → deconflicted results include per-round detail by default | `false` |
+
+**Input send-caps** (bound what the tool feeds the council per call — a large attachment is multiplied across every member × round, so these are a real memory/latency/token amplifier, not just a per-request size). Raise them for a council of large-context models; the **practical ceiling is the smallest member's context window**, so sending ~1 MB (~300K tokens) to a 256K-context local member makes that member error cleanly (`PromptTooLargeError`) while cloud members still answer:
+
+| Variable | Description | Default |
+|---|---|---|
+| `MAX_CONTEXT_KB` | Inline `context` string cap | `1024` (1 MB) |
+| `MAX_TOTAL_KB` | Total across all attached `files` | `1536` (1.5 MB) |
+| `MAX_FILE_KB` | Per-file cap | `512` |
+| `MAX_FILES` | Max number of attached files | `32` |
+| `MAX_QUESTION_KB` | `question` string cap (large text belongs in `context`/`files`) | `256` |
+
+> **Note on Ollama input context (`num_ctx`).** The tool does **not** set `num_ctx` — it inherits your Ollama server's default. To let local models actually ingest large context, set `OLLAMA_CONTEXT_LENGTH` on the **Ollama server** (e.g. `262144` for 256K); the tool reads each model's real max from `/api/show` and fits output to it. Leaving `num_ctx` to the server keeps a model loaded at one stable context size (no per-request reloads) — deliberately, so the tool never churns model loads.
 
 The council queries members in parallel but respects these concurrency limits — cloud members share one pool and local members another, so a large council never exceeds your Ollama cloud plan's concurrent-request cap, and local models can be run sequentially to avoid GPU contention. Each pool's limit is enforced **process-wide**, not per-call: two `ask_council`/`ask_council_async` requests in flight at once (e.g. via the 20-slot async job queue) that both touch the same provider still share that provider's single ceiling rather than each getting their own — a concurrent request can end up waiting on a slot another request is holding, which is expected serialization, not a hang. This applies equally to the judge — categorization, pooling, dossier-building, and final synthesis calls draw from the same pool as the member they're judging, not a separate unbounded channel.
 

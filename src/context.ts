@@ -11,12 +11,25 @@ import { readFile, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { extname, resolve } from 'node:path';
 import { buildGitDiff } from './git.js';
+import { envInt } from './config.js';
 
-export const MAX_FILE_BYTES = 256 * 1024; // 256 KB per file
-export const MAX_TOTAL_BYTES = 768 * 1024; // 768 KB across all files
-export const MAX_FILES = 20;
-export const MAX_CONTEXT_BYTES = 768 * 1024; // 768 KB inline "context" — matches the files total cap
-export const MAX_QUESTION_BYTES = 256 * 1024; // 256 KB "question" — large text belongs in "context"/"files"
+// Input send-caps. These bound what the tool feeds the council PER CALL — a
+// large attachment is multiplied across every member × every round, so an
+// unbounded context is a real memory/latency/token amplifier, not just a
+// per-request size. Env-configurable (KB) so a user running a council of
+// large-context models (e.g. Ollama 256K local / 1M :cloud) can feed more,
+// while the defaults stay modest enough not to surprise a mixed council.
+//
+// NOTE: the practical ceiling is the SMALLEST member's context window, not
+// these caps — sending ~1MB (~300K tokens) to a 256K-context local member
+// makes clampMaxTokens raise a clear PromptTooLargeError for THAT member (it
+// still degrades per-member, others answer), so raise these when your council
+// is all-cloud/large-context, and keep them lower for mixed local councils.
+export const MAX_FILE_BYTES = envInt('MAX_FILE_KB', 512) * 1024; // per file (was 256KB)
+export const MAX_TOTAL_BYTES = envInt('MAX_TOTAL_KB', 1536) * 1024; // across all files (was 768KB)
+export const MAX_FILES = envInt('MAX_FILES', 32); // (was 20)
+export const MAX_CONTEXT_BYTES = envInt('MAX_CONTEXT_KB', 1024) * 1024; // inline "context" (was 768KB)
+export const MAX_QUESTION_BYTES = envInt('MAX_QUESTION_KB', 256) * 1024; // "question" — large text belongs in context/files
 
 /** Binary image extensions are rejected here — read as UTF-8 they become
  *  mojibake sent to every member. Use the `images` parameter instead, which

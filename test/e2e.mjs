@@ -359,7 +359,7 @@ async function main() {
     }));
     check('explicit judge used', cat2.judgeModel === 'ollama:small-b', `got ${cat2.judgeModel}`);
 
-    // ── Test: max_tokens default (16k) reaches the backend ────────────────────
+    // ── Test: max_tokens default (32k) reaches the backend ────────────────────
     console.log('\n▶ max_tokens default');
     await resetMock();
     await client.callTool({
@@ -368,7 +368,7 @@ async function main() {
     });
     await client.callTool({ name: 'ask_council', arguments: { question: 'mt', mode: 'individual' } });
     const dbgMt = await (await fetch(`${MOCK_URL}/debug`)).json();
-    check('max_tokens default is 16000', dbgMt.lastNumPredict === 16000, `got ${dbgMt.lastNumPredict}`);
+    check('max_tokens default is 32768', dbgMt.lastNumPredict === 32768, `got ${dbgMt.lastNumPredict}`);
 
     // ── Test: empty-response retry ────────────────────────────────────────────
     console.log('\n▶ empty-response retry');

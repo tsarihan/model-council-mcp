@@ -13290,7 +13290,7 @@ var init_fileFromPath = __esm({
 });
 
 // src/index.ts
-var import_node_path8 = require("node:path");
+var import_node_path9 = require("node:path");
 
 // node_modules/zod/v3/external.js
 var external_exports = {};
@@ -35435,6 +35435,9 @@ var CodexCliProvider = class {
 
 // src/providers/grok-cli.ts
 var import_node_child_process3 = require("node:child_process");
+var import_node_fs7 = require("node:fs");
+var import_node_os4 = require("node:os");
+var import_node_path5 = require("node:path");
 var DEFAULT_MODELS3 = ["grok-4.5"];
 var DEFAULT_TIMEOUT_MS3 = 3e5;
 function killTree3(child) {
@@ -35522,17 +35525,26 @@ var GrokCliProvider = class {
       systemParts,
       opts.jsonMode ? "Respond with valid JSON only." : ""
     ].filter(Boolean).join("\n\n");
-    const blocks = [
-      { type: "text", text: convo },
-      ...images.map((img) => ({ type: "image", data: img.base64, mimeType: img.mimeType }))
-    ];
+    let promptDir;
+    let promptArgs;
+    if (images.length === 0) {
+      promptDir = (0, import_node_fs7.mkdtempSync)((0, import_node_path5.join)((0, import_node_os4.tmpdir)(), "grok-council-prompt-"));
+      const promptFile = (0, import_node_path5.join)(promptDir, "prompt.txt");
+      (0, import_node_fs7.writeFileSync)(promptFile, convo, "utf8");
+      promptArgs = ["--prompt-file", promptFile];
+    } else {
+      const blocks = [
+        { type: "text", text: convo },
+        ...images.map((img) => ({ type: "image", data: img.base64, mimeType: img.mimeType }))
+      ];
+      promptArgs = ["--prompt-json", JSON.stringify(blocks)];
+    }
     const args = [
       "-m",
       model,
       "--output-format",
       "json",
-      "--prompt-json",
-      JSON.stringify(blocks),
+      ...promptArgs,
       "--tools",
       "",
       // fully locked down — native image blocks need no tool access
@@ -35542,29 +35554,38 @@ var GrokCliProvider = class {
       "--system-prompt-override",
       systemText
     ];
-    const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS3;
-    const { code, stdout, stderr } = await this.run(args, void 0, timeoutMs);
-    if (code !== 0) {
-      throw new Error(
-        `grok CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || stdout.trim().slice(0, 500) || "(no output)"}`
-      );
-    }
-    let parsed;
     try {
-      parsed = JSON.parse(stdout);
-    } catch {
-      throw new Error(
-        `grok CLI returned non-JSON output: ${stdout.trim().slice(0, 300)}`
-      );
+      const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS3;
+      const { code, stdout, stderr } = await this.run(args, void 0, timeoutMs);
+      if (code !== 0) {
+        throw new Error(
+          `grok CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || stdout.trim().slice(0, 500) || "(no output)"}`
+        );
+      }
+      let parsed;
+      try {
+        parsed = JSON.parse(stdout);
+      } catch {
+        throw new Error(
+          `grok CLI returned non-JSON output: ${stdout.trim().slice(0, 300)}`
+        );
+      }
+      if (parsed.type === "error") {
+        throw new Error(`grok CLI reported an error: ${String(parsed.message ?? "(no detail)").slice(0, 300)}`);
+      }
+      const text = typeof parsed.text === "string" ? parsed.text : "";
+      if (parsed.stopReason !== "EndTurn" && !text) {
+        throw new Error(`grok CLI did not complete the turn (stopReason: ${String(parsed.stopReason)})`);
+      }
+      return text;
+    } finally {
+      if (promptDir) {
+        try {
+          (0, import_node_fs7.rmSync)(promptDir, { recursive: true, force: true });
+        } catch {
+        }
+      }
     }
-    if (parsed.type === "error") {
-      throw new Error(`grok CLI reported an error: ${String(parsed.message ?? "(no detail)").slice(0, 300)}`);
-    }
-    const text = typeof parsed.text === "string" ? parsed.text : "";
-    if (parsed.stopReason !== "EndTurn" && !text) {
-      throw new Error(`grok CLI did not complete the turn (stopReason: ${String(parsed.stopReason)})`);
-    }
-    return text;
   }
   run(args, input, timeoutMs) {
     return new Promise((resolve5, reject) => {
@@ -37117,14 +37138,14 @@ function quotaWarning(report, tiers, subs) {
 // src/context.ts
 var import_promises = require("node:fs/promises");
 var import_node_crypto = require("node:crypto");
-var import_node_path6 = require("node:path");
+var import_node_path7 = require("node:path");
 
 // src/git.ts
 var import_node_child_process5 = require("node:child_process");
 var import_node_util = require("node:util");
-var import_node_fs7 = require("node:fs");
-var import_node_path5 = require("node:path");
-var import_node_os4 = require("node:os");
+var import_node_fs8 = require("node:fs");
+var import_node_path6 = require("node:path");
+var import_node_os5 = require("node:os");
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process5.execFile);
 var MAX_DIFF_BYTES = 512 * 1024;
 var GIT_TIMEOUT_MS = 15e3;
@@ -37144,7 +37165,7 @@ function diffArgsForRef(ref) {
 }
 function tryRealpath(path) {
   try {
-    return (0, import_node_fs7.realpathSync)(path);
+    return (0, import_node_fs8.realpathSync)(path);
   } catch {
     return path;
   }
@@ -37154,8 +37175,8 @@ function samePath(a2, b2) {
   return caseInsensitive ? a2.toLowerCase() === b2.toLowerCase() : a2 === b2;
 }
 async function assertGitRepo(repoPath) {
-  const resolved = (0, import_node_path5.resolve)(repoPath);
-  if (samePath(tryRealpath(resolved), tryRealpath((0, import_node_path5.resolve)((0, import_node_os4.homedir)())))) {
+  const resolved = (0, import_node_path6.resolve)(repoPath);
+  if (samePath(tryRealpath(resolved), tryRealpath((0, import_node_path6.resolve)((0, import_node_os5.homedir)())))) {
     throw new Error(
       `"${repoPath}" resolves to your home directory \u2014 refusing to grant it as a repo root even though it is a valid git work tree. Point at a narrower project directory instead.`
     );
@@ -37186,7 +37207,7 @@ async function buildGitDiff(input) {
       `git_ref "${ref}" looks like a git option, not a revision/range \u2014 refusing it. Use "uncommitted" | "staged" | "unstaged", or a revision/range like "main..HEAD".`
     );
   }
-  const repoPath = (0, import_node_path5.resolve)(input.repo?.trim() || process.cwd());
+  const repoPath = (0, import_node_path6.resolve)(input.repo?.trim() || process.cwd());
   await assertGitRepo(repoPath);
   const args = [...GLOBAL_SAFETY_ARGS, ...diffArgsForRef(ref)];
   let stdout;
@@ -37251,8 +37272,8 @@ ${diff}`);
   let total = 0;
   for (const raw of files) {
     if (typeof raw !== "string" || !raw.trim()) continue;
-    const path = (0, import_node_path6.resolve)(raw);
-    if (IMAGE_EXTENSIONS.has((0, import_node_path6.extname)(path).toLowerCase())) {
+    const path = (0, import_node_path7.resolve)(raw);
+    if (IMAGE_EXTENSIONS.has((0, import_node_path7.extname)(path).toLowerCase())) {
       throw new Error(
         `${raw} looks like an image \u2014 "files" reads text and would send garbled data. Use the "images" parameter instead.`
       );
@@ -37301,7 +37322,7 @@ ${question}`;
 
 // src/images.ts
 var import_promises2 = require("node:fs/promises");
-var import_node_path7 = require("node:path");
+var import_node_path8 = require("node:path");
 var MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 var MAX_TOTAL_IMAGE_BYTES = 24 * 1024 * 1024;
 var MAX_IMAGES = 6;
@@ -37321,8 +37342,8 @@ async function loadImages(paths) {
   let total = 0;
   for (const raw of paths) {
     if (typeof raw !== "string" || !raw.trim()) continue;
-    const path = (0, import_node_path7.resolve)(raw);
-    const ext = (0, import_node_path7.extname)(path).toLowerCase();
+    const path = (0, import_node_path8.resolve)(raw);
+    const ext = (0, import_node_path8.extname)(path).toLowerCase();
     const mimeType = EXT_TO_MIME[ext];
     if (!mimeType) {
       throw new Error(
@@ -37456,7 +37477,7 @@ async function runCouncil(input, onProgress) {
   const images = await loadImages(input.images);
   let fullRepoAccessRepo;
   if (input.full_repo_access) {
-    fullRepoAccessRepo = (0, import_node_path8.resolve)(input.git_repo?.trim() || process.cwd());
+    fullRepoAccessRepo = (0, import_node_path9.resolve)(input.git_repo?.trim() || process.cwd());
     await assertGitRepo(fullRepoAccessRepo);
   }
   return orchestrator.ask(
@@ -37758,7 +37779,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.37"
+    version: "0.2.38"
   },
   {
     capabilities: { tools: {} },

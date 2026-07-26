@@ -1142,7 +1142,12 @@ async function main() {
     check('grok-cli: tools disabled in nested call', gx.responses?.every(r => /tools=off/.test(r.response ?? '')));
     check('grok-cli: permission-mode bypassPermissions passed', gx.responses?.every(r => /perm=bypassPermissions/.test(r.response ?? '')));
     check('grok-cli: system prompt overridden (neutral persona)', gx.responses?.every(r => /sys=override/.test(r.response ?? '')));
-    check('grok-cli: prompt reached the CLI via --prompt-json', gx.responses?.every(r => /hi grok/.test(r.response ?? '')));
+    check('grok-cli: prompt content reached the CLI', gx.responses?.every(r => /hi grok/.test(r.response ?? '')));
+    // Text-only (no images) now goes through --prompt-file (a temp file), not
+    // --prompt-json inline — this is the actual argv-length fix: a large
+    // context/files/judge prompt no longer risks an OS argv-length limit.
+    check('grok-cli: text-only prompt uses --prompt-file, not inline --prompt-json',
+      gx.responses?.every(r => /via=file\b/.test(r.response ?? '')), gx.responses?.map(r => r.response).join(' | '));
 
     // CLI-reported error ({"type":"error",...} + exit 1) → surfaced as a member error
     await grokClient.callTool({ name: 'configure_council', arguments: { models: ['grok-cli:erroring'], response_mode: 'individual' } });
@@ -1163,6 +1168,9 @@ async function main() {
       check('grok-cli vision: visionRouting queried grok-4.5', grokVis.visionRouting?.queriedVisionModels?.includes('grok-cli:grok-4.5'), JSON.stringify(grokVis.visionRouting));
       const grokVisResp = grokVis.responses?.[0]?.response ?? '';
       check('grok-cli vision: native image block carried (no tool loosening)', /tools=off\b/.test(grokVisResp) && /images=1\b/.test(grokVisResp), grokVisResp);
+      // Image-bearing calls still use --prompt-json inline (no documented
+      // file-based channel for the content-block format — see file header).
+      check('grok-cli vision: image-bearing call still uses --prompt-json, not --prompt-file', /via=json\b/.test(grokVisResp), grokVisResp);
     } finally {
       rmSync(grokImgDir, { recursive: true, force: true });
     }

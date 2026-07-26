@@ -28,6 +28,24 @@
  * than a file the model must go read, `--tools ''` (fully locked down) is
  * correct even for calls that include an image — no loosening required at all.
  *
+ * Argv-length: `--prompt-json <JSON>` (and images/large context specifically)
+ * is passed as a single argv element, unlike claude-cli/codex-cli which use
+ * stdin/a temp file precisely to avoid OS argv-length limits (Linux
+ * MAX_ARG_STRLEN ~128 KiB per argument, macOS ARG_MAX ~1 MiB total). For the
+ * TEXT-ONLY case (no images) — the dominant one: any large `context`/`files`/
+ * git diff, or a judge prompt embedding every member's response — this is now
+ * routed through `--prompt-file <path>` (a temp file) instead, which grok's
+ * own docs show used for plain-text prompt content (`grok --prompt-file
+ * ./prompt.txt`), eliminating the argv-length risk for that path entirely.
+ * Image-bearing calls still go through `--prompt-json` inline: there is no
+ * documented file-based or stdin-based channel for grok's structured
+ * content-block format (no `-i`/`--image` flag either, unlike codex-cli), so
+ * this narrower exposure remains, bounded by the existing 8 MB/image, 24 MB
+ * total caps. Whether `--prompt-file` ALSO accepts the `--prompt-json`
+ * content-block shape (which would close this gap too) is UNVERIFIED against
+ * the real CLI — investigation was blocked by the CLI's own quota
+ * exhaustion; confirm live before relying on it.
+ *
  * No MCP-recursion-prevention flag was found for this CLI (no `claude-cli`-style
  * `--strict-mcp-config` equivalent). Mitigated in practice by `--tools ''`
  * disabling all tool execution, and by `grok mcp` requiring an explicit,
@@ -35,6 +53,9 @@
  * way Claude Code's `.mcp.json` is.
  */
 import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { CappedBuffer, ChatImage, ChatMessage, CompletionOptions, Provider } from './base.js';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
 import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
@@ -167,54 +188,79 @@ export class GrokCliProvider implements Provider {
       .filter(Boolean)
       .join('\n\n');
 
-    const blocks: ContentBlock[] = [
-      { type: 'text', text: convo },
-      ...images.map(img => ({ type: 'image' as const, data: img.base64, mimeType: img.mimeType })),
-    ];
+    // No images: write the (possibly large) flattened text prompt to a temp
+    // file and pass --prompt-file, avoiding the argv-length limit entirely
+    // for this — the dominant — case. With images: no documented file-based
+    // channel exists for the structured content-block format, so
+    // --prompt-json stays inline (see file header for the residual risk).
+    let promptDir: string | undefined;
+    let promptArgs: string[];
+    if (images.length === 0) {
+      promptDir = mkdtempSync(join(tmpdir(), 'grok-council-prompt-'));
+      const promptFile = join(promptDir, 'prompt.txt');
+      writeFileSync(promptFile, convo, 'utf8');
+      promptArgs = ['--prompt-file', promptFile];
+    } else {
+      const blocks: ContentBlock[] = [
+        { type: 'text', text: convo },
+        ...images.map(img => ({ type: 'image' as const, data: img.base64, mimeType: img.mimeType })),
+      ];
+      promptArgs = ['--prompt-json', JSON.stringify(blocks)];
+    }
 
     const args = [
       '-m', model,
       '--output-format', 'json',
-      '--prompt-json', JSON.stringify(blocks),
+      ...promptArgs,
       '--tools', '', // fully locked down — native image blocks need no tool access
       '--permission-mode', 'bypassPermissions', // required in headless mode, see file header
       '--system-prompt-override', systemText,
     ];
 
-    // Respect an explicit opts.timeoutMs verbatim (matches every other
-    // provider's plain `?? DEFAULT` pattern) — a Math.max floor here used to
-    // silently override a DELIBERATELY short explicit timeout (e.g.
-    // supportsVision()'s 60s probe budget always became 300s), defeating the
-    // caller's own choice. A caller that wants the DEFAULT_TIMEOUT_MS floor
-    // for a slow reasoning model still gets it by omitting timeoutMs; a
-    // caller with a genuinely low REQUEST_TIMEOUT_MS now correctly has that
-    // honoured here too, consistent with API providers.
-    const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const { code, stdout, stderr } = await this.run(args, undefined, timeoutMs);
-    if (code !== 0) {
-      throw new Error(
-        `grok CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || stdout.trim().slice(0, 500) || '(no output)'}`,
-      );
-    }
-
-    let parsed: { text?: unknown; stopReason?: unknown; type?: unknown; message?: unknown };
     try {
-      parsed = JSON.parse(stdout);
-    } catch {
-      throw new Error(
-        `grok CLI returned non-JSON output: ${stdout.trim().slice(0, 300)}`,
-      );
+      // Respect an explicit opts.timeoutMs verbatim (matches every other
+      // provider's plain `?? DEFAULT` pattern) — a Math.max floor here used to
+      // silently override a DELIBERATELY short explicit timeout (e.g.
+      // supportsVision()'s 60s probe budget always became 300s), defeating the
+      // caller's own choice. A caller that wants the DEFAULT_TIMEOUT_MS floor
+      // for a slow reasoning model still gets it by omitting timeoutMs; a
+      // caller with a genuinely low REQUEST_TIMEOUT_MS now correctly has that
+      // honoured here too, consistent with API providers.
+      const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      const { code, stdout, stderr } = await this.run(args, undefined, timeoutMs);
+      if (code !== 0) {
+        throw new Error(
+          `grok CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || stdout.trim().slice(0, 500) || '(no output)'}`,
+        );
+      }
+
+      let parsed: { text?: unknown; stopReason?: unknown; type?: unknown; message?: unknown };
+      try {
+        parsed = JSON.parse(stdout);
+      } catch {
+        throw new Error(
+          `grok CLI returned non-JSON output: ${stdout.trim().slice(0, 300)}`,
+        );
+      }
+      // Error shape: {"type":"error","message":"..."} — exit code can still be 1
+      // for this (already handled above), but guard the shape defensively too.
+      if (parsed.type === 'error') {
+        throw new Error(`grok CLI reported an error: ${String(parsed.message ?? '(no detail)').slice(0, 300)}`);
+      }
+      const text = typeof parsed.text === 'string' ? parsed.text : '';
+      if (parsed.stopReason !== 'EndTurn' && !text) {
+        throw new Error(`grok CLI did not complete the turn (stopReason: ${String(parsed.stopReason)})`);
+      }
+      return text;
+    } finally {
+      if (promptDir) {
+        try {
+          rmSync(promptDir, { recursive: true, force: true });
+        } catch {
+          /* best-effort cleanup */
+        }
+      }
     }
-    // Error shape: {"type":"error","message":"..."} — exit code can still be 1
-    // for this (already handled above), but guard the shape defensively too.
-    if (parsed.type === 'error') {
-      throw new Error(`grok CLI reported an error: ${String(parsed.message ?? '(no detail)').slice(0, 300)}`);
-    }
-    const text = typeof parsed.text === 'string' ? parsed.text : '';
-    if (parsed.stopReason !== 'EndTurn' && !text) {
-      throw new Error(`grok CLI did not complete the turn (stopReason: ${String(parsed.stopReason)})`);
-    }
-    return text;
   }
 
   private run(

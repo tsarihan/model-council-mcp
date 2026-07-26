@@ -188,6 +188,7 @@ Set `GROK_CLI=true` (or a `GROK_TIER` above `free`) to add council members that 
 - Each call shells out to `grok` with all tools disabled (`--tools ''`) and `--permission-mode bypassPermissions` (required for headless use — without it the CLI silently cancels the turn instead of completing).
 - **`XAI_API_KEY` is stripped from the nested call**, because the CLI accepts it as an alternate auth path that would otherwise switch billing to per-token instead of the subscription.
 - Images are passed as native `--prompt-json` content blocks (no Read-tool or `-i`-flag workaround needed — the CLI accepts structured image content directly).
+- A text-only prompt (the common case) is written to a temp file and passed via `--prompt-file` rather than inline, avoiding the OS argv-length limit a large `context`/`files`/git-diff attachment or judge prompt could otherwise hit. An image-bearing call still passes `--prompt-json` inline (no file-based channel exists for that content-block shape), so the same argv-length exposure remains there, bounded by the existing image size caps.
 - Unlike Claude/ChatGPT's CLI members, **Grok defaults to `free`** (opt-in) — set `GROK_TIER` above `free` or `GROK_CLI=true` explicitly to add it to the auto-populated council, since this is a newer provider added on top of an existing install base.
 
 **Where it works:** anywhere the `grok` binary actually executes (this machine, or a `/remote-control`-driven CLI running on your machine). It does **not** work for a remotely-hosted copy of this server.

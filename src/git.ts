@@ -7,12 +7,20 @@
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
 
 const execFileAsync = promisify(execFile);
 
 export const MAX_DIFF_BYTES = 512 * 1024; // 512 KB
+
+// Every other subprocess in this codebase is wall-clock bounded; a hung git
+// (stalled network mount, corrupted object database, or a repo-configured
+// command that blocks — see GLOBAL_SAFETY_ARGS below) would otherwise block
+// a synchronous ask_council call forever, or permanently occupy one of the
+// 20 running-job slots for an async call with no way to recover it.
+const GIT_TIMEOUT_MS = 15_000;
 
 export interface GitDiffInput {
   /** 'staged' | 'unstaged' | 'uncommitted', or any git revision/range (e.g. "main..HEAD"). */
@@ -27,6 +35,16 @@ export interface GitDiffInput {
 // command the repo itself configured. This is a read-only context-extraction
 // feature; it should never run anything the repo defines.
 const NO_HELPERS = ['--no-ext-diff', '--no-textconv'];
+
+// Global (must precede the subcommand) safety flags closing the SAME
+// arbitrary-command threat model NO_HELPERS targets, for the two mechanisms
+// it doesn't cover: `git diff`'s index refresh can invoke a repo-configured
+// `core.fsmonitor` command (the query-fsmonitor hook), and any git invocation
+// can run a repo-local `core.hooksPath` hook. A "repo" delivered as an
+// archive (not a clone — .git/config IS included in a tarball/zip, unlike a
+// clone) with either set is a real, documented attack pattern, and this
+// feature's whole purpose is reviewing an arbitrary local repo.
+const GLOBAL_SAFETY_ARGS = ['-c', 'core.fsmonitor=', '-c', 'core.hooksPath=/dev/null'];
 
 /** Map a friendly alias to `git diff` args; anything else is passed through as a revision/range. */
 function diffArgsForRef(ref: string): string[] {
@@ -67,9 +85,33 @@ function diffArgsForRef(ref: string): string[] {
  * that gap in general. This one common, high-blast-radius case is rejected
  * explicitly as defense-in-depth; anything narrower under $HOME still passes.
  */
+/** realpath if the path exists (resolving symlinks); the resolved-but-unresolved path otherwise. */
+function tryRealpath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/**
+ * Case-insensitively compares paths on darwin/win32 (their default
+ * filesystems are case-insensitive, so two differently-cased strings can
+ * name the identical file — comparing case-sensitively there would let a
+ * case-variant path slip past a same-path check).
+ */
+function samePath(a: string, b: string): boolean {
+  const caseInsensitive = process.platform === 'darwin' || process.platform === 'win32';
+  return caseInsensitive ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
 export async function assertGitRepo(repoPath: string): Promise<void> {
   const resolved = resolve(repoPath);
-  if (resolved === resolve(homedir())) {
+  // realpath (not just path.resolve) so a SYMLINKED home directory — or a
+  // symlink pointing INTO the home directory — can't produce a different
+  // string than the real $HOME and slip past this check while pointing at
+  // the exact same location on disk.
+  if (samePath(tryRealpath(resolved), tryRealpath(resolve(homedir())))) {
     throw new Error(
       `"${repoPath}" resolves to your home directory — refusing to grant it as a repo root even ` +
         `though it is a valid git work tree. Point at a narrower project directory instead.`,
@@ -77,7 +119,11 @@ export async function assertGitRepo(repoPath: string): Promise<void> {
   }
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: resolved }));
+    ({ stdout } = await execFileAsync(
+      'git',
+      ['rev-parse', '--is-inside-work-tree'],
+      { cwd: resolved, timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL' },
+    ));
   } catch {
     throw new Error(`"${repoPath}" is not inside a git repository (or git is not installed).`);
   }
@@ -115,10 +161,15 @@ export async function buildGitDiff(input: GitDiffInput): Promise<string> {
   const repoPath = resolve(input.repo?.trim() || process.cwd());
   await assertGitRepo(repoPath);
 
-  const args = diffArgsForRef(ref);
+  const args = [...GLOBAL_SAFETY_ARGS, ...diffArgsForRef(ref)];
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync('git', args, { cwd: repoPath, maxBuffer: MAX_DIFF_BYTES * 2 }));
+    ({ stdout } = await execFileAsync('git', args, {
+      cwd: repoPath,
+      maxBuffer: MAX_DIFF_BYTES * 2,
+      timeout: GIT_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+    }));
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     throw new Error(`git diff failed for git_ref "${ref}": ${detail.trim().slice(0, 300)}`);

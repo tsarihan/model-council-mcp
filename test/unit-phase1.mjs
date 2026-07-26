@@ -534,6 +534,29 @@ console.log('▶ assertGitRepo: stdout check (rejects .git dir) + $HOME defense-
   process.env.HOME = savedHome;
   rmSync(homeDir, { recursive: true, force: true });
   check('$HOME (even a legitimate git repo) is rejected as a repo root', threwHome && /home directory/i.test(homeMsg), homeMsg);
+
+  // Regression: a SYMLINKED home directory must not bypass the check. HOME
+  // points at a symlink; the caller passes the REAL (non-symlink) path to
+  // the same location — path.resolve() alone can't tell these are the same
+  // directory (different strings), only realpath can. Before the fix this
+  // was a live bypass: the two strings never matched, so the guard silently
+  // let the real home directory through under a different name.
+  const { symlinkSync, realpathSync } = await import('node:fs');
+  const realHomeDir = mkdtempSync(join(tmpdir(), 'mc-agr-realhome-'));
+  execFileSync('git', ['init', '-q'], { cwd: realHomeDir });
+  const symlinkHome = join(tmpdir(), `mc-agr-symlinkhome-${process.pid}`);
+  symlinkSync(realHomeDir, symlinkHome);
+  const savedHome2 = process.env.HOME;
+  process.env.HOME = symlinkHome; // HOME is the SYMLINK path
+  let threwSymlinkHome = false, symlinkHomeMsg = '';
+  try {
+    await assertGitRepo(realpathSync(realHomeDir)); // caller passes the REAL path
+  } catch (e) { threwSymlinkHome = true; symlinkHomeMsg = e.message; }
+  process.env.HOME = savedHome2;
+  rmSync(symlinkHome, { force: true });
+  rmSync(realHomeDir, { recursive: true, force: true });
+  check('a symlinked $HOME cannot be bypassed by passing the real (non-symlink) path',
+    threwSymlinkHome && /home directory/i.test(symlinkHomeMsg), symlinkHomeMsg);
 }
 
 console.log('▶ context.ts rejects image extensions in "files" (guards the other route to garbled data)');

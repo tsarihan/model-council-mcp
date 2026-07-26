@@ -37120,11 +37120,14 @@ var import_node_path6 = require("node:path");
 // src/git.ts
 var import_node_child_process5 = require("node:child_process");
 var import_node_util = require("node:util");
+var import_node_fs7 = require("node:fs");
 var import_node_path5 = require("node:path");
 var import_node_os4 = require("node:os");
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process5.execFile);
 var MAX_DIFF_BYTES = 512 * 1024;
+var GIT_TIMEOUT_MS = 15e3;
 var NO_HELPERS = ["--no-ext-diff", "--no-textconv"];
+var GLOBAL_SAFETY_ARGS = ["-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null"];
 function diffArgsForRef(ref) {
   switch (ref) {
     case "staged":
@@ -37137,16 +37140,31 @@ function diffArgsForRef(ref) {
       return ["diff", ...NO_HELPERS, "--end-of-options", ref];
   }
 }
+function tryRealpath(path) {
+  try {
+    return (0, import_node_fs7.realpathSync)(path);
+  } catch {
+    return path;
+  }
+}
+function samePath(a2, b2) {
+  const caseInsensitive = process.platform === "darwin" || process.platform === "win32";
+  return caseInsensitive ? a2.toLowerCase() === b2.toLowerCase() : a2 === b2;
+}
 async function assertGitRepo(repoPath) {
   const resolved = (0, import_node_path5.resolve)(repoPath);
-  if (resolved === (0, import_node_path5.resolve)((0, import_node_os4.homedir)())) {
+  if (samePath(tryRealpath(resolved), tryRealpath((0, import_node_path5.resolve)((0, import_node_os4.homedir)())))) {
     throw new Error(
       `"${repoPath}" resolves to your home directory \u2014 refusing to grant it as a repo root even though it is a valid git work tree. Point at a narrower project directory instead.`
     );
   }
   let stdout;
   try {
-    ({ stdout } = await execFileAsync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: resolved }));
+    ({ stdout } = await execFileAsync(
+      "git",
+      ["rev-parse", "--is-inside-work-tree"],
+      { cwd: resolved, timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL" }
+    ));
   } catch {
     throw new Error(`"${repoPath}" is not inside a git repository (or git is not installed).`);
   }
@@ -37168,10 +37186,15 @@ async function buildGitDiff(input) {
   }
   const repoPath = (0, import_node_path5.resolve)(input.repo?.trim() || process.cwd());
   await assertGitRepo(repoPath);
-  const args = diffArgsForRef(ref);
+  const args = [...GLOBAL_SAFETY_ARGS, ...diffArgsForRef(ref)];
   let stdout;
   try {
-    ({ stdout } = await execFileAsync("git", args, { cwd: repoPath, maxBuffer: MAX_DIFF_BYTES * 2 }));
+    ({ stdout } = await execFileAsync("git", args, {
+      cwd: repoPath,
+      maxBuffer: MAX_DIFF_BYTES * 2,
+      timeout: GIT_TIMEOUT_MS,
+      killSignal: "SIGKILL"
+    }));
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     throw new Error(`git diff failed for git_ref "${ref}": ${detail.trim().slice(0, 300)}`);
@@ -37733,7 +37756,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.35"
+    version: "0.2.36"
   },
   {
     capabilities: { tools: {} },

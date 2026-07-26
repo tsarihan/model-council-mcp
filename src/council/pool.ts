@@ -69,7 +69,7 @@ function parsePoolJSON(raw: string): RawPoolJSON {
   // prose that itself contains braces — sliceBalancedJson matches the first
   // object's BALANCED close, not the last brace in the whole string).
   const obj = JSON.parse(sliceBalancedJson(stripped));
-  assertJsonShape(obj, ['options']);
+  assertJsonShape(obj, { options: 'array' });
   return obj as RawPoolJSON;
 }
 

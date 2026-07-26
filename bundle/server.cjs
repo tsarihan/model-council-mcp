@@ -24919,9 +24919,17 @@ function stripThinkBlocks(text) {
   if (m2 && m2.index !== void 0) out = out.slice(m2.index + m2[0].length);
   return out.trim();
 }
-function assertJsonShape(v2, keys) {
-  if (v2 === null || typeof v2 !== "object" || Array.isArray(v2) || !keys.some((k2) => k2 in v2)) {
+function assertJsonShape(v2, required2) {
+  if (v2 === null || typeof v2 !== "object" || Array.isArray(v2)) {
     throw new Error("judge JSON has an unexpected top-level shape");
+  }
+  for (const [key, kind3] of Object.entries(required2)) {
+    const val = v2[key];
+    if (kind3 === "array" && !Array.isArray(val)) {
+      throw new Error(
+        `judge JSON: required field "${key}" is ${val === void 0 ? "missing" : "not an array"}`
+      );
+    }
   }
 }
 function sliceBalancedJson(text) {
@@ -36124,7 +36132,7 @@ Rules:
 function parseCategorizationJSON(raw) {
   const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
   const obj = JSON.parse(sliceBalancedJson(stripped));
-  assertJsonShape(obj, ["conflicting", "complementary", "commonAgreement"]);
+  assertJsonShape(obj, { conflicting: "array" });
   return obj;
 }
 async function categorize(question, responses, judgeModelId, judgeProvider, cc, runtime, existingConflictIds = [], openTopics = []) {
@@ -36138,6 +36146,7 @@ async function categorize(question, responses, judgeModelId, judgeProvider, cc, 
       judgeDegraded: true
     };
   }
+  const partialOutage = responses.some((r2) => r2.error);
   const prompt = buildCategorizationPrompt(question, responses, openTopics);
   let rawJson;
   try {
@@ -36177,7 +36186,8 @@ async function categorize(question, responses, judgeModelId, judgeProvider, cc, 
     };
   }
   const existingSet = new Set(existingConflictIds);
-  let conflictCounter = existingConflictIds.length > 0 ? Math.max(...existingConflictIds.map((id) => parseInt(id.split("-")[1] ?? "0"))) : 0;
+  const usedNumbers = existingConflictIds.map((id) => parseInt(id.split("-")[1] ?? "", 10)).filter((n2) => Number.isFinite(n2));
+  let conflictCounter = usedNumbers.length > 0 ? Math.max(...usedNumbers) : 0;
   const conflicting = (Array.isArray(parsed.conflicting) ? parsed.conflicting : []).map((c2) => {
     conflictCounter++;
     const id = `conflict-${conflictCounter}`;
@@ -36199,7 +36209,10 @@ async function categorize(question, responses, judgeModelId, judgeProvider, cc, 
       insight: String(c2?.insight ?? "")
     })),
     conflicting,
-    judgeModel: modelIdLabel(judgeModelId)
+    judgeModel: modelIdLabel(judgeModelId),
+    // Measured over an incomplete council (see partialOutage above) — the
+    // categorization content is real, but it is not a clean convergence reading.
+    ...partialOutage ? { judgeDegraded: true } : {}
   };
 }
 function buildSynthesisPrompt(question, commonAgreement, complementary, resolvedConflicts, unresolvedConflicts) {
@@ -36279,6 +36292,23 @@ function mergePositionsByModel(prev, updated) {
   }
   return [...updated, ...preserved];
 }
+function partyErrored(positions, erroredLabels) {
+  if (erroredLabels.size === 0) return false;
+  const errored = [...erroredLabels];
+  return positions.some(
+    (p2) => (p2.models ?? []).some((raw) => {
+      const m2 = String(raw ?? "").trim();
+      if (!m2) return false;
+      if (erroredLabels.has(m2)) return true;
+      const lm = m2.toLowerCase();
+      return errored.some((e2) => {
+        const le2 = e2.toLowerCase();
+        if (le2 === lm) return true;
+        return lm.length >= 3 && le2.length >= 3 && (le2.includes(lm) || lm.includes(le2));
+      });
+    })
+  );
+}
 function detectResolutions(previous, newCateg, erroredLabels = /* @__PURE__ */ new Set()) {
   const norm = (s2) => String(s2 ?? "").trim().toLowerCase().replace(/\s+/g, " ");
   const resolved = [];
@@ -36287,12 +36317,14 @@ function detectResolutions(previous, newCateg, erroredLabels = /* @__PURE__ */ n
   let partyDropout = false;
   for (const prev of previous) {
     const prevTopic = norm(prev.topic);
-    const updatedIdx = newCateg.conflicting.findIndex((c2) => norm(c2.topic) === prevTopic);
+    const updatedIdx = newCateg.conflicting.findIndex(
+      (c2, i2) => !matchedNewIdx.has(i2) && norm(c2.topic) === prevTopic
+    );
     const updated = updatedIdx >= 0 ? newCateg.conflicting[updatedIdx] : void 0;
     if (updated) {
       remaining.push({ ...updated, id: prev.id, positions: mergePositionsByModel(prev.positions, updated.positions) });
       matchedNewIdx.add(updatedIdx);
-    } else if (prev.positions.some((p2) => (p2.models ?? []).some((m2) => erroredLabels.has(m2)))) {
+    } else if (partyErrored(prev.positions, erroredLabels)) {
       remaining.push(prev);
       partyDropout = true;
     } else {
@@ -36504,7 +36536,13 @@ async function deconflict(input) {
     // was absent when the judge assessed it, so the score is a lower bound.
     // (If everything resolved, all resolutions happened in dropout-free rounds
     // — a dropout only ever carries forward — so the result is trustworthy.)
-    ...midLoopJudgeFailure || partyDropoutDegraded && openConflicts.length > 0 ? { judgeDegraded: true } : {},
+    // ALSO propagate an already-degraded INITIAL categorization: `totalConflicts`
+    // (the score's denominator) is fixed from it, so if that measurement was
+    // taken over an incomplete council or a failed judge, every score derived
+    // from it is likewise unreliable — even when the loop itself ran cleanly and
+    // resolved everything. Without this the flag was silently dropped for any
+    // run that found at least one conflict.
+    ...midLoopJudgeFailure || input.judgeDegraded || partyDropoutDegraded && openConflicts.length > 0 ? { judgeDegraded: true } : {},
     ...verbose ? {
       initialResponses: input.initialResponses,
       initialCategorization: {
@@ -36549,7 +36587,7 @@ Return ONLY valid JSON (no markdown), with this schema:
 function parsePoolJSON(raw) {
   const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
   const obj = JSON.parse(sliceBalancedJson(stripped));
-  assertJsonShape(obj, ["options"]);
+  assertJsonShape(obj, { options: "array" });
   return obj;
 }
 async function poolResponses(question, responses, judgeModelId, judgeProvider, cc, runtime) {
@@ -36719,7 +36757,7 @@ Return ONLY valid JSON (no markdown):
 function parseDossierJSON(raw) {
   const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
   const obj = JSON.parse(sliceBalancedJson(stripped));
-  assertJsonShape(obj, ["options"]);
+  assertJsonShape(obj, { options: "array" });
   return obj;
 }
 function toStrList(v2) {

@@ -411,12 +411,30 @@ console.log('▶ categorize: judgeDegraded flags a judge failure, distinct from 
   check('bare-array judge JSON → judgeDegraded true (sliceBalancedJson extracts an object w/o our keys)', bareArray.judgeDegraded === true);
   const scalar = await categorize('q', resp, judgeId, fakeJudge('42'), cc, runtime);
   check('scalar judge JSON → judgeDegraded true', scalar.judgeDegraded === true);
-  // assertJsonShape directly
+  // ── Round-12: the shape guard must check TYPE and REQUIREDNESS, not presence ──
+  // Round 11's version accepted any object carrying ANY one expected key, which
+  // left two more fabricated-consensus paths open: a judge omitting `conflicting`
+  // entirely, and one sending it with the wrong TYPE (the caller's
+  // `Array.isArray(...) ? ... : []` guard then coerced it to empty).
+  const missingKey = await categorize('q', resp, judgeId, fakeJudge('{"commonAgreement":"All agree."}'), cc, runtime);
+  check('judge JSON MISSING "conflicting" → judgeDegraded (was accepted → fabricated 100%)',
+    missingKey.judgeDegraded === true, JSON.stringify(missingKey));
+  const wrongType = await categorize('q', resp, judgeId, fakeJudge('{"conflicting":"none","complementary":[]}'), cc, runtime);
+  check('judge JSON with non-array "conflicting" → judgeDegraded (was coerced to [] silently)',
+    wrongType.judgeDegraded === true, JSON.stringify(wrongType));
+  const wrongTypeObj = await categorize('q', resp, judgeId, fakeJudge('{"conflicting":{"topic":"x"}}'), cc, runtime);
+  check('judge JSON with object "conflicting" → judgeDegraded', wrongTypeObj.judgeDegraded === true);
+
+  // assertJsonShape directly (new signature: required field + type)
   const { assertJsonShape } = await import('../dist/providers/base.js');
-  let threw = false; try { assertJsonShape({ analysis: {} }, ['conflicting', 'complementary', 'commonAgreement']); } catch { threw = true; }
-  check('assertJsonShape: object missing all expected keys throws', threw);
-  check('assertJsonShape: object with one expected key passes (no throw)',
-    (() => { try { assertJsonShape({ commonAgreement: null }, ['conflicting', 'complementary', 'commonAgreement']); return true; } catch { return false; } })());
+  const throwsOn = (v, req) => { try { assertJsonShape(v, req); return false; } catch { return true; } };
+  check('assertJsonShape: wrapper object without the required key throws', throwsOn({ analysis: {} }, { conflicting: 'array' }));
+  check('assertJsonShape: required key MISSING throws', throwsOn({ commonAgreement: null }, { conflicting: 'array' }));
+  check('assertJsonShape: required key present but NOT an array throws', throwsOn({ conflicting: 'none' }, { conflicting: 'array' }));
+  check('assertJsonShape: bare array throws', throwsOn([{ topic: 't' }], { conflicting: 'array' }));
+  check('assertJsonShape: scalar throws', throwsOn(42, { conflicting: 'array' }));
+  check('assertJsonShape: a genuine zero-conflict result PASSES (no false rejection)',
+    !throwsOn({ commonAgreement: 'all agree', complementary: [], conflicting: [] }, { conflicting: 'array' }));
 
   // All members errored this round → nothing genuine to categorize; must flag
   // judgeDegraded WITHOUT even calling the judge (fakeJudge would throw here
@@ -427,6 +445,27 @@ console.log('▶ categorize: judgeDegraded flags a judge failure, distinct from 
   check('categorize: all-errored responses → judgeDegraded true, judge never called', noData.judgeDegraded === true && noData.conflicting.length === 0);
   const emptyResp = await categorize('q', [], judgeId, throwingJudge, cc, runtime);
   check('categorize: zero responses → judgeDegraded true, judge never called', emptyResp.judgeDegraded === true);
+
+  // ── PARTIAL member outage (round-12): the judge only sees non-errored
+  // responses, so a conclusion drawn while some members are missing is measured
+  // over an INCOMPLETE council — in the limit (2 of 3 error) the judge sees one
+  // answer, can't find a contradiction, and returns conflicting:[] which reads
+  // downstream as a confident 100% consensus. Same fabricated-convergence class
+  // as the all-errored case, so it must be flagged too.
+  const partial = [
+    { modelId: { provider: 'ollama', model: 'a' }, label: 'ollama:a', response: 'Rust is best', latencyMs: 1 },
+    { modelId: { provider: 'ollama', model: 'b' }, label: 'ollama:b', response: '', error: 'timeout', latencyMs: 1 },
+  ];
+  const partialRes = await categorize('q', partial, judgeId, fakeJudge('{"commonAgreement":"All agree.","complementary":[],"conflicting":[]}'), cc, runtime);
+  check('categorize: PARTIAL outage (some members errored) → judgeDegraded true, not a clean 100%',
+    partialRes.judgeDegraded === true, JSON.stringify(partialRes));
+  // Healthy council with the same judge output must still be clean — the flag
+  // must mark real incompleteness, not fire on every run.
+  const healthy = await categorize('q', [
+    { modelId: { provider: 'ollama', model: 'a' }, label: 'ollama:a', response: 'Rust', latencyMs: 1 },
+    { modelId: { provider: 'ollama', model: 'b' }, label: 'ollama:b', response: 'Rust', latencyMs: 1 },
+  ], judgeId, fakeJudge('{"commonAgreement":"All agree.","complementary":[],"conflicting":[]}'), cc, runtime);
+  check('categorize: healthy council with genuine consensus → judgeDegraded NOT set', healthy.judgeDegraded === undefined);
 }
 
 console.log('▶ deconfliction round: open-topic prompt + exact-match resolution detection (rephrase-drift fix)');
@@ -512,6 +551,24 @@ console.log('▶ deconfliction round: open-topic prompt + exact-match resolution
   check('same-normalized-topic collision: the second conflict\'s distinct position survives',
     sameTopicCollision.remaining.some(c => c.positions.some(p => p.models.includes('b'))), JSON.stringify(sameTopicCollision));
 
+  // Round-12: the MIRROR case — two PREVIOUS conflicts sharing a normalized
+  // topic must not both consume the SAME new conflict (an unguarded findIndex
+  // returns the same index twice, duplicating it into `remaining` under two ids
+  // and inflating the open-conflict count).
+  const twoPrevSameTopic = detectResolutions(
+    [
+      { id: 'c1', topic: 'unknown', positions: [{ models: ['a'], position: 'p1' }] },
+      { id: 'c2', topic: 'unknown', positions: [{ models: ['b'], position: 'p2' }] },
+    ],
+    { conflicting: [{ topic: 'unknown', positions: [{ models: ['a'], position: 'p1' }] }], commonAgreement: null },
+  );
+  const ids = twoPrevSameTopic.remaining.map(c => c.id);
+  check('two PREVIOUS conflicts sharing a topic do not both consume the same new one (no duplicate)',
+    new Set(ids).size === ids.length, JSON.stringify(twoPrevSameTopic.remaining));
+  check('two PREVIOUS conflicts sharing a topic: the unmatched one is still accounted for (resolved or remaining)',
+    twoPrevSameTopic.remaining.length + twoPrevSameTopic.resolved.length === 2,
+    JSON.stringify({ r: twoPrevSameTopic.remaining.length, res: twoPrevSameTopic.resolved.length }));
+
   // A matched (still-open, verbatim-reused) conflict must keep its ORIGINAL
   // id across rounds — a fresh id from this round's categorize() call would
   // make the same persisting conflict look like a different one to a caller
@@ -556,6 +613,32 @@ console.log('▶ deconfliction round: open-topic prompt + exact-match resolution
   const noErrors = detectResolutions([twoParty()], { conflicting: [], commonAgreement: 'Converged.' });
   check('party-dropout: with no errored members, behavior is unchanged (genuine resolution)',
     noErrors.resolved.length === 1 && noErrors.partyDropout === false);
+
+  // Round-12: positions[].models is JUDGE-written text, while erroredLabels are
+  // REAL member labels — an exact Set.has misses whenever the judge abbreviates
+  // or re-cases the label, defeating the guard and fabricating a resolution.
+  const abbreviated = detectResolutions(
+    [{ id: 'c1', topic: 'X', positions: [{ models: ['A'], position: 'P1' }, { models: ['ollama:b'], position: 'P2' }] }],
+    { conflicting: [], commonAgreement: 'Converged.' },
+    new Set(['ollama:B']), // real label, different case from the judge's text
+  );
+  check('party-dropout: a case-differing judge label still matches the errored member',
+    abbreviated.resolved.length === 0 && abbreviated.partyDropout === true, JSON.stringify(abbreviated));
+  const shortForm = detectResolutions(
+    [{ id: 'c1', topic: 'X', positions: [{ models: ['small-b'], position: 'P2' }] }],
+    { conflicting: [], commonAgreement: 'Converged.' },
+    new Set(['ollama:small-b']), // judge wrote the bare model name, not the full label
+  );
+  check('party-dropout: an abbreviated judge label still matches the errored member',
+    shortForm.resolved.length === 0 && shortForm.partyDropout === true, JSON.stringify(shortForm));
+  // Must NOT over-match: a genuinely unrelated errored member still allows resolution.
+  const unrelated = detectResolutions(
+    [{ id: 'c1', topic: 'X', positions: [{ models: ['ollama:alpha'], position: 'P1' }] }],
+    { conflicting: [], commonAgreement: 'Converged.' },
+    new Set(['ollama:zeta']),
+  );
+  check('party-dropout: an unrelated errored member does NOT block a genuine resolution',
+    unrelated.resolved.length === 1 && unrelated.partyDropout === false, JSON.stringify(unrelated));
 
   // ── Party erasure across rounds must NOT defeat the guard (round-10 [3]) ──
   // A persisting conflict whose party is dropped from the judge's fresh

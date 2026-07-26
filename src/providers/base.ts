@@ -146,20 +146,37 @@ export function stripThinkBlocks(text: string): string {
  * object still gets its best chance).
  */
 /**
- * Throw unless `v` is a plain object carrying at least one of `keys`. jsonMode
- * (where it exists) only guarantees PARSEABLE JSON, not the expected SHAPE — and
- * the default CLI judges have no structured-output mode at all — so a judge can
- * return valid JSON of the wrong shape: a wrapper `{"analysis":{…}}`, a bare
- * array `[{…}]` (from which sliceBalancedJson extracts the first inner object),
- * or a scalar. All of those have the expected top-level fields as `undefined`,
- * so a parser that only guards FIELD types would coerce every field to empty and
- * report a fabricated 100%-consensus result with NO judgeDegraded flag — the
- * exact class judgeDegraded exists to catch. Throwing here routes such output
- * through each caller's existing judge-failure fallback instead.
+ * Throw unless `v` is a plain object whose REQUIRED fields are present AND of
+ * the required type.
+ *
+ * jsonMode (where it exists) only guarantees PARSEABLE JSON, not the expected
+ * SHAPE — and the default CLI judges have no structured-output mode at all — so
+ * a judge can return valid JSON that silently produces a fabricated
+ * 100%-consensus result with no judgeDegraded flag. Three distinct shapes do it,
+ * all seen in review:
+ *   1. WRONG CONTAINER — a wrapper `{"analysis":{…}}`, a bare array `[{…}]`
+ *      (sliceBalancedJson extracts the first inner object), or a scalar.
+ *   2. MISSING the decisive key — e.g. `{"commonAgreement":"all agree"}` with no
+ *      `conflicting` at all. A presence-of-ANY-key check accepts this.
+ *   3. WRONG TYPE on the decisive key — e.g. `{"conflicting":"none"}`. The key is
+ *      present, so a presence-only check accepts it, and the caller's
+ *      `Array.isArray(…) ? … : []` guard then coerces it to empty.
+ * In every case the conflict list ends up `[]` and the council reports perfect
+ * convergence that never happened. Requiring the decisive field to be present
+ * AND correctly typed routes all three through the caller's judge-failure
+ * fallback (judgeDegraded) instead.
  */
-export function assertJsonShape(v: unknown, keys: string[]): void {
-  if (v === null || typeof v !== 'object' || Array.isArray(v) || !keys.some(k => k in (v as object))) {
+export function assertJsonShape(v: unknown, required: Record<string, 'array'>): void {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) {
     throw new Error('judge JSON has an unexpected top-level shape');
+  }
+  for (const [key, kind] of Object.entries(required)) {
+    const val = (v as Record<string, unknown>)[key];
+    if (kind === 'array' && !Array.isArray(val)) {
+      throw new Error(
+        `judge JSON: required field "${key}" is ${val === undefined ? 'missing' : 'not an array'}`,
+      );
+    }
   }
 }
 

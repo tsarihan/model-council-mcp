@@ -125,7 +125,7 @@ function parseDossierJSON(raw: string): RawDossierJSON {
   // Tolerate a prose preamble/postamble around the JSON object (incl. trailing
   // prose containing braces — see sliceBalancedJson).
   const obj = JSON.parse(sliceBalancedJson(stripped));
-  assertJsonShape(obj, ['options']);
+  assertJsonShape(obj, { options: 'array' });
   return obj as RawDossierJSON;
 }
 

@@ -121,6 +121,38 @@ function mergePositionsByModel(
   return [...updated, ...preserved];
 }
 
+/**
+ * Did any party to this conflict error in the round just run?
+ *
+ * The two label sources are NOT the same trust level: `erroredLabels` are REAL
+ * member labels from roundResponses, while `positions[].models` is whatever the
+ * JUDGE wrote — untrusted text that may abbreviate ("a" for "ollama:a"), change
+ * case, or add adornment. An exact `Set.has` therefore silently fails to
+ * recognise a dropped party whenever the judge didn't echo the label verbatim,
+ * defeating the party-outage guard and letting a member outage be reported as a
+ * resolution. Match tolerantly (exact → case-insensitive → containment either
+ * way, with a length floor so a 1-char token can't match everything); a false
+ * MATCH is merely pessimistic (a conflict is carried forward), while a false
+ * MISS fabricates consensus — so lean toward matching.
+ */
+function partyErrored(positions: ConflictPosition[], erroredLabels: Set<string>): boolean {
+  if (erroredLabels.size === 0) return false;
+  const errored = [...erroredLabels];
+  return positions.some(p =>
+    (p.models ?? []).some(raw => {
+      const m = String(raw ?? '').trim();
+      if (!m) return false;
+      if (erroredLabels.has(m)) return true;
+      const lm = m.toLowerCase();
+      return errored.some(e => {
+        const le = e.toLowerCase();
+        if (le === lm) return true;
+        return lm.length >= 3 && le.length >= 3 && (le.includes(lm) || lm.includes(le));
+      });
+    }),
+  );
+}
+
 export function detectResolutions(
   previous: ConflictItem[],
   newCateg: Awaited<ReturnType<typeof categorize>>,
@@ -145,7 +177,14 @@ export function detectResolutions(
   for (const prev of previous) {
     const prevTopic = norm(prev.topic);
     // A conflict is resolved if the judge no longer lists a conflict on this topic.
-    const updatedIdx = newCateg.conflicting.findIndex(c => norm(c.topic) === prevTopic);
+    // Skip indices already consumed by an earlier previous-conflict: when TWO
+    // previous conflicts normalize to the same topic, an unguarded findIndex
+    // returns the SAME new conflict for both, so it gets pushed into `remaining`
+    // twice (duplicated under two different ids) and inflates the open-conflict
+    // count. Each new conflict may satisfy at most one previous conflict.
+    const updatedIdx = newCateg.conflicting.findIndex(
+      (c, i) => !matchedNewIdx.has(i) && norm(c.topic) === prevTopic,
+    );
     const updated = updatedIdx >= 0 ? newCateg.conflicting[updatedIdx] : undefined;
 
     if (updated) {
@@ -163,7 +202,7 @@ export function detectResolutions(
       // Union by model label so the party set only ever grows.
       remaining.push({ ...updated, id: prev.id, positions: mergePositionsByModel(prev.positions, updated.positions) });
       matchedNewIdx.add(updatedIdx);
-    } else if (prev.positions.some(p => (p.models ?? []).some(m => erroredLabels.has(m)))) {
+    } else if (partyErrored(prev.positions, erroredLabels)) {
       // The topic vanished from the judge's output — but a MEMBER that is a
       // PARTY to this conflict errored this round, and the judge only ever sees
       // non-errored responses (categorizer filters them out). So the judge
@@ -509,7 +548,13 @@ export async function deconflict(
     // was absent when the judge assessed it, so the score is a lower bound.
     // (If everything resolved, all resolutions happened in dropout-free rounds
     // — a dropout only ever carries forward — so the result is trustworthy.)
-    ...(midLoopJudgeFailure || (partyDropoutDegraded && openConflicts.length > 0)
+    // ALSO propagate an already-degraded INITIAL categorization: `totalConflicts`
+    // (the score's denominator) is fixed from it, so if that measurement was
+    // taken over an incomplete council or a failed judge, every score derived
+    // from it is likewise unreliable — even when the loop itself ran cleanly and
+    // resolved everything. Without this the flag was silently dropped for any
+    // run that found at least one conflict.
+    ...(midLoopJudgeFailure || input.judgeDegraded || (partyDropoutDegraded && openConflicts.length > 0)
       ? { judgeDegraded: true }
       : {}),
     ...(verbose

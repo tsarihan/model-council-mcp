@@ -113,7 +113,10 @@ function parseCategorizationJSON(raw: string): RawCategorizationJSON {
   // instruction sentence), so a preamble like "Here is the categorization:\n{…}"
   // is a real, reproducible failure mode for the two DEFAULT response modes.
   const obj = JSON.parse(sliceBalancedJson(stripped));
-  assertJsonShape(obj, ['conflicting', 'complementary', 'commonAgreement']);
+  // `conflicting` is the DECISIVE field — it alone drives the consensus/score
+  // result, so it must be present AND an array. (`complementary`/`commonAgreement`
+  // missing is benign: it loses detail but cannot fabricate convergence.)
+  assertJsonShape(obj, { conflicting: 'array' });
   return obj as RawCategorizationJSON;
 }
 
@@ -147,6 +150,18 @@ export async function categorize(
       judgeDegraded: true,
     };
   }
+
+  // PARTIAL outage: some members answered, some errored. The judge only ever
+  // sees the non-errored responses, so whatever it concludes is measured over an
+  // INCOMPLETE council — and the missing members are exactly the ones that might
+  // have disagreed. In the limit (2 of 3 members error) the judge sees a single
+  // answer, cannot possibly find a contradiction, and returns conflicting: [] —
+  // which downstream reads as a confident 100% consensus. That is the same
+  // fabricated-convergence class the all-errored guard above prevents, just
+  // reached through a partial rather than total outage, so flag it the same way:
+  // the categorization still runs (its content is useful), but it is marked as
+  // not-fully-trustworthy convergence rather than a clean measurement.
+  const partialOutage = responses.some(r => r.error);
 
   const prompt = buildCategorizationPrompt(question, responses, openTopics);
 
@@ -199,10 +214,15 @@ export async function categorize(
 
   // Build stable IDs for conflicts
   const existingSet = new Set(existingConflictIds);
-  let conflictCounter =
-    existingConflictIds.length > 0
-      ? Math.max(...existingConflictIds.map(id => parseInt(id.split('-')[1] ?? '0')))
-      : 0;
+  // Only count ids that actually carry a numeric suffix. A single unparseable id
+  // (a judge-supplied or hand-edited "conflict-abc", or a bare "conflict") makes
+  // parseInt return NaN, and Math.max with any NaN is NaN — after which EVERY
+  // generated id becomes "conflict-NaN", so ids stop being unique and the
+  // cross-round id correlation that detectResolutions relies on breaks.
+  const usedNumbers = existingConflictIds
+    .map(id => parseInt(id.split('-')[1] ?? '', 10))
+    .filter(n => Number.isFinite(n));
+  let conflictCounter = usedNumbers.length > 0 ? Math.max(...usedNumbers) : 0;
 
   // Judge JSON is untrusted in SHAPE (jsonMode only guarantees parseable JSON, not
   // that these fields are arrays). Guard every .map with Array.isArray and coerce
@@ -230,6 +250,9 @@ export async function categorize(
     })) as ComplementaryItem[],
     conflicting,
     judgeModel: modelIdLabel(judgeModelId),
+    // Measured over an incomplete council (see partialOutage above) — the
+    // categorization content is real, but it is not a clean convergence reading.
+    ...(partialOutage ? { judgeDegraded: true } : {}),
   };
 }
 

@@ -46,6 +46,50 @@ const NO_HELPERS = ['--no-ext-diff', '--no-textconv'];
 // feature's whole purpose is reviewing an arbitrary local repo.
 const GLOBAL_SAFETY_ARGS = ['-c', 'core.fsmonitor=', '-c', 'core.hooksPath=/dev/null'];
 
+// The SHA-1 all-zeros-content empty tree, the common object format. Used as a
+// fallback GIT_ATTR_SOURCE and when the dynamic resolution below fails.
+const SHA1_EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+const emptyTreeHashCache = new Map<string, string>();
+
+/**
+ * Resolve a repo's EMPTY-tree object hash. NO_HELPERS/GLOBAL_SAFETY_ARGS close
+ * external-diff/textconv/fsmonitor/hooks, but a `git diff` of the WORKING TREE
+ * ('unstaged'/'uncommitted') must convert working-tree content to object form,
+ * which runs a repo-configured `.gitattributes` clean-filter driver
+ * (`[filter "x"] clean = <cmd>` in .git/config, activated by an in-tree
+ * `.gitattributes` `* filter=x`) — arbitrary command execution the other flags
+ * don't cover, and squarely inside the "repo delivered as an archive" threat
+ * model GLOBAL_SAFETY_ARGS already names. Pointing GIT_ATTR_SOURCE (git >= 2.40)
+ * at the empty tree makes git honor NO .gitattributes at all, so no filter
+ * runs. The empty-tree hash differs by object format (SHA-1 vs SHA-256), so we
+ * resolve it per-repo via `git hash-object` (hashing /dev/null, which writes
+ * nothing and runs no filter) rather than hardcoding — a hardcoded SHA-1 hash
+ * would be an invalid object in a SHA-256 repo and could break its diffs.
+ * Cached per repoPath (object format is a fixed per-repo property).
+ *
+ * NOTE: GIT_ATTR_SOURCE is a no-op on git < 2.40, which silently ignores it —
+ * the filter mitigation does not apply there. macOS and modern Linux ship
+ * git >= 2.40, so the common case is covered; older gits fall back to the
+ * pre-existing (still filter-exposed) behavior rather than breaking.
+ */
+async function emptyTreeHash(repoPath: string): Promise<string> {
+  const cached = emptyTreeHashCache.get(repoPath);
+  if (cached) return cached;
+  let hash = SHA1_EMPTY_TREE;
+  try {
+    const { stdout } = await execFileAsync(
+      'git', ['hash-object', '-t', 'tree', '/dev/null'],
+      { cwd: repoPath, timeout: GIT_TIMEOUT_MS },
+    );
+    const h = stdout.trim();
+    if (/^[0-9a-f]{40,64}$/.test(h)) hash = h;
+  } catch {
+    /* keep the SHA-1 fallback */
+  }
+  emptyTreeHashCache.set(repoPath, hash);
+  return hash;
+}
+
 /** Map a friendly alias to `git diff` args; anything else is passed through as a revision/range. */
 function diffArgsForRef(ref: string): string[] {
   switch (ref) {
@@ -182,10 +226,14 @@ export async function buildGitDiff(input: GitDiffInput): Promise<string> {
   const repoPath = await assertGitRepo(resolve(input.repo?.trim() || process.cwd()));
 
   const args = [...GLOBAL_SAFETY_ARGS, ...diffArgsForRef(ref)];
+  // Neutralize attribute-driven clean/smudge filters (see emptyTreeHash) by
+  // sourcing .gitattributes from the empty tree — no attributes, no filters.
+  const attrSource = await emptyTreeHash(repoPath);
   let stdout: string;
   try {
     ({ stdout } = await execFileAsync('git', args, {
       cwd: repoPath,
+      env: { ...process.env, GIT_ATTR_SOURCE: attrSource },
       maxBuffer: MAX_DIFF_BYTES * 2,
       timeout: GIT_TIMEOUT_MS,
       killSignal: 'SIGKILL',

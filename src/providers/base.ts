@@ -128,13 +128,29 @@ export function stripThinkBlocks(text: string): string {
 }
 
 /**
+ * Conservative per-attached-image token reserve. A vision model consumes real
+ * prompt/vision tokens for each image that plain char-counting can't see, so an
+ * image-bearing request would otherwise under-estimate the prompt and let
+ * clampMaxTokens over-allocate the output budget — which vLLM/SGLang hard-reject
+ * when prompt+max_tokens exceeds max_model_len. ~1500 covers a typical single
+ * high-detail image while staying small enough that one image against an 8k
+ * context still leaves ample output room (never spuriously trips
+ * PromptTooLargeError). It's an estimate in the same rough spirit as chars/3,
+ * erring high (the safe direction), not an exact tokenizer.
+ */
+const IMAGE_TOKEN_ESTIMATE = 1500;
+
+/**
  * Rough prompt-token estimate without a client-side tokenizer. Uses chars/3
- * (English averages ~4 chars/token) so it slightly OVER-estimates the prompt —
- * that makes the output budget conservative, which is the safe direction.
+ * (English averages ~4 chars/token) so it slightly OVER-estimates the text —
+ * that makes the output budget conservative, which is the safe direction — plus
+ * a per-image reserve so attached images (which cost real prompt tokens a char
+ * count can't see) are accounted for too.
  */
 export function estimatePromptTokens(messages: ChatMessage[]): number {
   const chars = messages.reduce((n, m) => n + (m.content?.length ?? 0), 0);
-  return Math.ceil(chars / 3) + 4 * messages.length; // + small per-message chat-template overhead
+  const imageCount = messages.reduce((n, m) => n + (m.images?.length ?? 0), 0);
+  return Math.ceil(chars / 3) + 4 * messages.length + imageCount * IMAGE_TOKEN_ESTIMATE;
 }
 
 /**

@@ -288,7 +288,15 @@ with a one-line justification that reflects the trade-offs (acknowledge the main
 // ─── Main dialectic entry point ──────────────────────────────────────────────
 
 export interface DialecticInput {
+  /** (Possibly augmented) question shown to MEMBERS in the defense/selection rounds. */
   question: string;
+  /**
+   * ORIGINAL question for the JUDGE prompts (digest + pros/cons dossier) — the
+   * judge works from member TEXT and needs no attachments; the augmented
+   * question here would embed untrusted content in a trust-affirming block.
+   * Defaults to `question`.
+   */
+  judgeQuestion?: string;
   initialResponses: RawResponse[];
   members: Member[];
   judgeModelId: ModelId;
@@ -316,13 +324,15 @@ export async function runDialectic(input: DialecticInput): Promise<DialecticResu
     verbose,
     images,
   } = input;
+  // Original question for judge prompts; augmented `question` for member rounds.
+  const judgeQuestion = input.judgeQuestion ?? question;
   const cc: CompleteConfig = {
     maxTokens: runtime.maxTokens, retries: runtime.retries, timeoutMs: runtime.requestTimeoutMs,
   };
 
   // 1. Distil the distinct options (reuse the pooled digest).
   const digest = await poolResponses(
-    question,
+    judgeQuestion,
     initialResponses,
     judgeModelId,
     judgeProvider,
@@ -343,7 +353,7 @@ export async function runDialectic(input: DialecticInput): Promise<DialecticResu
 
   // 3. Judge compiles the pros/cons dossier.
   const prosConsResult = await buildProsCons(
-    question,
+    judgeQuestion,
     digest,
     initialResponses,
     defenses,

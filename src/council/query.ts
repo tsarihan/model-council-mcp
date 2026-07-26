@@ -37,8 +37,11 @@ export function poolKey(m: Member): PoolKey {
       // An Ollama-harness claude-cli server (config.anthropicBaseUrl set —
       // see claude-cli.ts's file header) is driving Ollama, not the real
       // Claude subscription: it must respect OLLAMA's concurrency ceiling,
-      // not the unrelated Claude subscription tier's limit.
-      if (m.provider.config.anthropicBaseUrl) {
+      // not the unrelated Claude subscription tier's limit. Read the TRIMMED
+      // value so this agrees with buildChildEnv/the constructor (both treat a
+      // whitespace-only anthropicBaseUrl as absent) — otherwise the pool and
+      // the actual backend could disagree for a whitespace-only config value.
+      if (m.provider.config.anthropicBaseUrl?.trim()) {
         const model = m.modelId.model;
         return model.endsWith(':cloud') || model.endsWith('-cloud') ? 'ollama-cloud' : 'local';
       }

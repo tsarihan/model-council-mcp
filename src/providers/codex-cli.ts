@@ -185,33 +185,36 @@ export class CodexCliProvider implements Provider {
 
     // Own temp dir for -o/images regardless of fullRepoAccess — -C only sets the
     // agent's exploration root, not where the parent process writes its own
-    // housekeeping files, so this never touches the user's actual repo.
-    const dir = mkdtempSync(join(tmpdir(), 'codex-council-'));
-    const outFile = join(dir, 'out.txt');
-    const args = [
-      'exec',
-      '--sandbox', 'read-only',
-      '--skip-git-repo-check',
-      '--ephemeral',
-      '--color', 'never',
-      '-c', 'approval_policy=never',
-      '-C', repoRoot || dir, // real repo root in full-repo-access mode; empty dir otherwise
-      '-o', outFile,
-    ];
-    if (model && model !== 'default') {
-      args.push('-m', model);
-    }
-    // Images are attached only on a user message; the orchestrator only routes
-    // here at all when supportsVision() was confirmed for this member. Written
-    // into the same per-call temp dir (cleaned up in the finally below).
-    const images = messages.find(m => m.role === 'user' && m.images?.length)?.images ?? [];
-    images.forEach((img, i) => {
-      const path = join(dir, `image-${i}.${MIME_EXT[img.mimeType]}`);
-      writeFileSync(path, Buffer.from(img.base64, 'base64'));
-      args.push('-i', path);
-    });
-
+    // housekeeping files, so this never touches the user's actual repo. Created
+    // INSIDE the try so the finally's rmSync always cleans it up even if a
+    // later writeFileSync (image bytes) throws after mkdtempSync succeeded.
+    let dir: string | undefined;
     try {
+      dir = mkdtempSync(join(tmpdir(), 'codex-council-'));
+      const outFile = join(dir, 'out.txt');
+      const args = [
+        'exec',
+        '--sandbox', 'read-only',
+        '--skip-git-repo-check',
+        '--ephemeral',
+        '--color', 'never',
+        '-c', 'approval_policy=never',
+        '-C', repoRoot || dir, // real repo root in full-repo-access mode; empty dir otherwise
+        '-o', outFile,
+      ];
+      if (model && model !== 'default') {
+        args.push('-m', model);
+      }
+      // Images are attached only on a user message; the orchestrator only routes
+      // here at all when supportsVision() was confirmed for this member. Written
+      // into the same per-call temp dir (cleaned up in the finally below).
+      const images = messages.find(m => m.role === 'user' && m.images?.length)?.images ?? [];
+      images.forEach((img, i) => {
+        const path = join(dir!, `image-${i}.${MIME_EXT[img.mimeType]}`);
+        writeFileSync(path, Buffer.from(img.base64, 'base64'));
+        args.push('-i', path);
+      });
+
       // Respect an explicit opts.timeoutMs verbatim (matches every other
       // provider's plain `?? DEFAULT` pattern) — a Math.max floor here used to
       // silently override a DELIBERATELY short explicit timeout (e.g.
@@ -244,10 +247,12 @@ export class CodexCliProvider implements Provider {
       }
       return trimmed;
     } finally {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-      } catch {
-        /* best-effort cleanup */
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          /* best-effort cleanup */
+        }
       }
     }
   }

@@ -24897,9 +24897,11 @@ function stripThinkBlocks(text) {
   if (close !== -1) out = out.slice(close + "</think>".length);
   return out.trim();
 }
+var IMAGE_TOKEN_ESTIMATE = 1500;
 function estimatePromptTokens(messages) {
   const chars = messages.reduce((n2, m2) => n2 + (m2.content?.length ?? 0), 0);
-  return Math.ceil(chars / 3) + 4 * messages.length;
+  const imageCount = messages.reduce((n2, m2) => n2 + (m2.images?.length ?? 0), 0);
+  return Math.ceil(chars / 3) + 4 * messages.length + imageCount * IMAGE_TOKEN_ESTIMATE;
 }
 var PromptTooLargeError = class extends Error {
   constructor(message = "prompt exceeds the model's context window") {
@@ -35091,12 +35093,46 @@ var MIME_EXT = {
   "image/gif": "gif",
   "image/webp": "webp"
 };
+function redactUrlUserinfo(url) {
+  try {
+    const u2 = new URL(url);
+    if (u2.username || u2.password) {
+      u2.username = "";
+      u2.password = "";
+      return u2.toString();
+    }
+    return url;
+  } catch {
+    return url.replace(/(\/\/)[^/@]*@/, "$1");
+  }
+}
+var HARNESS_REDIRECT_VARS = [
+  // Highest precedence: force an alternate backend, overriding ANTHROPIC_BASE_URL.
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY",
+  // Auth-based auto-selection: can pick a backend without the USE_* flag.
+  "ANTHROPIC_VERTEX_PROJECT_ID",
+  "ANTHROPIC_FOUNDRY_RESOURCE",
+  "ANTHROPIC_AWS_WORKSPACE_ID",
+  // Provider-specific base-url overrides (same tier as ANTHROPIC_BASE_URL).
+  "ANTHROPIC_BEDROCK_BASE_URL",
+  "ANTHROPIC_VERTEX_BASE_URL",
+  "ANTHROPIC_FOUNDRY_BASE_URL",
+  "ANTHROPIC_AWS_BASE_URL",
+  // Credential material the CLI would attach to whatever base URL is set.
+  "ANTHROPIC_CUSTOM_HEADERS",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "ANTHROPIC_FOUNDRY_API_KEY",
+  "ANTHROPIC_FOUNDRY_AUTH_TOKEN"
+];
 function buildChildEnv(baseEnv, anthropicBaseUrl) {
   const env = { ...baseEnv };
   if (anthropicBaseUrl) {
     env.ANTHROPIC_BASE_URL = anthropicBaseUrl;
     env.ANTHROPIC_API_KEY = "ollama-harness-placeholder-key";
     delete env.ANTHROPIC_AUTH_TOKEN;
+    for (const v2 of HARNESS_REDIRECT_VARS) delete env[v2];
   } else {
     delete env.ANTHROPIC_API_KEY;
     delete env.ANTHROPIC_AUTH_TOKEN;
@@ -35140,10 +35176,12 @@ var ClaudeCliProvider = class {
     }
   }
   async listModels() {
+    const harnessAddr = this.anthropicBaseUrl ? redactUrlUserinfo(this.anthropicBaseUrl) : void 0;
     return this.models.map((m2) => ({
       provider: "claude-cli",
+      ...harnessAddr ? { serverId: this.serverId } : {},
       model: m2,
-      label: this.anthropicBaseUrl ? `${m2} (via claude CLI harness, ${this.anthropicBaseUrl})` : `Claude ${m2} (subscription)`
+      label: harnessAddr ? `${m2} (via claude CLI harness, ${harnessAddr})` : `Claude ${m2} (subscription)`
     }));
   }
   /**
@@ -35189,15 +35227,15 @@ var ClaudeCliProvider = class {
     const images = messages.find((m2) => m2.role === "user" && m2.images?.length)?.images ?? [];
     let imageDir;
     let imagePaths = [];
-    if (images.length > 0) {
-      imageDir = (0, import_node_fs5.mkdtempSync)((0, import_node_path3.join)((0, import_node_os2.tmpdir)(), "claude-council-img-"));
-      imagePaths = images.map((img, i2) => {
-        const path = (0, import_node_path3.join)(imageDir, `image-${i2}.${MIME_EXT[img.mimeType]}`);
-        (0, import_node_fs5.writeFileSync)(path, Buffer.from(img.base64, "base64"));
-        return path;
-      });
-    }
     try {
+      if (images.length > 0) {
+        imageDir = (0, import_node_fs5.mkdtempSync)((0, import_node_path3.join)((0, import_node_os2.tmpdir)(), "claude-council-img-"));
+        imagePaths = images.map((img, i2) => {
+          const path = (0, import_node_path3.join)(imageDir, `image-${i2}.${MIME_EXT[img.mimeType]}`);
+          (0, import_node_fs5.writeFileSync)(path, Buffer.from(img.base64, "base64"));
+          return path;
+        });
+      }
       const imageNote = imagePaths.length ? `
 
 (${imagePaths.length} image(s) are attached. Read each one with the Read tool before answering: ${imagePaths.join(", ")})` : "";
@@ -35408,34 +35446,35 @@ var CodexCliProvider = class {
       opts.jsonMode ? "Respond with valid JSON only." : "",
       convo
     ].filter(Boolean).join("\n\n");
-    const dir = (0, import_node_fs6.mkdtempSync)((0, import_node_path4.join)((0, import_node_os3.tmpdir)(), "codex-council-"));
-    const outFile = (0, import_node_path4.join)(dir, "out.txt");
-    const args = [
-      "exec",
-      "--sandbox",
-      "read-only",
-      "--skip-git-repo-check",
-      "--ephemeral",
-      "--color",
-      "never",
-      "-c",
-      "approval_policy=never",
-      "-C",
-      repoRoot || dir,
-      // real repo root in full-repo-access mode; empty dir otherwise
-      "-o",
-      outFile
-    ];
-    if (model && model !== "default") {
-      args.push("-m", model);
-    }
-    const images = messages.find((m2) => m2.role === "user" && m2.images?.length)?.images ?? [];
-    images.forEach((img, i2) => {
-      const path = (0, import_node_path4.join)(dir, `image-${i2}.${MIME_EXT2[img.mimeType]}`);
-      (0, import_node_fs6.writeFileSync)(path, Buffer.from(img.base64, "base64"));
-      args.push("-i", path);
-    });
+    let dir;
     try {
+      dir = (0, import_node_fs6.mkdtempSync)((0, import_node_path4.join)((0, import_node_os3.tmpdir)(), "codex-council-"));
+      const outFile = (0, import_node_path4.join)(dir, "out.txt");
+      const args = [
+        "exec",
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--color",
+        "never",
+        "-c",
+        "approval_policy=never",
+        "-C",
+        repoRoot || dir,
+        // real repo root in full-repo-access mode; empty dir otherwise
+        "-o",
+        outFile
+      ];
+      if (model && model !== "default") {
+        args.push("-m", model);
+      }
+      const images = messages.find((m2) => m2.role === "user" && m2.images?.length)?.images ?? [];
+      images.forEach((img, i2) => {
+        const path = (0, import_node_path4.join)(dir, `image-${i2}.${MIME_EXT2[img.mimeType]}`);
+        (0, import_node_fs6.writeFileSync)(path, Buffer.from(img.base64, "base64"));
+        args.push("-i", path);
+      });
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS2;
       const { code, stderr } = await this.run(args, prompt, timeoutMs);
       if (code !== 0) {
@@ -35458,9 +35497,11 @@ var CodexCliProvider = class {
       }
       return trimmed;
     } finally {
-      try {
-        (0, import_node_fs6.rmSync)(dir, { recursive: true, force: true });
-      } catch {
+      if (dir) {
+        try {
+          (0, import_node_fs6.rmSync)(dir, { recursive: true, force: true });
+        } catch {
+        }
       }
     }
   }
@@ -35601,35 +35642,35 @@ var GrokCliProvider = class {
       opts.jsonMode ? "Respond with valid JSON only." : ""
     ].filter(Boolean).join("\n\n");
     let promptDir;
-    let promptArgs;
-    if (images.length === 0) {
-      promptDir = (0, import_node_fs7.mkdtempSync)((0, import_node_path5.join)((0, import_node_os4.tmpdir)(), "grok-council-prompt-"));
-      const promptFile = (0, import_node_path5.join)(promptDir, "prompt.txt");
-      (0, import_node_fs7.writeFileSync)(promptFile, convo, "utf8");
-      promptArgs = ["--prompt-file", promptFile];
-    } else {
-      const blocks = [
-        { type: "text", text: convo },
-        ...images.map((img) => ({ type: "image", data: img.base64, mimeType: img.mimeType }))
-      ];
-      promptArgs = ["--prompt-json", JSON.stringify(blocks)];
-    }
-    const args = [
-      "-m",
-      model,
-      "--output-format",
-      "json",
-      ...promptArgs,
-      "--tools",
-      "",
-      // fully locked down — native image blocks need no tool access
-      "--permission-mode",
-      "bypassPermissions",
-      // required in headless mode, see file header
-      "--system-prompt-override",
-      systemText
-    ];
     try {
+      let promptArgs;
+      if (images.length === 0) {
+        promptDir = (0, import_node_fs7.mkdtempSync)((0, import_node_path5.join)((0, import_node_os4.tmpdir)(), "grok-council-prompt-"));
+        const promptFile = (0, import_node_path5.join)(promptDir, "prompt.txt");
+        (0, import_node_fs7.writeFileSync)(promptFile, convo, "utf8");
+        promptArgs = ["--prompt-file", promptFile];
+      } else {
+        const blocks = [
+          { type: "text", text: convo },
+          ...images.map((img) => ({ type: "image", data: img.base64, mimeType: img.mimeType }))
+        ];
+        promptArgs = ["--prompt-json", JSON.stringify(blocks)];
+      }
+      const args = [
+        "-m",
+        model,
+        "--output-format",
+        "json",
+        ...promptArgs,
+        "--tools",
+        "",
+        // fully locked down — native image blocks need no tool access
+        "--permission-mode",
+        "bypassPermissions",
+        // required in headless mode, see file header
+        "--system-prompt-override",
+        systemText
+      ];
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS3;
       const { code, stdout, stderr } = await this.run(args, void 0, timeoutMs);
       if (code !== 0) {
@@ -35750,7 +35791,13 @@ var ProviderRegistry = class {
       return explicit ?? null;
     }
     return [...this.providers.values()].find(
-      (p2) => p2.config.type === modelId.provider
+      // Read the TRIMMED value so this agrees with buildChildEnv / the
+      // constructor / poolKey (all treat a whitespace-only anthropicBaseUrl
+      // as absent = subscription). Reading it untrimmed here would make a
+      // whitespace-only value be skipped-as-harness by resolve() yet treated
+      // as subscription everywhere else — the exact cross-file divergence
+      // this field's handling is meant to avoid.
+      (p2) => p2.config.type === modelId.provider && !p2.config.anthropicBaseUrl?.trim()
     ) ?? null;
   }
   getAll() {
@@ -35768,7 +35815,7 @@ function poolKey(m2) {
     case "codex-cli":
       return "chatgpt";
     case "claude-cli": {
-      if (m2.provider.config.anthropicBaseUrl) {
+      if (m2.provider.config.anthropicBaseUrl?.trim()) {
         const model = m2.modelId.model;
         return model.endsWith(":cloud") || model.endsWith("-cloud") ? "ollama-cloud" : "local";
       }
@@ -36159,17 +36206,21 @@ For each conflict above, please do ONE of:
 
 Be concise and direct.`;
 }
-function detectResolutions(previous, newCateg) {
+function detectResolutions(previous, newCateg, erroredLabels = /* @__PURE__ */ new Set()) {
   const norm = (s2) => String(s2 ?? "").trim().toLowerCase().replace(/\s+/g, " ");
   const resolved = [];
   const remaining = [];
   const matchedNewTopics = /* @__PURE__ */ new Set();
+  let partyDropout = false;
   for (const prev of previous) {
     const prevTopic = norm(prev.topic);
     const updated = newCateg.conflicting.find((c2) => norm(c2.topic) === prevTopic);
     if (updated) {
       remaining.push({ ...updated, id: prev.id });
       matchedNewTopics.add(norm(updated.topic));
+    } else if (prev.positions.some((p2) => (p2.models ?? []).some((m2) => erroredLabels.has(m2)))) {
+      remaining.push(prev);
+      partyDropout = true;
     } else {
       resolved.push({
         ...prev,
@@ -36183,7 +36234,7 @@ function detectResolutions(previous, newCateg) {
       remaining.push(c2);
     }
   }
-  return { resolved, remaining };
+  return { resolved, remaining, partyDropout };
 }
 async function synthesize(judgeProvider, judgeModelId, prompt, runtime) {
   try {
@@ -36210,6 +36261,7 @@ async function deconflict(input) {
     verbose,
     images
   } = input;
+  const judgeQuestion = input.judgeQuestion ?? question;
   const cc = {
     maxTokens: runtime.maxTokens,
     retries: runtime.retries,
@@ -36231,7 +36283,7 @@ async function deconflict(input) {
       judgeProvider,
       judgeModelId,
       buildSynthesisPrompt(
-        question,
+        judgeQuestion,
         input.commonAgreement,
         input.complementary,
         [],
@@ -36260,6 +36312,7 @@ async function deconflict(input) {
   const roundHistory = [];
   const roundDetails = [];
   let midLoopJudgeFailure = false;
+  let partyDropoutDegraded = false;
   for (let round = 1; round <= maxRounds; round++) {
     const enteringCount = openConflicts.length;
     const roundPrompt = buildConflictRoundPrompt(question, openConflicts, round);
@@ -36267,7 +36320,7 @@ async function deconflict(input) {
     let newCateg;
     try {
       newCateg = await categorize(
-        question,
+        judgeQuestion,
         roundResponses,
         judgeModelId,
         judgeProvider,
@@ -36320,7 +36373,9 @@ async function deconflict(input) {
       }
       break;
     }
-    const { resolved, remaining } = detectResolutions(openConflicts, newCateg);
+    const erroredLabels = new Set(roundResponses.filter((r2) => r2.error).map((r2) => r2.label));
+    const { resolved, remaining, partyDropout } = detectResolutions(openConflicts, newCateg, erroredLabels);
+    if (partyDropout) partyDropoutDegraded = true;
     allResolved.push(...resolved);
     roundHistory.push({
       round,
@@ -36347,7 +36402,7 @@ async function deconflict(input) {
     judgeProvider,
     judgeModelId,
     buildSynthesisPrompt(
-      question,
+      judgeQuestion,
       input.commonAgreement,
       input.complementary,
       allResolved,
@@ -36369,7 +36424,13 @@ async function deconflict(input) {
     unresolvedConflicts: openConflicts,
     roundHistory,
     judgeModel: judgeLabel,
-    ...midLoopJudgeFailure ? { judgeDegraded: true } : {},
+    // Degraded when the judge failed mid-loop, OR when a party-dropout forced a
+    // carry-forward AND the run still ends with open conflicts — in that case
+    // some of what looks "unresolved" may only look that way because a party
+    // was absent when the judge assessed it, so the score is a lower bound.
+    // (If everything resolved, all resolutions happened in dropout-free rounds
+    // — a dropout only ever carries forward — so the result is trustworthy.)
+    ...midLoopJudgeFailure || partyDropoutDegraded && openConflicts.length > 0 ? { judgeDegraded: true } : {},
     ...verbose ? {
       initialResponses: input.initialResponses,
       initialCategorization: {
@@ -36489,13 +36550,14 @@ async function runPooled(input) {
     verbose,
     images
   } = input;
+  const judgeQuestion = input.judgeQuestion ?? question;
   const cc = {
     maxTokens: runtime.maxTokens,
     retries: runtime.retries,
     timeoutMs: runtime.requestTimeoutMs
   };
   const initialPool = await poolResponses(
-    question,
+    judgeQuestion,
     initialResponses,
     judgeModelId,
     judgeProvider,
@@ -36505,7 +36567,7 @@ async function runPooled(input) {
   const repollPrompt = buildRepollPrompt(question, initialPool);
   const reconsidered = await queryMembers(repollPrompt, members, runtime, {}, images);
   const finalPool = await poolResponses(
-    question,
+    judgeQuestion,
     reconsidered,
     judgeModelId,
     judgeProvider,
@@ -36703,13 +36765,14 @@ async function runDialectic(input) {
     verbose,
     images
   } = input;
+  const judgeQuestion = input.judgeQuestion ?? question;
   const cc = {
     maxTokens: runtime.maxTokens,
     retries: runtime.retries,
     timeoutMs: runtime.requestTimeoutMs
   };
   const digest = await poolResponses(
-    question,
+    judgeQuestion,
     initialResponses,
     judgeModelId,
     judgeProvider,
@@ -36725,7 +36788,7 @@ async function runDialectic(input) {
     images
   );
   const prosConsResult = await buildProsCons(
-    question,
+    judgeQuestion,
     digest,
     initialResponses,
     defenses,
@@ -36834,7 +36897,8 @@ var CouncilOrchestrator = class {
     return this.modelCache.filter((m2) => m2.provider === "ollama" && !isEmbeddingModel(m2)).map((m2) => ({ provider: "ollama", serverId: m2.serverId, model: m2.model }));
   }
   /** Ask the council and return a result in the configured (or overridden) mode */
-  async ask(question, modeOverride, maxRoundsOverride, verboseOverride, images, onProgress, fullRepoAccessRepo) {
+  async ask(question, modeOverride, maxRoundsOverride, verboseOverride, images, onProgress, fullRepoAccessRepo, originalQuestion) {
+    const judgeQuestion = originalQuestion ?? question;
     const mode = modeOverride ?? this.config.responseMode;
     const maxRounds = maxRoundsOverride ?? this.config.maxDeconflictRounds;
     const verbose = verboseOverride ?? this.runtime.verbose;
@@ -36962,6 +37026,7 @@ var CouncilOrchestrator = class {
       if (mode === "pooled") {
         const pooled2 = await runPooled({
           question,
+          judgeQuestion,
           initialResponses: responses,
           // queryTargets: reconsideration re-questions the same members that
           // answered round 0 — a vision-skipped member never saw the question.
@@ -36977,6 +37042,7 @@ var CouncilOrchestrator = class {
       if (mode === "dialectic") {
         const dialectic = await runDialectic({
           question,
+          judgeQuestion,
           initialResponses: responses,
           members: queryTargets,
           judgeModelId,
@@ -36988,7 +37054,7 @@ var CouncilOrchestrator = class {
         return visionRouting ? { ...dialectic, visionRouting } : dialectic;
       }
       const catResult = await categorize(
-        question,
+        judgeQuestion,
         responses,
         judgeModelId,
         judgeProvider,
@@ -37005,6 +37071,7 @@ var CouncilOrchestrator = class {
       }
       const dec = await deconflict({
         question,
+        judgeQuestion,
         initialResponses: responses,
         initialConflicts: catResult.conflicting,
         commonAgreement: catResult.commonAgreement,
@@ -37045,6 +37112,7 @@ function runCli(command, args, opts = { timeoutMs: 8e3 }) {
     if (opts.stripKeys === "anthropic") {
       delete env.ANTHROPIC_API_KEY;
       delete env.ANTHROPIC_AUTH_TOKEN;
+      delete env.ANTHROPIC_BASE_URL;
     }
     if (opts.stripKeys === "openai") {
       delete env.OPENAI_API_KEY;
@@ -37261,6 +37329,25 @@ var MAX_DIFF_BYTES = 512 * 1024;
 var GIT_TIMEOUT_MS = 15e3;
 var NO_HELPERS = ["--no-ext-diff", "--no-textconv"];
 var GLOBAL_SAFETY_ARGS = ["-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null"];
+var SHA1_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+var emptyTreeHashCache = /* @__PURE__ */ new Map();
+async function emptyTreeHash(repoPath) {
+  const cached3 = emptyTreeHashCache.get(repoPath);
+  if (cached3) return cached3;
+  let hash = SHA1_EMPTY_TREE;
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["hash-object", "-t", "tree", "/dev/null"],
+      { cwd: repoPath, timeout: GIT_TIMEOUT_MS }
+    );
+    const h2 = stdout.trim();
+    if (/^[0-9a-f]{40,64}$/.test(h2)) hash = h2;
+  } catch {
+  }
+  emptyTreeHashCache.set(repoPath, hash);
+  return hash;
+}
 function diffArgsForRef(ref) {
   switch (ref) {
     case "staged":
@@ -37321,10 +37408,12 @@ async function buildGitDiff(input) {
   }
   const repoPath = await assertGitRepo((0, import_node_path6.resolve)(input.repo?.trim() || process.cwd()));
   const args = [...GLOBAL_SAFETY_ARGS, ...diffArgsForRef(ref)];
+  const attrSource = await emptyTreeHash(repoPath);
   let stdout;
   try {
     ({ stdout } = await execFileAsync("git", args, {
       cwd: repoPath,
+      env: { ...process.env, GIT_ATTR_SOURCE: attrSource },
       maxBuffer: MAX_DIFF_BYTES * 2,
       timeout: GIT_TIMEOUT_MS,
       killSignal: "SIGKILL"
@@ -37607,7 +37696,11 @@ async function runCouncil(input, onProgress) {
     input.verbose,
     images.length ? images : void 0,
     onProgress,
-    fullRepoAccessRepo
+    fullRepoAccessRepo,
+    // The ORIGINAL question drives every JUDGE prompt — `question` above may
+    // embed untrusted context/files/git-diff content that the judge must not
+    // receive in a trust-affirming position (see orchestrator.ask).
+    input.question
   );
 }
 var labelsToMembers = (labels) => labels.flatMap((s2) => {

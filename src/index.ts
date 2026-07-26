@@ -143,6 +143,10 @@ async function runCouncil(
     images.length ? images : undefined,
     onProgress,
     fullRepoAccessRepo,
+    // The ORIGINAL question drives every JUDGE prompt — `question` above may
+    // embed untrusted context/files/git-diff content that the judge must not
+    // receive in a trust-affirming position (see orchestrator.ask).
+    input.question,
   );
 }
 

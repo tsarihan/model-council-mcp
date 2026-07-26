@@ -40,7 +40,15 @@ function runCli(
 ): Promise<CliResult> {
   return new Promise(resolve => {
     const env = { ...process.env };
-    if (opts.stripKeys === 'anthropic') { delete env.ANTHROPIC_API_KEY; delete env.ANTHROPIC_AUTH_TOKEN; }
+    // Mirror ClaudeCliProvider.buildChildEnv's SUBSCRIPTION branch exactly: the
+    // claude-cli login probe is a real subscription completion, so it must clear
+    // the same three vars — including ANTHROPIC_BASE_URL, or an ambient export
+    // silently redirects the probe to a stray host (sending the subscription
+    // credential there) and makes `usable` reflect the wrong backend, wrongly
+    // dropping or admitting claude-cli members from auto-population. Like that
+    // branch, the CLAUDE_CODE_USE_* backend selectors are intentionally NOT
+    // cleared — a legitimately Bedrock/Vertex-hosted CLI must still probe usable.
+    if (opts.stripKeys === 'anthropic') { delete env.ANTHROPIC_API_KEY; delete env.ANTHROPIC_AUTH_TOKEN; delete env.ANTHROPIC_BASE_URL; }
     if (opts.stripKeys === 'openai') { delete env.OPENAI_API_KEY; delete env.CODEX_API_KEY; }
     if (opts.stripKeys === 'xai') { delete env.XAI_API_KEY; }
 

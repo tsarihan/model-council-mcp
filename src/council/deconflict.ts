@@ -96,7 +96,8 @@ Be concise and direct.`;
 export function detectResolutions(
   previous: ConflictItem[],
   newCateg: Awaited<ReturnType<typeof categorize>>,
-): { resolved: ConflictItem[]; remaining: ConflictItem[] } {
+  erroredLabels: Set<string> = new Set(),
+): { resolved: ConflictItem[]; remaining: ConflictItem[]; partyDropout: boolean } {
   // Coerce every topic to a string (a judge can emit a non-string topic) and
   // normalize case/whitespace so trivial formatting differences (not actual
   // rewording) don't cause a false non-match.
@@ -105,6 +106,7 @@ export function detectResolutions(
   const resolved: ConflictItem[] = [];
   const remaining: ConflictItem[] = [];
   const matchedNewTopics = new Set<string>();
+  let partyDropout = false;
 
   for (const prev of previous) {
     const prevTopic = norm(prev.topic);
@@ -118,6 +120,18 @@ export function detectResolutions(
       // across `initialCategorization`/`rounds`/`unresolvedConflicts`).
       remaining.push({ ...updated, id: prev.id });
       matchedNewTopics.add(norm(updated.topic));
+    } else if (prev.positions.some(p => (p.models ?? []).some(m => erroredLabels.has(m)))) {
+      // The topic vanished from the judge's output — but a MEMBER that is a
+      // PARTY to this conflict errored this round, and the judge only ever sees
+      // non-errored responses (categorizer filters them out). So the judge
+      // never heard that side's position: the topic's absence is a member
+      // OUTAGE, not evidence of resolution. Marking it resolved here would
+      // fabricate consensus and drive deconflictionScore up on a dropout with
+      // no signal — the exact anti-false-consensus principle already applied to
+      // judge outages. Carry it forward as still-open and flag the dropout so
+      // the caller can mark the score a pessimistic lower bound.
+      remaining.push(prev);
+      partyDropout = true;
     } else {
       resolved.push({
         ...prev,
@@ -135,7 +149,7 @@ export function detectResolutions(
     }
   }
 
-  return { resolved, remaining };
+  return { resolved, remaining, partyDropout };
 }
 
 // ─── Synthesis (graceful on empty/failed judge) ───────────────────────────────
@@ -164,7 +178,21 @@ async function synthesize(
 // ─── Main deconfliction entry point ──────────────────────────────────────────
 
 export interface DeconflictInput {
+  /**
+   * The (possibly augmented) question shown to MEMBERS in each round — it may
+   * embed untrusted attachments/diff/repo content, which members are meant to
+   * analyze. Never build a JUDGE prompt from this (see judgeQuestion).
+   */
   question: string;
+  /**
+   * The ORIGINAL, pre-augmentation question, used for every JUDGE-facing prompt
+   * (categorization, synthesis). The judge classifies member response TEXT and
+   * does not need the raw attachments; routing the augmented question here would
+   * embed untrusted content in a trust-affirming "question" block ABOVE the
+   * untrusted-content notice, a prompt-injection vector into the judge. Defaults
+   * to `question` when omitted (keeps direct callers/tests behaving as before).
+   */
+  judgeQuestion?: string;
   initialResponses: RawResponse[];
   initialConflicts: ConflictItem[];
   commonAgreement: string | null;
@@ -205,6 +233,8 @@ export async function deconflict(
     verbose,
     images,
   } = input;
+  // Original question for judge prompts; augmented `question` for member rounds.
+  const judgeQuestion = input.judgeQuestion ?? question;
 
   const cc = {
     maxTokens: runtime.maxTokens, retries: runtime.retries, timeoutMs: runtime.requestTimeoutMs,
@@ -233,7 +263,7 @@ export async function deconflict(
       judgeProvider,
       judgeModelId,
       buildSynthesisPrompt(
-        question,
+        judgeQuestion,
         input.commonAgreement,
         input.complementary,
         [],
@@ -270,6 +300,12 @@ export async function deconflict(
   // look that way because the judge never got to re-assess them), not
   // necessarily the council's true convergence.
   let midLoopJudgeFailure = false;
+  // Set when a conflict was carried forward because one of ITS parties errored
+  // that round (see detectResolutions) — the run couldn't fully assess that
+  // conflict, so a residual open count is a pessimistic lower bound, not a
+  // measured "still in disagreement". Distinct from midLoopJudgeFailure: a
+  // party dropout does NOT stop the loop (the member may answer next round).
+  let partyDropoutDegraded = false;
 
   for (let round = 1; round <= maxRounds; round++) {
     const enteringCount = openConflicts.length;
@@ -282,7 +318,7 @@ export async function deconflict(
     let newCateg: Awaited<ReturnType<typeof categorize>>;
     try {
       newCateg = await categorize(
-        question,
+        judgeQuestion,
         roundResponses,
         judgeModelId,
         judgeProvider,
@@ -346,7 +382,11 @@ export async function deconflict(
     }
 
     // ── Detect resolved vs remaining conflicts ────────────────────────────
-    const { resolved, remaining } = detectResolutions(openConflicts, newCateg);
+    // Pass the labels of members that errored THIS round so a conflict whose
+    // party dropped out isn't fabricated into a resolution (see detectResolutions).
+    const erroredLabels = new Set(roundResponses.filter(r => r.error).map(r => r.label));
+    const { resolved, remaining, partyDropout } = detectResolutions(openConflicts, newCateg, erroredLabels);
+    if (partyDropout) partyDropoutDegraded = true;
     allResolved.push(...resolved);
 
     roundHistory.push({
@@ -377,7 +417,7 @@ export async function deconflict(
     judgeProvider,
     judgeModelId,
     buildSynthesisPrompt(
-      question,
+      judgeQuestion,
       input.commonAgreement,
       input.complementary,
       allResolved,
@@ -418,7 +458,15 @@ export async function deconflict(
     unresolvedConflicts: openConflicts,
     roundHistory,
     judgeModel: judgeLabel,
-    ...(midLoopJudgeFailure ? { judgeDegraded: true } : {}),
+    // Degraded when the judge failed mid-loop, OR when a party-dropout forced a
+    // carry-forward AND the run still ends with open conflicts — in that case
+    // some of what looks "unresolved" may only look that way because a party
+    // was absent when the judge assessed it, so the score is a lower bound.
+    // (If everything resolved, all resolutions happened in dropout-free rounds
+    // — a dropout only ever carries forward — so the result is trustworthy.)
+    ...(midLoopJudgeFailure || (partyDropoutDegraded && openConflicts.length > 0)
+      ? { judgeDegraded: true }
+      : {}),
     ...(verbose
       ? {
           initialResponses: input.initialResponses,

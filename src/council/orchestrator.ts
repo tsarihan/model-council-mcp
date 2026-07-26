@@ -151,7 +151,16 @@ export class CouncilOrchestrator {
     images?: ChatImage[],
     onProgress?: ProgressReporter,
     fullRepoAccessRepo?: string,
+    originalQuestion?: string,
   ): Promise<CouncilResult> {
+    // `question` is what MEMBERS see — possibly augmented by buildAugmentedQuestion
+    // with untrusted context/files/git-diff content. `judgeQuestion` is the
+    // ORIGINAL, pre-augmentation question used for every JUDGE prompt: the judge
+    // classifies member response text and must not receive the raw attachments,
+    // which would otherwise sit in a trust-affirming "question" block above the
+    // untrusted-content notice — a prompt-injection path into the judge. Falls
+    // back to `question` when a caller doesn't distinguish them (e.g. tests).
+    const judgeQuestion = originalQuestion ?? question;
     const mode = modeOverride ?? this.config.responseMode;
     const maxRounds = maxRoundsOverride ?? this.config.maxDeconflictRounds;
     const verbose = verboseOverride ?? this.runtime.verbose;
@@ -420,6 +429,7 @@ export class CouncilOrchestrator {
       if (mode === 'pooled') {
         const pooled = await runPooled({
           question,
+          judgeQuestion,
           initialResponses: responses,
           // queryTargets: reconsideration re-questions the same members that
           // answered round 0 — a vision-skipped member never saw the question.
@@ -438,6 +448,7 @@ export class CouncilOrchestrator {
       if (mode === 'dialectic') {
         const dialectic = await runDialectic({
           question,
+          judgeQuestion,
           initialResponses: responses,
           members: queryTargets,
           judgeModelId,
@@ -450,8 +461,9 @@ export class CouncilOrchestrator {
       }
 
       // ── Categorize ──────────────────────────────────────────────────────
+      // Judge prompt → original question (not the attachment-bearing augmented one).
       const catResult = await categorize(
-        question,
+        judgeQuestion,
         responses,
         judgeModelId,
         judgeProvider,
@@ -471,6 +483,7 @@ export class CouncilOrchestrator {
       // ── Deconflicted ────────────────────────────────────────────────────
       const dec = (await deconflict({
         question,
+        judgeQuestion,
         initialResponses: responses,
         initialConflicts: catResult.conflicting,
         commonAgreement: catResult.commonAgreement,

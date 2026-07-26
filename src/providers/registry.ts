@@ -63,10 +63,25 @@ export class ProviderRegistry {
       if (explicit && explicit.config.type !== modelId.provider) return null;
       return explicit ?? null;
     }
-    // Default: find the first provider of the matching type
+    // Default: find the first provider of the matching type — but NEVER a
+    // claude-cli server backed by a non-Anthropic endpoint (the Ollama harness,
+    // config.anthropicBaseUrl set). Two claude-cli servers can now coexist (the
+    // real subscription CLI + the harness); a bare, serverId-less `claude-cli:*`
+    // id must only ever reach the real subscription server, so the harness is
+    // addressable ONLY by its explicit serverId. Without this skip, a bare id
+    // could resolve to the harness whenever it appears first — or when the
+    // subscription server is absent (e.g. a tier downgrade leaving a stale
+    // persisted `claude-cli:opus` member) — silently POSTing the prompt to the
+    // wrong backend under a label that conceals the swap.
     return (
       [...this.providers.values()].find(
-        p => p.config.type === modelId.provider,
+        // Read the TRIMMED value so this agrees with buildChildEnv / the
+        // constructor / poolKey (all treat a whitespace-only anthropicBaseUrl
+        // as absent = subscription). Reading it untrimmed here would make a
+        // whitespace-only value be skipped-as-harness by resolve() yet treated
+        // as subscription everywhere else — the exact cross-file divergence
+        // this field's handling is meant to avoid.
+        p => p.config.type === modelId.provider && !p.config.anthropicBaseUrl?.trim(),
       ) ?? null
     );
   }

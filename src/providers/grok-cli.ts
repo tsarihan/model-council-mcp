@@ -188,36 +188,38 @@ export class GrokCliProvider implements Provider {
       .filter(Boolean)
       .join('\n\n');
 
-    // No images: write the (possibly large) flattened text prompt to a temp
-    // file and pass --prompt-file, avoiding the argv-length limit entirely
-    // for this — the dominant — case. With images: no documented file-based
-    // channel exists for the structured content-block format, so
-    // --prompt-json stays inline (see file header for the residual risk).
+    // Created INSIDE the try so the finally's rmSync always cleans up even if
+    // the writeFileSync below throws after mkdtempSync succeeded.
     let promptDir: string | undefined;
-    let promptArgs: string[];
-    if (images.length === 0) {
-      promptDir = mkdtempSync(join(tmpdir(), 'grok-council-prompt-'));
-      const promptFile = join(promptDir, 'prompt.txt');
-      writeFileSync(promptFile, convo, 'utf8');
-      promptArgs = ['--prompt-file', promptFile];
-    } else {
-      const blocks: ContentBlock[] = [
-        { type: 'text', text: convo },
-        ...images.map(img => ({ type: 'image' as const, data: img.base64, mimeType: img.mimeType })),
-      ];
-      promptArgs = ['--prompt-json', JSON.stringify(blocks)];
-    }
-
-    const args = [
-      '-m', model,
-      '--output-format', 'json',
-      ...promptArgs,
-      '--tools', '', // fully locked down — native image blocks need no tool access
-      '--permission-mode', 'bypassPermissions', // required in headless mode, see file header
-      '--system-prompt-override', systemText,
-    ];
-
     try {
+      // No images: write the (possibly large) flattened text prompt to a temp
+      // file and pass --prompt-file, avoiding the argv-length limit entirely
+      // for this — the dominant — case. With images: no documented file-based
+      // channel exists for the structured content-block format, so
+      // --prompt-json stays inline (see file header for the residual risk).
+      let promptArgs: string[];
+      if (images.length === 0) {
+        promptDir = mkdtempSync(join(tmpdir(), 'grok-council-prompt-'));
+        const promptFile = join(promptDir, 'prompt.txt');
+        writeFileSync(promptFile, convo, 'utf8');
+        promptArgs = ['--prompt-file', promptFile];
+      } else {
+        const blocks: ContentBlock[] = [
+          { type: 'text', text: convo },
+          ...images.map(img => ({ type: 'image' as const, data: img.base64, mimeType: img.mimeType })),
+        ];
+        promptArgs = ['--prompt-json', JSON.stringify(blocks)];
+      }
+
+      const args = [
+        '-m', model,
+        '--output-format', 'json',
+        ...promptArgs,
+        '--tools', '', // fully locked down — native image blocks need no tool access
+        '--permission-mode', 'bypassPermissions', // required in headless mode, see file header
+        '--system-prompt-override', systemText,
+      ];
+
       // Respect an explicit opts.timeoutMs verbatim (matches every other
       // provider's plain `?? DEFAULT` pattern) — a Math.max floor here used to
       // silently override a DELIBERATELY short explicit timeout (e.g.

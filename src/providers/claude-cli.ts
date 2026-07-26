@@ -63,10 +63,16 @@
  * environment setup differs between the two modes (see `buildChildEnv`):
  * subscription mode strips credentials to force CLI subscription auth;
  * harness mode instead points ANTHROPIC_BASE_URL at the override with a
- * dummy key, and both modes explicitly settle ANTHROPIC_BASE_URL one way or
- * the other so an ambient export in the server's own environment can never
- * leak into the wrong mode. These members are NOT Claude — `listModels()`
- * labels them accordingly.
+ * dummy key AND aggressively strips every ambient backend-redirect/credential
+ * var (HARNESS_REDIRECT_VARS: the CLAUDE_CODE_USE_* selectors that outrank
+ * ANTHROPIC_BASE_URL, ANTHROPIC_CUSTOM_HEADERS, OAuth/Foundry tokens, provider
+ * base-url overrides) so nothing inherited from the server's own environment
+ * can redirect the repo/prompt to — or ride along as a secret to — the
+ * (possibly remote) harness host. The clearing is deliberately asymmetric:
+ * subscription mode leaves the selectors alone (that traffic goes to the
+ * user's own account, and clearing them would break a legitimately
+ * Bedrock/Vertex-hosted Claude Code). These members are NOT Claude —
+ * `listModels()` labels them accordingly.
  */
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -93,6 +99,49 @@ interface RunResult {
 }
 
 /**
+/**
+ * Ambient env vars that redirect where a `claude` subprocess sends its
+ * requests, in Claude Code's own backend-selection precedence order (higher
+ * entries WIN over a plain ANTHROPIC_BASE_URL — confirmed against the Claude
+ * Code docs). In Ollama-harness mode we repoint ANTHROPIC_BASE_URL at a
+ * non-Anthropic, possibly REMOTE host, so any of these inherited from the
+ * server's own environment would either (a) override our endpoint and send the
+ * repo/prompt to the wrong backend, or (b) attach inherited credential material
+ * (ANTHROPIC_CUSTOM_HEADERS, an OAuth token) to a request aimed at that host —
+ * a real exfiltration path. They are cleared ONLY in harness mode; see the
+ * subscription branch for why they must be LEFT ALONE there.
+ */
+/**
+ * Strip HTTP basic-auth userinfo (`user:pass@`) from a URL before it goes into
+ * a human-visible label. CLAUDE_CLI_OLLAMA_ADDRESS may legitimately carry
+ * credentials (`http://user:pass@host:11434`); listModels()/get_council_config
+ * surface the harness address verbatim to any MCP client, IDE log, or shared
+ * transcript, so the raw address would leak that secret. Falls back to a manual
+ * regex if the string isn't a parseable URL (never throws).
+ */
+export function redactUrlUserinfo(url: string): string {
+  try {
+    const u = new URL(url);
+    if (u.username || u.password) { u.username = ''; u.password = ''; return u.toString(); }
+    return url;
+  } catch {
+    return url.replace(/(\/\/)[^/@]*@/, '$1');
+  }
+}
+
+const HARNESS_REDIRECT_VARS = [
+  // Highest precedence: force an alternate backend, overriding ANTHROPIC_BASE_URL.
+  'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
+  // Auth-based auto-selection: can pick a backend without the USE_* flag.
+  'ANTHROPIC_VERTEX_PROJECT_ID', 'ANTHROPIC_FOUNDRY_RESOURCE', 'ANTHROPIC_AWS_WORKSPACE_ID',
+  // Provider-specific base-url overrides (same tier as ANTHROPIC_BASE_URL).
+  'ANTHROPIC_BEDROCK_BASE_URL', 'ANTHROPIC_VERTEX_BASE_URL', 'ANTHROPIC_FOUNDRY_BASE_URL', 'ANTHROPIC_AWS_BASE_URL',
+  // Credential material the CLI would attach to whatever base URL is set.
+  'ANTHROPIC_CUSTOM_HEADERS', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'ANTHROPIC_FOUNDRY_API_KEY', 'ANTHROPIC_FOUNDRY_AUTH_TOKEN',
+];
+
+/**
  * Builds the child process's environment for either mode (see file header).
  * Exported (pure, no I/O) so both modes can be unit-tested directly without a
  * real subprocess or a real Ollama instance.
@@ -101,6 +150,18 @@ interface RunResult {
  * ANTHROPIC_BASE_URL one way or the other — never left to fall through from
  * `process.env` — so a stray export in the server's own ambient environment
  * can never silently redirect one mode's traffic into the other's backend.
+ *
+ * The clearing is deliberately ASYMMETRIC. In harness mode we own the endpoint
+ * (a non-Anthropic host) and must aggressively strip every ambient redirect/
+ * credential var (HARNESS_REDIRECT_VARS) so nothing subverts our routing or
+ * rides along to that host. In subscription mode traffic goes to the user's
+ * OWN account, so there is no leak to close — and the same selectors are how a
+ * user whose Claude Code legitimately runs on Bedrock/Vertex/Foundry gets a
+ * working member; clearing them there would silently BREAK that setup while
+ * buying nothing. So subscription mode strips only the credentials the CLI
+ * would prefer over the subscription, plus an ambient ANTHROPIC_BASE_URL (the
+ * one real subscription-mode leak: it would send the subscription credential
+ * to a stray host).
  */
 export function buildChildEnv(
   baseEnv: NodeJS.ProcessEnv,
@@ -116,10 +177,12 @@ export function buildChildEnv(
     env.ANTHROPIC_BASE_URL = anthropicBaseUrl;
     env.ANTHROPIC_API_KEY = 'ollama-harness-placeholder-key';
     delete env.ANTHROPIC_AUTH_TOKEN;
+    for (const v of HARNESS_REDIRECT_VARS) delete env[v];
   } else {
     // Subscription mode: force subscription auth by stripping credentials the
     // CLI would prefer over it, and clear any ambient ANTHROPIC_BASE_URL so a
-    // stray export can never redirect subscription traffic elsewhere.
+    // stray export can never redirect subscription traffic elsewhere. The
+    // backend selectors are intentionally NOT cleared here (see the doc above).
     delete env.ANTHROPIC_API_KEY;
     delete env.ANTHROPIC_AUTH_TOKEN;
     delete env.ANTHROPIC_BASE_URL;
@@ -172,12 +235,18 @@ export class ClaudeCliProvider implements Provider {
   async listModels(): Promise<ModelInfo[]> {
     // Ollama-harness members are NOT Claude — label distinctly so list_models /
     // get_council_config never mislead the caller into thinking they're
-    // talking to the real Claude subscription.
+    // talking to the real Claude subscription. Set serverId on harness members
+    // so the surfaced id is the fully-qualified `claude-cli/<serverId>:model`
+    // form users must use — a bare `claude-cli:model` id is reserved for the
+    // real subscription server (see ProviderRegistry.resolve). The address is
+    // userinfo-redacted so a credentialed CLAUDE_CLI_OLLAMA_ADDRESS never leaks.
+    const harnessAddr = this.anthropicBaseUrl ? redactUrlUserinfo(this.anthropicBaseUrl) : undefined;
     return this.models.map(m => ({
       provider: 'claude-cli' as ProviderType,
+      ...(harnessAddr ? { serverId: this.serverId } : {}),
       model: m,
-      label: this.anthropicBaseUrl
-        ? `${m} (via claude CLI harness, ${this.anthropicBaseUrl})`
+      label: harnessAddr
+        ? `${m} (via claude CLI harness, ${harnessAddr})`
         : `Claude ${m} (subscription)`,
     }));
   }
@@ -233,16 +302,20 @@ export class ClaudeCliProvider implements Provider {
     const images = messages.find(m => m.role === 'user' && m.images?.length)?.images ?? [];
     let imageDir: string | undefined;
     let imagePaths: string[] = [];
-    if (images.length > 0) {
-      imageDir = mkdtempSync(join(tmpdir(), 'claude-council-img-'));
-      imagePaths = images.map((img, i) => {
-        const path = join(imageDir!, `image-${i}.${MIME_EXT[img.mimeType]}`);
-        writeFileSync(path, Buffer.from(img.base64, 'base64'));
-        return path;
-      });
-    }
 
     try {
+      // Create/populate the temp image dir INSIDE the try so the finally's
+      // rmSync always cleans up even a partially-written dir — a writeFileSync
+      // failure (ENOSPC/EIO) after mkdtempSync succeeded would otherwise orphan
+      // the directory (× members × retries), contradicting the cleanup guarantee.
+      if (images.length > 0) {
+        imageDir = mkdtempSync(join(tmpdir(), 'claude-council-img-'));
+        imagePaths = images.map((img, i) => {
+          const path = join(imageDir!, `image-${i}.${MIME_EXT[img.mimeType]}`);
+          writeFileSync(path, Buffer.from(img.base64, 'base64'));
+          return path;
+        });
+      }
       // Flatten the conversation into a single prompt (passed via stdin to avoid
       // argv length limits on large judge prompts). When images are attached,
       // append an explicit instruction naming their paths — the model has no

@@ -176,7 +176,14 @@ Considering these perspectives on their merits, answer the ORIGINAL question aga
 // ─── Main pooled entry point ─────────────────────────────────────────────────
 
 export interface PooledInput {
+  /** (Possibly augmented) question shown to MEMBERS in the re-poll. */
   question: string;
+  /**
+   * ORIGINAL question for the JUDGE pool-digest prompts — the judge distils
+   * member TEXT and needs no attachments; the augmented question here would
+   * embed untrusted content in a trust-affirming block. Defaults to `question`.
+   */
+  judgeQuestion?: string;
   initialResponses: RawResponse[];
   members: Member[];
   judgeModelId: ModelId;
@@ -204,13 +211,15 @@ export async function runPooled(input: PooledInput): Promise<PooledResult> {
     verbose,
     images,
   } = input;
+  // Original question for the judge digests; augmented `question` for the re-poll.
+  const judgeQuestion = input.judgeQuestion ?? question;
   const cc: CompleteConfig = {
     maxTokens: runtime.maxTokens, retries: runtime.retries, timeoutMs: runtime.requestTimeoutMs,
   };
 
   // 1. Judge distils round-0 answers into a neutral pool.
   const initialPool = await poolResponses(
-    question,
+    judgeQuestion,
     initialResponses,
     judgeModelId,
     judgeProvider,
@@ -225,7 +234,7 @@ export async function runPooled(input: PooledInput): Promise<PooledResult> {
   // 3. Judge distils the reconsidered answers into a second neutral pool.
   //    No winner is declared — the two pools let the caller see any movement.
   const finalPool = await poolResponses(
-    question,
+    judgeQuestion,
     reconsidered,
     judgeModelId,
     judgeProvider,

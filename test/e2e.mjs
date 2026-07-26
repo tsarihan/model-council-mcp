@@ -175,6 +175,7 @@ async function main() {
     check('pooled: all 3 members reconsidered', pool.reconsidered?.length === 3, `got ${pool.reconsidered?.length}`);
     check('pooled: final pool converged to 1', pool.finalPool?.options?.length === 1, `got ${pool.finalPool?.options?.length}`);
     check('pooled: verbose includes round-0 responses', pool.initialResponses?.length === 3, `got ${pool.initialResponses?.length}`);
+    check('pooled: genuine run not flagged judgeDegraded', pool.initialPool?.judgeDegraded === undefined && pool.finalPool?.judgeDegraded === undefined);
     // Neutrality: the prompt shown to members must carry NO attribution/labels.
     const dbgPool = await (await fetch(`${MOCK_URL}/debug`)).json();
     check('pooled: re-poll prompt framed "in no particular order"', /in no particular order/.test(dbgPool.lastRepollPrompt ?? ''));
@@ -188,6 +189,27 @@ async function main() {
       arguments: { question: 'How to handle errors?', mode: 'pooled' },
     }));
     check('pooled: non-verbose omits round-0 responses', poolQuiet.initialResponses === undefined);
+
+    // ── Test: pooled mode with a failed judge must flag judgeDegraded, not a fake empty pool ─
+    console.log('\n▶ pooled: empty judge flags judgeDegraded on both digests');
+    await resetMock();
+    await client.callTool({
+      name: 'configure_council',
+      arguments: { models: ['ollama:small-a', 'ollama:small-b'], judge_model: 'ollama:empty-judge', response_mode: 'pooled' },
+    });
+    const poolEmpty = parseToolResult(await client.callTool({
+      name: 'ask_council', arguments: { question: 'How to handle errors?', mode: 'pooled' },
+    }));
+    check('pooled empty judge: initialPool flagged judgeDegraded', poolEmpty.initialPool?.judgeDegraded === true, `got ${JSON.stringify(poolEmpty.initialPool)}`);
+    check('pooled empty judge: finalPool flagged judgeDegraded', poolEmpty.finalPool?.judgeDegraded === true, `got ${JSON.stringify(poolEmpty.finalPool)}`);
+    check('pooled empty judge: members still reconsidered (re-poll falls back to bare question)', poolEmpty.reconsidered?.length === 2, `got ${poolEmpty.reconsidered?.length}`);
+    // Restore the default 3-member council + auto judge (big-judge) before the
+    // next block — configure_council's judge_model has no "unset" value, so a
+    // real model id is passed to override empty-judge back to something real.
+    await client.callTool({
+      name: 'configure_council',
+      arguments: { models: ['ollama:small-a', 'ollama:small-b', 'ollama:big-judge'], judge_model: 'ollama:big-judge', response_mode: 'individual' },
+    });
 
     // ── Test: dialectic mode (thesis → antithesis → synthesis) ────────────────
     console.log('\n▶ ask_council (dialectic — defend / pros-cons / re-select)');
@@ -239,6 +261,8 @@ async function main() {
     check('dialectic: empty judge → mode still dialectic (no crash)', diaDeg.mode === 'dialectic');
     check('dialectic: empty judge → no pros/cons', diaDeg.prosCons?.length === 0, `got ${diaDeg.prosCons?.length}`);
     check('dialectic: empty judge → members still re-selected', diaDeg.selections?.length === 3, `got ${diaDeg.selections?.length}`);
+    check('dialectic: empty judge → flagged judgeDegraded (not a genuine "nothing to debate")', diaDeg.judgeDegraded === true, `got ${diaDeg.judgeDegraded}`);
+    check('dialectic: genuine run (dia, above) not flagged judgeDegraded', dia.judgeDegraded === undefined);
     const dbgDeg = await (await fetch(`${MOCK_URL}/debug`)).json();
     check('dialectic: empty judge → selection falls back to bare question (no dossier)', dbgDeg.lastSelectionPrompt === null);
 

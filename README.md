@@ -457,6 +457,9 @@ that way because the judge never got to re-assess them, not because the council 
 ```
 
 Why `pooled` exists: the `deconflicted` loop shows each member the *labelled* factions (`[modelA, modelB]: X`) and asks them to "agree with one of the existing positions" — that is social proof, and minority views tend to collapse toward the visible plurality in a single round, erasing the decorrelation the council exists to surface. `pooled` follows the **Delphi method** instead: the judge distils all answers into a neutral digest — one entry per distinct answer, rationale merged from everyone who gave it, but with **no counts, no attribution, and no ranking** — then re-asks members the original question against that digest ("in no particular order, here is what others said — what do you think?"). Members reconsider on substance, not popularity. The `models` field on each option is recorded for *your* analysis and is **never** shown back to members. No final winner is declared: compare `initialPool` vs. `finalPool` to see whether — and how much — opinion actually moved.
+`judgeDegraded: true` on either digest means the judge failed to produce usable output for that step — its `options: []`
+is a fallback, not a genuine "nothing distinct to pool" result. `dialectic` carries the same flag at the top level, covering
+both the shared digest step and its own pros/cons dossier step.
 
 #### Dialectic result (thesis → antithesis → synthesis)
 

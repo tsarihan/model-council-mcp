@@ -150,6 +150,12 @@ function matchOption(
   return undefined;
 }
 
+interface ProsConsResult {
+  options: DialecticOption[];
+  /** True when the dossier-building judge call itself failed/degraded (distinct from there simply being nothing to debate). */
+  judgeDegraded: boolean;
+}
+
 async function buildProsCons(
   question: string,
   digest: PooledDigest,
@@ -158,7 +164,7 @@ async function buildProsCons(
   judgeModelId: ModelId,
   judgeProvider: Provider,
   cc: CompleteConfig,
-): Promise<DialecticOption[]> {
+): Promise<ProsConsResult> {
   // The pooled digest is the CANONICAL option set: seed one entry per distinct
   // option with its champions and a rationale-derived pro as a floor. The judge's
   // richer pros/cons merge onto these; a rephrased judge answer is matched back
@@ -175,6 +181,7 @@ async function buildProsCons(
 
   // Ask the judge for the dossier only when there is something to debate.
   let parsed: RawDossierJSON = {};
+  let judgeDegraded = false;
   if (digest.options.length > 0) {
     let rawJson = '';
     try {
@@ -186,9 +193,12 @@ async function buildProsCons(
         cc.retries,
       );
     } catch (err) {
-      // Empty after retries → degrade to the digest-seeded sheet. A genuine
-      // provider error still propagates.
-      if (!(err instanceof EmptyCompletionError)) {
+      // Empty after retries → degrade to the digest-seeded sheet, flagged so a
+      // caller can't mistake it for a genuine "nothing more to add" outcome.
+      // A genuine provider error still propagates.
+      if (err instanceof EmptyCompletionError) {
+        judgeDegraded = true;
+      } else {
         throw new Error(
           `Judge model (${modelIdLabel(judgeModelId)}) failed to build pros/cons: ${String(err)}`,
         );
@@ -201,6 +211,7 @@ async function buildProsCons(
         parsed = parseDossierJSON(rawJson);
       } catch {
         parsed = {};
+        judgeDegraded = true;
       }
     }
   }
@@ -223,7 +234,7 @@ async function buildProsCons(
     }
   }
 
-  return [...byAnswer.values()];
+  return { options: [...byAnswer.values()], judgeDegraded };
 }
 
 // ─── Step 4 prompt: choose top 3 from the dialectic ──────────────────────────
@@ -300,7 +311,7 @@ export async function runDialectic(input: DialecticInput): Promise<DialecticResu
   );
 
   // 3. Judge compiles the pros/cons dossier.
-  const prosCons = await buildProsCons(
+  const prosConsResult = await buildProsCons(
     question,
     digest,
     initialResponses,
@@ -309,6 +320,7 @@ export async function runDialectic(input: DialecticInput): Promise<DialecticResu
     judgeProvider,
     cc,
   );
+  const prosCons = prosConsResult.options;
 
   // 4. Synthesis: each member selects a ranked top-3 from the dossier.
   const selections = await queryMembers(
@@ -317,6 +329,8 @@ export async function runDialectic(input: DialecticInput): Promise<DialecticResu
     runtime,
   );
 
+  const judgeDegraded = digest.judgeDegraded || prosConsResult.judgeDegraded;
+
   return {
     mode: 'dialectic',
     question,
@@ -324,6 +338,7 @@ export async function runDialectic(input: DialecticInput): Promise<DialecticResu
     defenses,
     prosCons,
     selections,
+    ...(judgeDegraded ? { judgeDegraded: true } : {}),
     ...(verbose ? { initialResponses } : {}),
   };
 }

@@ -36208,7 +36208,7 @@ async function poolResponses(question, responses, judgeModelId, judgeProvider, c
       cc.retries
     );
   } catch (err) {
-    if (err instanceof EmptyCompletionError) return { options: [] };
+    if (err instanceof EmptyCompletionError) return { options: [], judgeDegraded: true };
     throw new Error(
       `Judge model (${modelIdLabel(judgeModelId)}) failed to pool responses: ${String(err)}`
     );
@@ -36217,7 +36217,7 @@ async function poolResponses(question, responses, judgeModelId, judgeProvider, c
   try {
     parsed = parsePoolJSON(rawJson);
   } catch {
-    return { options: [] };
+    return { options: [], judgeDegraded: true };
   }
   return {
     options: (Array.isArray(parsed.options) ? parsed.options : []).map((o2) => ({
@@ -36381,6 +36381,7 @@ async function buildProsCons(question, digest, initial, defenses, judgeModelId, 
     });
   }
   let parsed = {};
+  let judgeDegraded = false;
   if (digest.options.length > 0) {
     let rawJson = "";
     try {
@@ -36392,7 +36393,9 @@ async function buildProsCons(question, digest, initial, defenses, judgeModelId, 
         cc.retries
       );
     } catch (err) {
-      if (!(err instanceof EmptyCompletionError)) {
+      if (err instanceof EmptyCompletionError) {
+        judgeDegraded = true;
+      } else {
         throw new Error(
           `Judge model (${modelIdLabel(judgeModelId)}) failed to build pros/cons: ${String(err)}`
         );
@@ -36403,6 +36406,7 @@ async function buildProsCons(question, digest, initial, defenses, judgeModelId, 
         parsed = parseDossierJSON(rawJson);
       } catch {
         parsed = {};
+        judgeDegraded = true;
       }
     }
   }
@@ -36421,7 +36425,7 @@ async function buildProsCons(question, digest, initial, defenses, judgeModelId, 
       byAnswer.set(keyFor(answer), { answer, pros, cons, championedBy: [] });
     }
   }
-  return [...byAnswer.values()];
+  return { options: [...byAnswer.values()], judgeDegraded };
 }
 function buildSelectionPrompt(question, prosCons) {
   if (prosCons.length === 0) return question;
@@ -36474,7 +36478,7 @@ async function runDialectic(input) {
     members,
     runtime
   );
-  const prosCons = await buildProsCons(
+  const prosConsResult = await buildProsCons(
     question,
     digest,
     initialResponses,
@@ -36483,11 +36487,13 @@ async function runDialectic(input) {
     judgeProvider,
     cc
   );
+  const prosCons = prosConsResult.options;
   const selections = await queryMembers(
     buildSelectionPrompt(question, prosCons),
     members,
     runtime
   );
+  const judgeDegraded = digest.judgeDegraded || prosConsResult.judgeDegraded;
   return {
     mode: "dialectic",
     question,
@@ -36495,6 +36501,7 @@ async function runDialectic(input) {
     defenses,
     prosCons,
     selections,
+    ...judgeDegraded ? { judgeDegraded: true } : {},
     ...verbose ? { initialResponses } : {}
   };
 }
@@ -37521,7 +37528,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.22"
+    version: "0.2.23"
   },
   {
     capabilities: { tools: {} },

@@ -90,8 +90,9 @@ export async function poolResponses(
     );
   } catch (err) {
     // Judge produced nothing usable → empty digest (re-poll falls back to the
-    // bare question). A genuine provider error still propagates.
-    if (err instanceof EmptyCompletionError) return { options: [] };
+    // bare question), flagged so a caller can't mistake this for a genuine
+    // "nothing distinct to pool" result. A genuine provider error still propagates.
+    if (err instanceof EmptyCompletionError) return { options: [], judgeDegraded: true };
     throw new Error(
       `Judge model (${modelIdLabel(judgeModelId)}) failed to pool responses: ${String(err)}`,
     );
@@ -101,7 +102,7 @@ export async function poolResponses(
   try {
     parsed = parsePoolJSON(rawJson);
   } catch {
-    return { options: [] };
+    return { options: [], judgeDegraded: true };
   }
 
   // Untrusted shape: `options` may not be an array (jsonMode only guarantees

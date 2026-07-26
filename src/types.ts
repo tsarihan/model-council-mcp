@@ -262,6 +262,13 @@ export interface PooledOption {
 
 export interface PooledDigest {
   options: PooledOption[];
+  /**
+   * True when the judge failed to produce usable/parseable output for THIS
+   * pooling step — `options: []` is a fallback in that case, not a genuine
+   * "nothing distinct to pool" result (which is rare but possible if every
+   * source response errored). Mirrors `CategorizedResult.judgeDegraded`.
+   */
+  judgeDegraded?: boolean;
 }
 
 export interface PooledResult {
@@ -306,6 +313,13 @@ export interface DialecticResult {
   prosCons: DialecticOption[];
   /** Each member's final ranked top-3, chosen after weighing the pros/cons. */
   selections: RawResponse[];
+  /**
+   * True when a judge failure affected this run — either the initial digest
+   * step (see `PooledDigest.judgeDegraded`) or the pros/cons dossier step.
+   * `prosCons` still reflects the digest-seeded fallback sheet in that case,
+   * not a genuine "nothing to debate" result.
+   */
+  judgeDegraded?: boolean;
   // ── Verbose-only ──
   /** Thesis: the initial fan-out responses from every council member. */
   initialResponses?: RawResponse[];

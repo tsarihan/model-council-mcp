@@ -1392,6 +1392,70 @@ async function main() {
       check('vision shape-validation: a non-boolean cached value is NOT trusted (genuine re-probe)', dbgShape.challengeCalls >= 1, `challengeCalls=${dbgShape.challengeCalls}`);
       await shapeClient.close();
     }
+
+    // Laundering regression (round 5): a disk entry expiring mid-process must
+    // NOT get its checkedAt silently refreshed from the provider's own
+    // long-lived in-memory cache without a genuine live re-probe — that would
+    // permanently disable the TTL's self-healing for the life of the process
+    // AND leave a falsely-fresh lease on disk that survives a restart too.
+    {
+      const launderDir = mkdtempSync(join(tmpdir(), 'mc-e2e-launder-'));
+      const launderStateFile = join(launderDir, 'state.json');
+      await resetMock();
+      const launderTransport = new StdioClientTransport({
+        command: 'node', args: [serverEntry],
+        env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: launderStateFile },
+      });
+      const launderClient = new Client({ name: 'launder-e2e', version: '1.0.0' }, { capabilities: {} });
+      await launderClient.connect(launderTransport);
+      await launderClient.callTool({ name: 'configure_council', arguments: { models: ['ollama:vision-a'], response_mode: 'individual' } });
+
+      // First ask: genuine live probe, populates BOTH the provider's
+      // in-memory cache and the on-disk entry.
+      await launderClient.callTool({ name: 'ask_council', arguments: { question: 'x', images: [visImgFile] } });
+      const dbgFirst = await (await fetch(`${MOCK_URL}/debug`)).json();
+      const callsAfterFirst = dbgFirst.challengeCalls;
+
+      // Force the ON-DISK entry to look expired, while the SAME process's
+      // provider still holds the in-memory value from the ask above —
+      // exactly the split state that exposes the laundering bug.
+      const beforeSecond = JSON.parse(readFileSync(launderStateFile, 'utf8'));
+      const expiredStamp = Date.now() - 31 * 24 * 60 * 60 * 1000;
+      beforeSecond.visionCapability['ollama:vision-a'].checkedAt = expiredStamp;
+      writeFileSync(launderStateFile, JSON.stringify(beforeSecond, null, 2));
+
+      // Second ask, SAME process: the in-memory cache still short-circuits
+      // supportsVision() (challengeCalls must NOT increase — that part of
+      // the behavior is correct and expected), but the on-disk checkedAt
+      // must NOT be refreshed either, since no live probe actually happened.
+      await launderClient.callTool({ name: 'ask_council', arguments: { question: 'y', images: [visImgFile] } });
+      const dbgSecond = await (await fetch(`${MOCK_URL}/debug`)).json();
+      check('vision laundering: in-memory cache still short-circuits the OCR challenge (unchanged behavior)',
+        dbgSecond.challengeCalls === callsAfterFirst, `first=${callsAfterFirst} second=${dbgSecond.challengeCalls}`);
+      const afterSecond = JSON.parse(readFileSync(launderStateFile, 'utf8'));
+      check('vision laundering: an expired on-disk entry is NOT laundered into a fresh checkedAt without a genuine live probe',
+        afterSecond.visionCapability?.['ollama:vision-a']?.checkedAt === expiredStamp,
+        JSON.stringify(afterSecond.visionCapability));
+      await launderClient.close();
+
+      // Reboot (new process, same state file): the on-disk entry is still
+      // genuinely expired (round-2 assertion proved it wasn't laundered), so
+      // this MUST trigger a real re-probe now that the in-memory cache is gone.
+      await resetMock();
+      const launderRebootTransport = new StdioClientTransport({
+        command: 'node', args: [serverEntry],
+        env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: launderStateFile },
+      });
+      const launderRebootClient = new Client({ name: 'launder-reboot-e2e', version: '1.0.0' }, { capabilities: {} });
+      await launderRebootClient.connect(launderRebootTransport);
+      await launderRebootClient.callTool({ name: 'configure_council', arguments: { models: ['ollama:vision-a'], response_mode: 'individual' } });
+      await launderRebootClient.callTool({ name: 'ask_council', arguments: { question: 'z', images: [visImgFile] } });
+      const dbgReboot = await (await fetch(`${MOCK_URL}/debug`)).json();
+      check('vision laundering: the un-laundered expired entry DOES trigger a genuine re-probe after restart',
+        dbgReboot.challengeCalls >= 1, `challengeCalls=${dbgReboot.challengeCalls}`);
+      await launderRebootClient.close();
+      rmSync(launderDir, { recursive: true, force: true });
+    }
     rmSync(visImgDir, { recursive: true, force: true });
 
     // configure_council settings (judge_model/response_mode/max_deconflict_rounds)
@@ -1539,6 +1603,75 @@ async function main() {
     check('tier fallback: claude tier is NOT the stale hardcoded default ("pro", absent from this subscriptions.json)', tf.tiers?.claude !== 'pro', JSON.stringify(tf.tiers));
     check('tier fallback: claude tier is a value this subscriptions.json actually defines', ['starter', 'elite'].includes(tf.tiers?.claude), JSON.stringify(tf.tiers));
     await tierFallbackClient.close(); tierFallbackClient = undefined;
+
+    // Fallback-CHAIN regression (round 5): a present-but-INVALID persisted
+    // tier must fall through to a valid ENV var next, not skip straight past
+    // it to the least-privileged "free" tier. Pre-seed a state file with a
+    // corrupted claude tier, boot with a valid CLAUDE_TIER — the effective
+    // tier must be the env value, proving both config.ts's resolveTier (boot)
+    // and index.ts's effectiveTiers (council_status) honour the full chain.
+    const chainDir = mkdtempSync(join(tmpdir(), 'mc-e2e-tierchain-'));
+    writeFileSync(join(chainDir, 'state.json'), JSON.stringify({ version: 1, tiers: { claude: 'not-a-real-tier' } }));
+    const chainTransport = new StdioClientTransport({
+      command: 'node', args: [serverEntry],
+      env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, CLAUDE_TIER: 'max20x', MODEL_COUNCIL_STATE: join(chainDir, 'state.json') },
+    });
+    const chainClient = new Client({ name: 'tierchain-e2e', version: '1.0.0' }, { capabilities: {} });
+    await chainClient.connect(chainTransport);
+    const chainStatus = parseToolResult(await chainClient.callTool({ name: 'council_status', arguments: {} }));
+    check('tier fallback CHAIN: an invalid persisted tier falls through to a valid env var, not straight to "free"',
+      chainStatus.tiers?.claude === 'max20x', JSON.stringify(chainStatus.tiers));
+    await chainClient.close();
+    rmSync(chainDir, { recursive: true, force: true });
+
+    // Malformed-override regression (round 5): CLOUD_CONCURRENCY=<garbage>
+    // must resolve to "as if unset" (per-tier concurrency applies), NOT
+    // silently collapse every cloud pool to the numeric default.
+    const badConcDir = mkdtempSync(join(tmpdir(), 'mc-e2e-badconc-'));
+    const badConcTransport = new StdioClientTransport({
+      command: 'node', args: [serverEntry],
+      env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, CLOUD_CONCURRENCY: 'three', MODEL_COUNCIL_STATE: join(badConcDir, 'state.json') },
+    });
+    const badConcClient = new Client({ name: 'badconc-e2e', version: '1.0.0' }, { capabilities: {} });
+    await badConcClient.connect(badConcTransport);
+    const badConcStatus = parseToolResult(await badConcClient.callTool({ name: 'council_status', arguments: {} }));
+    check('malformed CLOUD_CONCURRENCY: chatgpt keeps its own tier-derived concurrency (6), not collapsed to a single value',
+      badConcStatus.concurrency?.chatgpt === 6, JSON.stringify(badConcStatus.concurrency));
+    check('malformed CLOUD_CONCURRENCY: claude keeps its own tier-derived concurrency (2 at default pro tier), distinct from chatgpt',
+      badConcStatus.concurrency?.claude === 2 && badConcStatus.concurrency?.claude !== badConcStatus.concurrency?.chatgpt,
+      JSON.stringify(badConcStatus.concurrency));
+    await badConcClient.close();
+    rmSync(badConcDir, { recursive: true, force: true });
+
+    // Boot-race regression (round 5): setup_council concluding zero members
+    // (e.g. every tier free, no local Ollama reachable) must not be
+    // overwritten by a slower background initCouncil() detection landing
+    // afterward — both must agree the council was explicitly, intentionally
+    // configured, even to empty.
+    const raceDir = mkdtempSync(join(tmpdir(), 'mc-e2e-race-'));
+    const raceTransport = new StdioClientTransport({
+      command: 'node', args: [serverEntry],
+      env: { ...process.env, OLLAMA_ADDRESS: 'http://127.0.0.1:1', CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: join(raceDir, 'state.json') },
+    });
+    const raceClient = new Client({ name: 'race-e2e', version: '1.0.0' }, { capabilities: {} });
+    await raceClient.connect(raceTransport);
+    // Call setup_council with every tier at 'free' immediately on connect —
+    // racing against initCouncil()'s own background detection, which (given
+    // an unreachable Ollama address above) will also conclude zero members,
+    // but on the BOOT-time tiers snapshot rather than this explicit call.
+    const raceSetup = parseToolResult(await raceClient.callTool({
+      name: 'setup_council', arguments: { chatgpt: 'free', claude: 'free', grok: 'free', ollama: 'free' },
+    }));
+    check('boot-race: setup_council with all-free tiers concludes zero members', (raceSetup.council?.members ?? []).length === 0, JSON.stringify(raceSetup.council));
+    // Give the background initCouncil() detection plenty of time to land, if
+    // it hasn't already — then confirm it did NOT silently repopulate the
+    // council behind setup_council's back.
+    await new Promise(r => setTimeout(r, 3000));
+    const raceAfter = parseToolResult(await raceClient.callTool({ name: 'get_council_config', arguments: {} }));
+    check('boot-race: a slower background initCouncil() does not clobber the explicit zero-member setup_council result',
+      (raceAfter.council?.members ?? []).length === 0, JSON.stringify(raceAfter.council));
+    await raceClient.close();
+    rmSync(raceDir, { recursive: true, force: true });
   } finally {
     try { await detectClient.close(); } catch { /* already closed */ }
     try { if (rebootClient) await rebootClient.close(); } catch { /* noop */ }

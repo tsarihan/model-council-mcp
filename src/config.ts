@@ -179,8 +179,17 @@ export function loadConfig(): AppConfig {
   const state = loadState();
   const resolveTier = (provider: SubProvider, envName: string, def: string): string => {
     const valid = validTiers(provider, subs);
-    const chosen = state.tiers?.[provider] ?? envClean(envName) ?? def;
-    if (valid.includes(chosen)) return chosen;
+    // Each step of the documented "state > env > default" chain must be
+    // validated and skipped independently — collapsing them into one `??`
+    // chain (the previous `chosen = state.tiers?.[provider] ?? envClean(...)
+    // ?? def`) meant a PRESENT-but-INVALID state value (hand-edited
+    // state.json, or persisted before subscriptions.json renamed/removed
+    // that tier) short-circuited the whole chain and skipped straight past a
+    // perfectly valid env var to the hardcoded default.
+    const stateVal = state.tiers?.[provider];
+    if (stateVal !== undefined && valid.includes(stateVal)) return stateVal;
+    const envVal = envClean(envName);
+    if (envVal !== undefined && valid.includes(envVal)) return envVal;
     // `def` (the hardcoded literal default, e.g. "pro") is not itself
     // guaranteed to still be a valid tier — if subscriptions.json ever
     // renames/removes it, falling back to `def` unconditionally would return
@@ -362,10 +371,22 @@ export function loadConfig(): AppConfig {
   // floored anything below 1 regardless — CLOUD_CONCURRENCY=0 could never
   // actually mean unlimited, unlike LOCAL_CONCURRENCY=0 one line below (which
   // already used the correct Number.isFinite-based pattern). Match it.
-  const cloudOverride =
-    cloudOverrideRaw !== undefined ? (Number.isFinite(parseInt(cloudOverrideRaw, 10)) ? parseInt(cloudOverrideRaw, 10) : subs.defaults.cloudConcurrency) : undefined;
-  const localOverride =
-    localOverrideRaw !== undefined ? (Number.isFinite(parseInt(localOverrideRaw, 10)) ? parseInt(localOverrideRaw, 10) : subs.defaults.localConcurrency) : undefined;
+  //
+  // A genuinely UNPARSEABLE value (e.g. CLOUD_CONCURRENCY=three, a typo) must
+  // resolve to `undefined` — "as if unset" — not to the numeric default. A
+  // defined override collapses EVERY cloud pool to that single ceiling in
+  // resolvePoolLimits() below, so mapping a typo to the default number
+  // silently pins chatgpt/claude/grok/ollama-cloud/openai/anthropic/xai all
+  // to that one value, discarding each provider's real per-tier concurrency
+  // with no visible signal — worse than just falling through to per-tier
+  // limits, which is what an actually-unset var does.
+  const parseOverride = (raw: string | undefined): number | undefined => {
+    if (raw === undefined) return undefined;
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) ? n : undefined;
+  };
+  const cloudOverride = parseOverride(cloudOverrideRaw);
+  const localOverride = parseOverride(localOverrideRaw);
   const poolLimits = resolvePoolLimits(tiers, { cloud: cloudOverride, local: localOverride }, subs);
 
   const runtime: RuntimeConfig = {

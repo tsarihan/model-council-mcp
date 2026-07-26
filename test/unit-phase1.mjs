@@ -60,6 +60,14 @@ console.log('▶ subscriptions isValid: per-tier shape (cloud must be boolean, c
     providers: { ...subs.providers, claude: { ...subs.providers.claude, tiers: { ...subs.providers.claude.tiers, pro: { concurrency: 2 } } } },
   };
   check('tier missing cloud entirely → rejected', !isValid(missingCloud));
+
+  // curatedCloudModels per-element string check (round 5) — Array.isArray
+  // alone let a non-string entry through, which would later interpolate into
+  // a malformed model id (e.g. "ollama:[object Object]") in autoPopulatedMembers.
+  const nonStringCurated = { ...subs, curatedCloudModels: [...subs.curatedCloudModels, 123] };
+  check('curatedCloudModels with a non-string entry → rejected', !isValid(nonStringCurated));
+  const nullCurated = { ...subs, curatedCloudModels: [...subs.curatedCloudModels, null] };
+  check('curatedCloudModels with a null entry → rejected', !isValid(nullCurated));
 }
 
 console.log('▶ tier → cloud + concurrency');
@@ -957,12 +965,16 @@ console.log('▶ matchOption: fuzzy substring match prefers the LONGEST match, n
   check('no overlapping option → undefined', matchOption('Python', byAnswerPlain) === undefined);
 }
 
-console.log('▶ vision accept-probe: transient failures (429/401/403/408/409/no-status) are never cached as a permanent rejection');
+console.log('▶ vision accept-probe: transient failures (429/401/403/404/408/409/no-status) are never cached as a permanent rejection');
 {
   const cases = [
     { label: '429 rate limit', err: { status: 429 } },
     { label: '401 unauthorized', err: { status: 401 } },
     { label: '403 forbidden', err: { status: 403 } },
+    // 404 (round 5): almost always "endpoint/model not found," unrelated to
+    // whether the model accepts an image part — must not be cached as a
+    // definitive vision rejection.
+    { label: '404 not found', err: { status: 404 } },
     { label: '408 request timeout', err: { status: 408 } },
     { label: '409 conflict', err: { status: 409 } },
     { label: 'no status at all (ECONNRESET-shaped)', err: new Error('socket hang up') },

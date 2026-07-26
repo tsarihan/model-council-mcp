@@ -24518,7 +24518,8 @@ function isValid2(s2) {
   };
   const d2 = o2?.defaults;
   const defaultsOk = !!d2 && Number.isFinite(d2.cloudConcurrency) && Number.isFinite(d2.apiConcurrency) && Number.isFinite(d2.localConcurrency);
-  return !!o2 && !!o2.providers && provOk(o2.providers.chatgpt) && provOk(o2.providers.claude) && provOk(o2.providers.grok) && provOk(o2.providers.ollama) && Array.isArray(o2.curatedCloudModels) && defaultsOk;
+  const curatedOk = Array.isArray(o2?.curatedCloudModels) && o2.curatedCloudModels.every((m2) => typeof m2 === "string");
+  return !!o2 && !!o2.providers && provOk(o2.providers.chatgpt) && provOk(o2.providers.claude) && provOk(o2.providers.grok) && provOk(o2.providers.ollama) && curatedOk && defaultsOk;
 }
 var cached2 = null;
 function loadSubscriptions() {
@@ -24696,8 +24697,10 @@ function loadConfig() {
   const state = loadState();
   const resolveTier = (provider, envName, def) => {
     const valid = validTiers(provider, subs);
-    const chosen = state.tiers?.[provider] ?? envClean(envName) ?? def;
-    if (valid.includes(chosen)) return chosen;
+    const stateVal = state.tiers?.[provider];
+    if (stateVal !== void 0 && valid.includes(stateVal)) return stateVal;
+    const envVal = envClean(envName);
+    if (envVal !== void 0 && valid.includes(envVal)) return envVal;
     return valid.includes(def) ? def : valid[0] ?? def;
   };
   const tiers = {
@@ -24800,8 +24803,13 @@ function loadConfig() {
   const autoCouncil = !["false", "0", "no", "off"].includes(autoRaw);
   const cloudOverrideRaw = envClean("CLOUD_CONCURRENCY");
   const localOverrideRaw = envClean("LOCAL_CONCURRENCY");
-  const cloudOverride = cloudOverrideRaw !== void 0 ? Number.isFinite(parseInt(cloudOverrideRaw, 10)) ? parseInt(cloudOverrideRaw, 10) : subs.defaults.cloudConcurrency : void 0;
-  const localOverride = localOverrideRaw !== void 0 ? Number.isFinite(parseInt(localOverrideRaw, 10)) ? parseInt(localOverrideRaw, 10) : subs.defaults.localConcurrency : void 0;
+  const parseOverride = (raw) => {
+    if (raw === void 0) return void 0;
+    const n2 = parseInt(raw, 10);
+    return Number.isFinite(n2) ? n2 : void 0;
+  };
+  const cloudOverride = parseOverride(cloudOverrideRaw);
+  const localOverride = parseOverride(localOverrideRaw);
   const poolLimits = resolvePoolLimits(tiers, { cloud: cloudOverride, local: localOverride }, subs);
   const runtime = {
     maxTokens: Math.max(1, envInt("MAX_TOKENS", 16e3)),
@@ -31888,7 +31896,7 @@ var OpenAICompatibleProvider = class {
     } catch (err) {
       if (isTimeoutError(err)) return false;
       const status = err.status;
-      const transientStatus = status === 429 || status === 401 || status === 403 || status === 408 || status === 409;
+      const transientStatus = status === 429 || status === 401 || status === 403 || status === 404 || status === 408 || status === 409;
       if (transientStatus || typeof status !== "number") return false;
       if (status >= 500) return false;
       this.acceptCache.set(model, false);
@@ -34985,7 +34993,7 @@ var AnthropicProvider = class {
     } catch (err) {
       if (isTimeoutError(err)) return false;
       const status = err.status;
-      const transientStatus = status === 429 || status === 401 || status === 403 || status === 408 || status === 409;
+      const transientStatus = status === 429 || status === 401 || status === 403 || status === 404 || status === 408 || status === 409;
       if (transientStatus || typeof status !== "number") return false;
       if (status >= 500) return false;
       this.acceptCache.set(model, false);
@@ -36820,6 +36828,12 @@ var CouncilOrchestrator = class {
       const persistedVision = loadState().visionCapability ?? {};
       const visionCheckedAt = Date.now();
       const seededLabels = /* @__PURE__ */ new Set();
+      const alreadyCachedLabels = /* @__PURE__ */ new Set();
+      for (const m2 of members) {
+        if (m2.provider.getVisionCache()[m2.modelId.model] !== void 0) {
+          alreadyCachedLabels.add(modelIdLabel(m2.modelId));
+        }
+      }
       const isFreshEntry = (entry) => !!entry && typeof entry.value === "boolean" && typeof entry.checkedAt === "number" && entry.checkedAt <= visionCheckedAt && visionCheckedAt - entry.checkedAt < VISION_CACHE_TTL_MS;
       for (const m2 of members) {
         const label = modelIdLabel(m2.modelId);
@@ -36835,7 +36849,7 @@ var CouncilOrchestrator = class {
       const newlyConfirmed = {};
       for (const m2 of members) {
         const label = modelIdLabel(m2.modelId);
-        if (seededLabels.has(label)) continue;
+        if (seededLabels.has(label) || alreadyCachedLabels.has(label)) continue;
         const cache = m2.provider.getVisionCache();
         const value = cache[m2.modelId.model];
         if (value !== void 0) {
@@ -37512,6 +37526,7 @@ try {
 }
 var { appConfig, registry: registry2, orchestrator } = booted;
 var jobs = new JobStore();
+var explicitlyConfigured = false;
 try {
   saveState({
     env: {
@@ -37553,9 +37568,11 @@ var labelsToMembers = (labels) => labels.flatMap((s2) => {
 function effectiveTiers(subs = loadSubscriptions()) {
   const stateTiers = loadState().tiers ?? {};
   const guard = (p2) => {
-    const v2 = stateTiers[p2] ?? appConfig.tiers[p2];
-    if (validTiers(p2, subs).includes(v2)) return v2;
-    return validTiers(p2, subs)[0] ?? appConfig.tiers[p2];
+    const valid = validTiers(p2, subs);
+    const stateVal = stateTiers[p2];
+    if (stateVal !== void 0 && valid.includes(stateVal)) return stateVal;
+    if (valid.includes(appConfig.tiers[p2])) return appConfig.tiers[p2];
+    return valid[0] ?? appConfig.tiers[p2];
   };
   return { chatgpt: guard("chatgpt"), claude: guard("claude"), grok: guard("grok"), ollama: guard("ollama") };
 }
@@ -37584,7 +37601,7 @@ async function initCouncil() {
   if (Object.keys(settingsUpdate).length > 0) {
     orchestrator.updateConfig(settingsUpdate);
   }
-  if (orchestrator.getConfig().members.length > 0) return;
+  if (orchestrator.getConfig().members.length > 0 || explicitlyConfigured) return;
   if (Array.isArray(persisted.members)) {
     orchestrator.updateConfig({ members: labelsToMembers(persisted.members) });
     return;
@@ -37592,7 +37609,7 @@ async function initCouncil() {
   try {
     const subs = loadSubscriptions();
     const report = await detectEnvironment(registry2, appConfig.tiers, subs);
-    if (orchestrator.getConfig().members.length > 0) return;
+    if (orchestrator.getConfig().members.length > 0 || explicitlyConfigured) return;
     if (Array.isArray(loadState().members)) return;
     const labels = autoPopulatedMembers(report, appConfig.tiers, subs);
     if (labels.length) {
@@ -37857,7 +37874,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.43"
+    version: "0.2.44"
   },
   {
     capabilities: { tools: {} },
@@ -37963,6 +37980,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
           update.autoCouncil = input.auto_council;
         }
         orchestrator.updateConfig(update);
+        explicitlyConfigured = true;
         const cfg = orchestrator.getConfig();
         const persistPatch = {};
         if (input.models !== void 0) {
@@ -38224,6 +38242,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         const report = await detectEnvironment(registry2, tiers, subs);
         const labels = autoPopulatedMembers(report, tiers, subs);
         orchestrator.updateConfig({ members: labelsToMembers(labels) });
+        explicitlyConfigured = true;
         if (labels.length > 0) {
           saveState({ members: labels });
         }

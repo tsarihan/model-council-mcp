@@ -144,7 +144,12 @@ export class OpenAICompatibleProvider implements Provider {
       // the life of the process over a transient condition unrelated to
       // vision support. A response with NO status at all (ECONNRESET, DNS
       // failure, a malformed SDK error/shape) is equally uninformative.
-      const transientStatus = status === 429 || status === 401 || status === 403 || status === 408 || status === 409;
+      // 404 added here (round 5): almost always "endpoint/model not found"
+      // (a deployment mid-rollout, a renamed/typo'd model) — nothing to do
+      // with whether that model accepts an image part once actually
+      // reachable. Caching it as a vision rejection would exclude a
+      // genuinely capable model over an unrelated routing problem.
+      const transientStatus = status === 429 || status === 401 || status === 403 || status === 404 || status === 408 || status === 409;
       if (transientStatus || typeof status !== 'number') return false; // transient — don't cache
       if (status >= 500) return false; // server error — don't cache
       this.acceptCache.set(model, false); // remaining 4xx → the server validated and refused the image part

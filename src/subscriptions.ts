@@ -146,10 +146,17 @@ export function isValid(s: unknown): s is Subscriptions {
     Number.isFinite(d.cloudConcurrency) &&
     Number.isFinite(d.apiConcurrency) &&
     Number.isFinite(d.localConcurrency);
+  // Each element must be a string, same as `pi.models` above — otherwise a
+  // non-string entry (object/number/null) reaches Ollama completion probes
+  // and template interpolation in autoPopulatedMembers unchanged, producing
+  // a malformed model id (e.g. "ollama:[object Object]") that can get
+  // persisted into the council.
+  const curatedOk =
+    Array.isArray(o?.curatedCloudModels) && o.curatedCloudModels.every(m => typeof m === 'string');
   return (
     !!o && !!o.providers &&
     provOk(o.providers.chatgpt) && provOk(o.providers.claude) && provOk(o.providers.grok) && provOk(o.providers.ollama) &&
-    Array.isArray(o.curatedCloudModels) && defaultsOk
+    curatedOk && defaultsOk
   );
 }
 

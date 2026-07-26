@@ -64,6 +64,19 @@ try {
 const { appConfig, registry, orchestrator } = booted;
 const jobs = new JobStore();
 
+// Set the instant EITHER configure_council or setup_council completes, even
+// if the result is zero members — this closes a race with the background
+// initCouncil() below. Without it: setup_council can legitimately conclude
+// zero members (e.g. every tier set to free, no local Ollama), which per its
+// own "don't persist an empty auto-populated list" fix leaves
+// orchestrator.getConfig().members at length 0 AND state.json's `members`
+// still absent — exactly the shape initCouncil()'s guards read as "not yet
+// configured." If its own (slower, boot-snapshot-tiers-based) detection is
+// still in flight at that moment, it would then clobber the user's
+// just-completed, intentionally-empty setup_council result with its own,
+// possibly stale, non-empty one.
+let explicitlyConfigured = false;
+
 // Persist resolved Ollama address / CLI paths so the SessionStart hook can read
 // them — the plugin host doesn't propagate userConfig env to hook processes.
 try {
@@ -145,17 +158,23 @@ const labelsToMembers = (labels: unknown[]): CouncilMember[] =>
 function effectiveTiers(subs = loadSubscriptions()): SubscriptionTiers {
   const stateTiers = loadState().tiers ?? {};
   const guard = (p: SubProvider): string => {
-    const v = stateTiers[p] ?? appConfig.tiers[p];
-    if (validTiers(p, subs).includes(v)) return v;
-    // The comment above promises falling back to "the boot-sanitised value"
-    // (appConfig.tiers[p]) — but that promise breaks if THAT value is itself
-    // no longer valid (e.g. subscriptions.json was pulled and dropped a tier
-    // appConfig.tiers[p] was set to at boot): falling back to it would just
-    // return the same invalid string. Fall back one step further, to the
+    const valid = validTiers(p, subs);
+    // stateTiers[p] present-but-INVALID (hand-edited state.json, or a value
+    // persisted before subscriptions.json dropped/renamed that tier) must
+    // still fall through to the boot-sanitised value next, not skip straight
+    // to the least-privileged tier — `??` only catches an ABSENT state
+    // value, not a present-but-wrong one, so this has to be checked
+    // explicitly rather than folded into the `v = stateTiers[p] ??
+    // appConfig.tiers[p]` chain.
+    const stateVal = stateTiers[p];
+    if (stateVal !== undefined && valid.includes(stateVal)) return stateVal;
+    if (valid.includes(appConfig.tiers[p])) return appConfig.tiers[p];
+    // Even the boot-sanitised value is no longer valid (subscriptions.json
+    // was pulled and dropped it) — fall back one step further, to the
     // provider's first (least-privileged / cloud-denying, "free") tier —
     // subscriptions.json always lists "free" first for every provider — so
     // this never returns a value validTiers() itself doesn't recognize.
-    return validTiers(p, subs)[0] ?? appConfig.tiers[p];
+    return valid[0] ?? appConfig.tiers[p];
   };
   return { chatgpt: guard('chatgpt'), claude: guard('claude'), grok: guard('grok'), ollama: guard('ollama') };
 }
@@ -202,9 +221,10 @@ async function initCouncil(): Promise<void> {
   if (Object.keys(settingsUpdate).length > 0) {
     orchestrator.updateConfig(settingsUpdate);
   }
-  // Explicit COUNCIL_MODELS (or a prior configure_council in this process) wins —
-  // don't override an already-configured council with persisted/auto state.
-  if (orchestrator.getConfig().members.length > 0) return;
+  // Explicit COUNCIL_MODELS (or a prior configure_council/setup_council call
+  // in this process, even one that resulted in zero members) wins — don't
+  // override an already-configured council with persisted/auto state.
+  if (orchestrator.getConfig().members.length > 0 || explicitlyConfigured) return;
   if (Array.isArray(persisted.members)) {
     orchestrator.updateConfig({ members: labelsToMembers(persisted.members) });
     return;
@@ -213,9 +233,9 @@ async function initCouncil(): Promise<void> {
     const subs = loadSubscriptions();
     const report = await detectEnvironment(registry, appConfig.tiers, subs);
     // Detection is slow (subprocess probes); an explicit configure_council or
-    // setup_council may have landed while we awaited — it MUST win. Re-check both
-    // guards before clobbering.
-    if (orchestrator.getConfig().members.length > 0) return;
+    // setup_council may have landed while we awaited — it MUST win. Re-check
+    // all three guards before clobbering.
+    if (orchestrator.getConfig().members.length > 0 || explicitlyConfigured) return;
     if (Array.isArray(loadState().members)) return;
     const labels = autoPopulatedMembers(report, appConfig.tiers, subs);
     if (labels.length) {
@@ -661,7 +681,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.43',
+    version: '0.2.44',
   },
   {
     capabilities: { tools: {} },
@@ -840,6 +860,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         }
 
         orchestrator.updateConfig(update);
+        explicitlyConfigured = true;
         const cfg = orchestrator.getConfig();
 
         // Persist ONLY the settings this call actually touched — matching
@@ -1162,6 +1183,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         const report = await detectEnvironment(registry, tiers, subs);
         const labels = autoPopulatedMembers(report, tiers, subs);
         orchestrator.updateConfig({ members: labelsToMembers(labels) });
+        explicitlyConfigured = true;
         // Only PERSIST a non-empty result — matching initCouncil()'s own
         // `if (labels.length)` guard. A transient detection hiccup (Ollama
         // momentarily unreachable, a CLI probe timing out) can make a genuine

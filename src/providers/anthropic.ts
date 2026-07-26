@@ -116,7 +116,12 @@ export class AnthropicProvider implements Provider {
     } catch (err) {
       if (isTimeoutError(err)) return false; // transient — don't cache
       const status = (err as { status?: number }).status;
-      const transientStatus = status === 429 || status === 401 || status === 403 || status === 408 || status === 409;
+      // 404 added here (round 5): almost always "endpoint/model not found"
+      // (a deployment mid-rollout, a renamed/typo'd model) — nothing to do
+      // with whether that model accepts an image part once actually
+      // reachable. Caching it as a vision rejection would exclude a
+      // genuinely capable model over an unrelated routing problem.
+      const transientStatus = status === 429 || status === 401 || status === 403 || status === 404 || status === 408 || status === 409;
       if (transientStatus || typeof status !== 'number') return false; // transient — don't cache
       if (status >= 500) return false; // server error — don't cache
       this.acceptCache.set(model, false); // remaining 4xx → the API validated and refused the image part

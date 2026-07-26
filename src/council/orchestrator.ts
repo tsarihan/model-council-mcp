@@ -238,6 +238,23 @@ export class CouncilOrchestrator {
       const persistedVision = loadState().visionCapability ?? {};
       const visionCheckedAt = Date.now();
       const seededLabels = new Set<string>();
+      // A provider instance is long-lived (registered once at boot, reused
+      // across every ask), so its in-memory visionVerifiedCache can already
+      // hold a value from an EARLIER call in this same process — from a
+      // prior seed, or a prior live probe — independent of whatever this
+      // call's disk-freshness check decides. supportsVision() always
+      // short-circuits on that in-memory cache with no I/O. Recording which
+      // labels already have SOME in-memory value before this call's seeding
+      // loop runs is what lets the persistence step below tell "genuinely
+      // re-probed live this call" apart from "in-memory residue from before,
+      // masquerading as fresh" — the two are otherwise indistinguishable from
+      // seededLabels alone.
+      const alreadyCachedLabels = new Set<string>();
+      for (const m of members) {
+        if (m.provider.getVisionCache()[m.modelId.model] !== undefined) {
+          alreadyCachedLabels.add(modelIdLabel(m.modelId));
+        }
+      }
       const isFreshEntry = (entry: VisionCacheEntry | undefined): entry is VisionCacheEntry =>
         !!entry &&
         typeof entry.value === 'boolean' &&
@@ -262,14 +279,26 @@ export class CouncilOrchestrator {
       // probe is never cached in-memory in the first place — so future
       // restarts skip re-probing them too.
       //
-      // "Freshly-verified" means genuinely re-probed THIS call — every label
-      // NOT in `seededLabels` (no cache seed, or its seed had expired), since
-      // that's exactly the set checkVisionPooled had to actually probe live.
-      // Persisting unconditionally for that set (not just when the value
-      // CHANGED) is what refreshes `checkedAt` on an expired-but-unchanged
-      // result — without this, an expired entry whose re-probe comes back
-      // the same would never reset its own clock and would re-probe on
-      // every single subsequent call forever, defeating the TTL's purpose.
+      // "Freshly-verified" means genuinely re-probed LIVE this call — every
+      // label NOT in `seededLabels` (no valid disk seed) AND NOT in
+      // `alreadyCachedLabels` (no in-memory residue from before this call
+      // either). Excluding only `seededLabels` (the pre-round-5 logic) was
+      // insufficient: a disk entry can expire while the SAME process's
+      // in-memory cache still holds the old value from an earlier call, in
+      // which case checkVisionPooled's supportsVision() short-circuits on
+      // that stale in-memory value with zero I/O — persisting THAT with a
+      // fresh `checkedAt` would launder a never-actually-re-verified result
+      // into a brand-new 30-day on-disk lease, indefinitely, defeating the
+      // TTL's entire purpose (it would never again trigger a real re-probe
+      // for the life of the process, and the laundered lease survives
+      // restarts too).
+      //
+      // Persisting unconditionally for the genuinely-live-probed set (not
+      // just when the value CHANGED) is what refreshes `checkedAt` on an
+      // expired-but-unchanged result — without this, an expired entry whose
+      // re-probe comes back the same would never reset its own clock and
+      // would re-probe on every single subsequent call forever, defeating
+      // the TTL's purpose from the other direction.
       //
       // Collect only what THIS call newly learned (relative to the pre-probe
       // snapshot above), and merge it via saveState's mutator form — which
@@ -282,7 +311,7 @@ export class CouncilOrchestrator {
       const newlyConfirmed: Record<string, VisionCacheEntry> = {};
       for (const m of members) {
         const label = modelIdLabel(m.modelId);
-        if (seededLabels.has(label)) continue; // still within TTL, not re-probed this call
+        if (seededLabels.has(label) || alreadyCachedLabels.has(label)) continue; // not genuinely re-probed live this call
         const cache = m.provider.getVisionCache();
         const value = cache[m.modelId.model];
         if (value !== undefined) {

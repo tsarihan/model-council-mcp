@@ -303,6 +303,23 @@ async function main() {
     const afterAuto = parseToolResult(await client.callTool({ name: 'get_council_config', arguments: {} }));
     check('judge_model: "auto" explicitly clears back to auto-select', /auto/i.test(afterAuto.council?.judgeModel ?? ''), JSON.stringify(afterAuto.council));
 
+    // ── Test: configure_council.models is capped (was previously unbounded) ───
+    let threwTooManyModels = false, tooManyMsg = '';
+    try {
+      await client.callTool({
+        name: 'configure_council',
+        arguments: { models: Array.from({ length: 101 }, (_, i) => `ollama:fake-${i}`) },
+      });
+    } catch (e) { threwTooManyModels = true; tooManyMsg = String(e?.message ?? e); }
+    check('configure_council: 101 models → rejected with a clear error', threwTooManyModels && /100/.test(tooManyMsg), tooManyMsg);
+    // Exactly at the cap must still work.
+    await client.callTool({
+      name: 'configure_council',
+      arguments: { models: Array.from({ length: 100 }, (_, i) => `ollama:fake-${i}`) },
+    });
+    const at100 = parseToolResult(await client.callTool({ name: 'get_council_config', arguments: {} }));
+    check('configure_council: exactly 100 models is accepted', at100.council?.members?.length === 100, `got ${at100.council?.members?.length}`);
+
     // ── Test: ZERO-CONFIG auto-council ────────────────────────────────────────
     console.log('\n▶ auto-council (empty config → discover Ollama models)');
     await resetMock();

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  loadSubscriptions, resolvePoolLimits, tierAllowsCloud, tierConcurrency, validTiers,
+  isValid, loadSubscriptions, resolvePoolLimits, tierAllowsCloud, tierConcurrency, validTiers,
 } from '../dist/subscriptions.js';
 import { poolKey } from '../dist/council/query.js';
 
@@ -23,6 +23,21 @@ console.log('▶ subscriptions reference data');
 const subs = loadSubscriptions();
 check('loads valid subscriptions', !!subs.providers.chatgpt && subs.curatedCloudModels.length >= 5);
 check('curated cloud models are :cloud/-cloud', subs.curatedCloudModels.every(m => m.endsWith(':cloud') || m.endsWith('-cloud')));
+
+console.log('▶ subscriptions isValid: defaults must be finite numbers (0/negative is a legitimate "unlimited" sentinel, NaN/Infinity are not)');
+{
+  check('the real, shipped subscriptions.json is valid', isValid(subs));
+  const withNaN = { ...subs, defaults: { ...subs.defaults, cloudConcurrency: NaN } };
+  check('NaN default → rejected', !isValid(withNaN));
+  const withInfinity = { ...subs, defaults: { ...subs.defaults, localConcurrency: Infinity } };
+  check('Infinity default → rejected', !isValid(withInfinity));
+  // 0 and negative are intentionally still ACCEPTED — they mean "unlimited",
+  // matching the Semaphore's own `limit <= 0` convention (README-documented).
+  const withZero = { ...subs, defaults: { ...subs.defaults, localConcurrency: 0 } };
+  check('a zero default ("unlimited") is still accepted, not treated as invalid', isValid(withZero));
+  const withNegative = { ...subs, defaults: { ...subs.defaults, cloudConcurrency: -1 } };
+  check('a negative default ("unlimited") is still accepted, not treated as invalid', isValid(withNegative));
+}
 
 console.log('▶ tier → cloud + concurrency');
 check('chatgpt/plus cloud on, conc 6', tierAllowsCloud('chatgpt', 'plus') && tierConcurrency('chatgpt', 'plus') === 6);
@@ -535,6 +550,27 @@ console.log('▶ context.ts rejects image extensions in "files" (guards the othe
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+console.log('▶ context.ts: "question" and "context" are size-capped (were previously unbounded)');
+{
+  const { buildAugmentedQuestion, MAX_QUESTION_BYTES, MAX_CONTEXT_BYTES } = await import('../dist/context.js');
+
+  const hugeQuestion = 'q'.repeat(MAX_QUESTION_BYTES + 1);
+  let threwQuestion = false, questionMsg = '';
+  try { await buildAugmentedQuestion(hugeQuestion, {}); } catch (e) { threwQuestion = true; questionMsg = e.message; }
+  check('oversized "question" → rejected with a clear error', threwQuestion && /question.*too large/i.test(questionMsg), questionMsg);
+
+  const okQuestion = await buildAugmentedQuestion('q'.repeat(100), {});
+  check('a normal-sized "question" is unaffected', okQuestion === 'q'.repeat(100));
+
+  const hugeContext = 'c'.repeat(MAX_CONTEXT_BYTES + 1);
+  let threwContext = false, contextMsg = '';
+  try { await buildAugmentedQuestion('q', { context: hugeContext }); } catch (e) { threwContext = true; contextMsg = e.message; }
+  check('oversized "context" → rejected with a clear error', threwContext && /context.*too large/i.test(contextMsg), contextMsg);
+
+  const okContext = await buildAugmentedQuestion('q', { context: 'small context' });
+  check('a normal-sized "context" is unaffected', okContext.includes('small context'));
 }
 
 console.log('▶ context.ts: per-call random nonce guards fence markers against forgery');

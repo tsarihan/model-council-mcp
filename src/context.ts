@@ -15,6 +15,8 @@ import { buildGitDiff } from './git.js';
 export const MAX_FILE_BYTES = 256 * 1024; // 256 KB per file
 export const MAX_TOTAL_BYTES = 768 * 1024; // 768 KB across all files
 export const MAX_FILES = 20;
+export const MAX_CONTEXT_BYTES = 768 * 1024; // 768 KB inline "context" — matches the files total cap
+export const MAX_QUESTION_BYTES = 256 * 1024; // 256 KB "question" — large text belongs in "context"/"files"
 
 /** Binary image extensions are rejected here — read as UTF-8 they become
  *  mojibake sent to every member. Use the `images` parameter instead, which
@@ -37,6 +39,18 @@ export async function buildAugmentedQuestion(
   question: string,
   input: ContextInput,
 ): Promise<string> {
+  // "files"/"images"/git diffs are all capped; "question" and "context" were
+  // not, despite becoming part of the SAME prompt re-sent to every member on
+  // every round of a multi-round mode — an unbounded value here scales with
+  // council size × round count in a way none of the other caps guard against.
+  const questionBytes = Buffer.byteLength(question, 'utf8');
+  if (questionBytes > MAX_QUESTION_BYTES) {
+    throw new Error(
+      `"question" is too large (${Math.round(questionBytes / 1024)} KB > ` +
+        `${Math.round(MAX_QUESTION_BYTES / 1024)} KB limit). Attach large text via "context" or "files" instead.`,
+    );
+  }
+
   const blocks: string[] = [];
   // A random per-call token embedded in every fence marker below. Attached
   // file/diff content is untrusted (it can come from an arbitrary local file
@@ -49,6 +63,13 @@ export async function buildAugmentedQuestion(
 
   const inline = input.context?.trim();
   if (inline) {
+    const contextBytes = Buffer.byteLength(inline, 'utf8');
+    if (contextBytes > MAX_CONTEXT_BYTES) {
+      throw new Error(
+        `"context" is too large (${Math.round(contextBytes / 1024)} KB > ` +
+          `${Math.round(MAX_CONTEXT_BYTES / 1024)} KB limit). Narrow it, or attach specific files via "files" instead.`,
+      );
+    }
     blocks.push(`----- CONTEXT:${nonce} -----\n${inline}`);
   }
 

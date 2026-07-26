@@ -24513,7 +24513,7 @@ function isValid2(s2) {
     return true;
   };
   const d2 = o2?.defaults;
-  const defaultsOk = !!d2 && typeof d2.cloudConcurrency === "number" && typeof d2.apiConcurrency === "number" && typeof d2.localConcurrency === "number";
+  const defaultsOk = !!d2 && Number.isFinite(d2.cloudConcurrency) && Number.isFinite(d2.apiConcurrency) && Number.isFinite(d2.localConcurrency);
   return !!o2 && !!o2.providers && provOk(o2.providers.chatgpt) && provOk(o2.providers.claude) && provOk(o2.providers.grok) && provOk(o2.providers.ollama) && Array.isArray(o2.curatedCloudModels) && defaultsOk;
 }
 var cached2 = null;
@@ -37191,12 +37191,26 @@ async function buildGitDiff(input) {
 var MAX_FILE_BYTES = 256 * 1024;
 var MAX_TOTAL_BYTES = 768 * 1024;
 var MAX_FILES = 20;
+var MAX_CONTEXT_BYTES = 768 * 1024;
+var MAX_QUESTION_BYTES = 256 * 1024;
 var IMAGE_EXTENSIONS = /* @__PURE__ */ new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif"]);
 async function buildAugmentedQuestion(question, input) {
+  const questionBytes = Buffer.byteLength(question, "utf8");
+  if (questionBytes > MAX_QUESTION_BYTES) {
+    throw new Error(
+      `"question" is too large (${Math.round(questionBytes / 1024)} KB > ${Math.round(MAX_QUESTION_BYTES / 1024)} KB limit). Attach large text via "context" or "files" instead.`
+    );
+  }
   const blocks = [];
   const nonce = (0, import_node_crypto.randomUUID)().slice(0, 8);
   const inline = input.context?.trim();
   if (inline) {
+    const contextBytes = Buffer.byteLength(inline, "utf8");
+    if (contextBytes > MAX_CONTEXT_BYTES) {
+      throw new Error(
+        `"context" is too large (${Math.round(contextBytes / 1024)} KB > ${Math.round(MAX_CONTEXT_BYTES / 1024)} KB limit). Narrow it, or attach specific files via "files" instead.`
+      );
+    }
     blocks.push(`----- CONTEXT:${nonce} -----
 ${inline}`);
   }
@@ -37470,8 +37484,8 @@ var ListModelsInput = external_exports.object({
   )
 });
 var ConfigureCouncilInput = external_exports.object({
-  models: external_exports.array(external_exports.string()).optional().describe(
-    'Model IDs for council members. Format: "provider:model" or "provider/serverId:model". Examples: "ollama:llama3", "vllm/vllm-gpu1:meta-llama/Llama-3-8B", "openai:gpt-4o"'
+  models: external_exports.array(external_exports.string()).max(100, "At most 100 council members are supported per call.").optional().describe(
+    'Model IDs for council members. Format: "provider:model" or "provider/serverId:model". Examples: "ollama:llama3", "vllm/vllm-gpu1:meta-llama/Llama-3-8B", "openai:gpt-4o". Max 100.'
   ),
   judge_model: external_exports.string().optional().describe(
     'Model to act as judge for categorisation/deconfliction. Same format as models. Omit, or pass "auto", to auto-select (picks largest council member). Any other unparseable value is rejected with an error rather than silently falling back to auto.'
@@ -37543,7 +37557,8 @@ var TOOLS = [
         models: {
           type: "array",
           items: { type: "string" },
-          description: 'Council member model IDs. Format: "provider:model" or "provider/serverId:model". Examples: "ollama:llama3", "openai:gpt-4o", "vllm/server1:meta-llama/Llama-3-8B"'
+          maxItems: 100,
+          description: 'Council member model IDs. Format: "provider:model" or "provider/serverId:model". Examples: "ollama:llama3", "openai:gpt-4o", "vllm/server1:meta-llama/Llama-3-8B". Max 100.'
         },
         judge_model: {
           type: "string",
@@ -37718,7 +37733,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.34"
+    version: "0.2.35"
   },
   {
     capabilities: { tools: {} },

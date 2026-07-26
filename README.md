@@ -279,7 +279,7 @@ Update the council at runtime (changes persist for the session).
 }
 ```
 
-All fields are optional — only supplied fields are updated.
+All fields are optional — only supplied fields are updated. `models` is capped at 100 entries.
 
 ---
 
@@ -297,7 +297,7 @@ Send a question to the full council.
 
 `mode` and `max_deconflict_rounds` override the configured defaults for this call only. In `deconflicted` mode, set `"verbose": true` to include the initial categorization, every member's per-round responses, and the round-by-round re-categorization alongside the final synthesis. In `pooled` mode, `"verbose": true` adds the initial (round-0) raw member responses.
 
-**Attach context / files.** Add `"context"` (inline background text) and/or `"files"` (an array of local file paths). Files are read from disk and fenced with a `----- FILE:<nonce>: <path> -----` header (a random per-call token, so a file/diff whose content contains a fake fence marker can't forge a boundary the model would mistake for real) so every member sees them as labelled context alongside the question. Caps: 256 KB/file, 768 KB total, 20 files — for anything larger, pass an excerpt via `context`. A missing/oversized/binary file returns a clear error rather than being silently dropped. Note: `files`/`images` read any path the server process can read, with no root restriction — the MCP caller is trusted the same way a local `Read` tool call would be.
+**Attach context / files.** Add `"context"` (inline background text) and/or `"files"` (an array of local file paths). Files are read from disk and fenced with a `----- FILE:<nonce>: <path> -----` header (a random per-call token, so a file/diff whose content contains a fake fence marker can't forge a boundary the model would mistake for real) so every member sees them as labelled context alongside the question. Caps: 256 KB/file, 768 KB total, 20 files, 768 KB for `"context"` itself, 256 KB for `"question"` — for anything larger than the question cap, pass it via `context` instead. A missing/oversized/binary file (or an oversized `question`/`context`) returns a clear error rather than being silently dropped or truncated. Note: `files`/`images` read any path the server process can read, with no root restriction — the MCP caller is trusted the same way a local `Read` tool call would be.
 
 ```json
 {

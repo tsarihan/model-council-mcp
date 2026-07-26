@@ -205,11 +205,12 @@ const ListModelsInput = z.object({
 const ConfigureCouncilInput = z.object({
   models: z
     .array(z.string())
+    .max(100, 'At most 100 council members are supported per call.')
     .optional()
     .describe(
       'Model IDs for council members. Format: "provider:model" or ' +
         '"provider/serverId:model". Examples: "ollama:llama3", ' +
-        '"vllm/vllm-gpu1:meta-llama/Llama-3-8B", "openai:gpt-4o"',
+        '"vllm/vllm-gpu1:meta-llama/Llama-3-8B", "openai:gpt-4o". Max 100.',
     ),
   judge_model: z
     .string()
@@ -377,9 +378,10 @@ const TOOLS = [
         models: {
           type: 'array',
           items: { type: 'string' },
+          maxItems: 100,
           description:
             'Council member model IDs. Format: "provider:model" or "provider/serverId:model". ' +
-            'Examples: "ollama:llama3", "openai:gpt-4o", "vllm/server1:meta-llama/Llama-3-8B"',
+            'Examples: "ollama:llama3", "openai:gpt-4o", "vllm/server1:meta-llama/Llama-3-8B". Max 100.',
         },
         judge_model: {
           type: 'string',
@@ -621,7 +623,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.34',
+    version: '0.2.35',
   },
   {
     capabilities: { tools: {} },

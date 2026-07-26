@@ -112,7 +112,7 @@ function candidatePaths(): string[] {
   return out;
 }
 
-function isValid(s: unknown): s is Subscriptions {
+export function isValid(s: unknown): s is Subscriptions {
   const o = s as Partial<Subscriptions> | null;
   // A provider must have a tiers object AND (if present) a string[] models field.
   // Validating `models` here is what stops a structurally-valid but wrong-typed
@@ -126,11 +126,15 @@ function isValid(s: unknown): s is Subscriptions {
     return true;
   };
   const d = o?.defaults as Subscriptions['defaults'] | undefined;
+  // Number.isFinite (not typeof === 'number') — a zero or negative value is a
+  // legitimate, documented "unlimited" sentinel for these fields (matches the
+  // Semaphore's own `limit <= 0` convention), but NaN/Infinity are not
+  // meaningful concurrency values and must not silently reach the semaphore.
   const defaultsOk =
     !!d &&
-    typeof d.cloudConcurrency === 'number' &&
-    typeof d.apiConcurrency === 'number' &&
-    typeof d.localConcurrency === 'number';
+    Number.isFinite(d.cloudConcurrency) &&
+    Number.isFinite(d.apiConcurrency) &&
+    Number.isFinite(d.localConcurrency);
   return (
     !!o && !!o.providers &&
     provOk(o.providers.chatgpt) && provOk(o.providers.claude) && provOk(o.providers.grok) && provOk(o.providers.ollama) &&

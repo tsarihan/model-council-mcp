@@ -106,10 +106,19 @@ function mergePositionsByModel(
   updated: ConflictPosition[],
 ): ConflictPosition[] {
   const updatedModels = new Set(updated.flatMap(p => p.models ?? []));
-  const droppedParties = prev.filter(
-    p => (p.models ?? []).length > 0 && !(p.models ?? []).some(m => updatedModels.has(m)),
-  );
-  return [...updated, ...droppedParties];
+  // Preserve every PRIOR party model the judge did NOT re-list this round, at the
+  // MODEL level — not the whole position. A prior position `[A, B]` where only A
+  // is re-listed must still keep B represented: dropping the whole position (the
+  // earlier bug) loses B, so a later round where B errors can't be recognised as
+  // a dropout and the conflict is falsely resolved. Carry each dropped model as a
+  // trimmed copy of its original position so positions[].models stays a superset
+  // of every party ever seen.
+  const preserved: ConflictPosition[] = [];
+  for (const p of prev) {
+    const droppedModels = (p.models ?? []).filter(m => !updatedModels.has(m));
+    if (droppedModels.length) preserved.push({ ...p, models: droppedModels });
+  }
+  return [...updated, ...preserved];
 }
 
 export function detectResolutions(

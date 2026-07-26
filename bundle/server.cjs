@@ -24911,12 +24911,35 @@ var CappedBuffer = class {
     return this.chunks.join("");
   }
 };
+var REASON_TAG = "think|thinking";
 function stripThinkBlocks(text) {
   if (!text) return text;
-  let out = text.replace(/<think>[\s\S]*?<\/think>/gi, "");
-  const close = out.toLowerCase().lastIndexOf("</think>");
-  if (close !== -1) out = out.slice(close + "</think>".length);
+  let out = text.replace(new RegExp(`<(?:${REASON_TAG})>[\\s\\S]*?</(?:${REASON_TAG})>`, "gi"), "");
+  const m2 = out.match(new RegExp(`</(?:${REASON_TAG})>(?![\\s\\S]*</(?:${REASON_TAG})>)`, "i"));
+  if (m2 && m2.index !== void 0) out = out.slice(m2.index + m2[0].length);
   return out.trim();
+}
+function sliceBalancedJson(text) {
+  const start = text.indexOf("{");
+  if (start === -1) return text;
+  let depth = 0, inStr = false, esc2 = false;
+  for (let i2 = start; i2 < text.length; i2++) {
+    const c2 = text[i2];
+    if (inStr) {
+      if (esc2) esc2 = false;
+      else if (c2 === "\\") esc2 = true;
+      else if (c2 === '"') inStr = false;
+    } else if (c2 === '"') {
+      inStr = true;
+    } else if (c2 === "{") {
+      depth++;
+    } else if (c2 === "}") {
+      depth--;
+      if (depth === 0) return text.slice(start, i2 + 1);
+    }
+  }
+  const end = text.lastIndexOf("}");
+  return end > start ? text.slice(start, end + 1) : text;
 }
 var IMAGE_TOKEN_ESTIMATE = 1500;
 function estimatePromptTokens(messages) {
@@ -34951,6 +34974,15 @@ var { AnthropicError: AnthropicError2, APIError: APIError3, APIConnectionError: 
 var sdk_default = Anthropic;
 
 // src/providers/anthropic.ts
+function maxTokensCapFrom400(err) {
+  const e2 = err;
+  if (!e2 || e2.status !== 400) return null;
+  const msg = String(e2.message ?? "");
+  if (!/max_tokens/i.test(msg)) return null;
+  const m2 = msg.match(/max_tokens[^0-9]*\d+\s*>\s*(\d+)/i) ?? msg.match(/maximum allowed[^0-9]*(\d+)/i);
+  const n2 = m2 ? parseInt(m2[1], 10) : NaN;
+  return Number.isFinite(n2) && n2 > 0 ? n2 : null;
+}
 var ANTHROPIC_MODELS = [
   { id: "claude-opus-4-5", label: "Claude Opus 4.5" },
   { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
@@ -35089,15 +35121,25 @@ var AnthropicProvider = class {
     const systemText = opts.jsonMode ? `${systemParts}
 
 Respond with valid JSON only.`.trim() : systemParts || void 0;
-    const res = await this.client.messages.create(
-      {
-        model,
-        max_tokens: opts.maxTokens ?? 16e3,
-        ...systemText ? { system: systemText } : {},
-        messages: userMessages
-      },
-      { timeout: opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS }
-    );
+    const requested = opts.maxTokens ?? 16e3;
+    const body = {
+      model,
+      max_tokens: requested,
+      ...systemText ? { system: systemText } : {},
+      messages: userMessages
+    };
+    const reqOpts = { timeout: opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS };
+    let res;
+    try {
+      res = await this.client.messages.create(body, reqOpts);
+    } catch (err) {
+      const cap = maxTokensCapFrom400(err);
+      if (cap !== null && cap < requested) {
+        res = await this.client.messages.create({ ...body, max_tokens: cap }, reqOpts);
+      } else {
+        throw err;
+      }
+    }
     const block = res.content[0];
     return block?.type === "text" ? block.text : "";
   }
@@ -36068,10 +36110,7 @@ Rules:
 }
 function parseCategorizationJSON(raw) {
   const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
-  const start = stripped.indexOf("{");
-  const end = stripped.lastIndexOf("}");
-  const json = start !== -1 && end > start ? stripped.slice(start, end + 1) : stripped;
-  return JSON.parse(json);
+  return JSON.parse(sliceBalancedJson(stripped));
 }
 async function categorize(question, responses, judgeModelId, judgeProvider, cc, runtime, existingConflictIds = [], openTopics = []) {
   if (responses.length === 0 || responses.every((r2) => r2.error)) {
@@ -36218,10 +36257,12 @@ Be concise and direct.`;
 }
 function mergePositionsByModel(prev, updated) {
   const updatedModels = new Set(updated.flatMap((p2) => p2.models ?? []));
-  const droppedParties = prev.filter(
-    (p2) => (p2.models ?? []).length > 0 && !(p2.models ?? []).some((m2) => updatedModels.has(m2))
-  );
-  return [...updated, ...droppedParties];
+  const preserved = [];
+  for (const p2 of prev) {
+    const droppedModels = (p2.models ?? []).filter((m2) => !updatedModels.has(m2));
+    if (droppedModels.length) preserved.push({ ...p2, models: droppedModels });
+  }
+  return [...updated, ...preserved];
 }
 function detectResolutions(previous, newCateg, erroredLabels = /* @__PURE__ */ new Set()) {
   const norm = (s2) => String(s2 ?? "").trim().toLowerCase().replace(/\s+/g, " ");
@@ -36491,10 +36532,7 @@ Return ONLY valid JSON (no markdown), with this schema:
 }
 function parsePoolJSON(raw) {
   const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
-  const start = stripped.indexOf("{");
-  const end = stripped.lastIndexOf("}");
-  const json = start !== -1 && end > start ? stripped.slice(start, end + 1) : stripped;
-  return JSON.parse(json);
+  return JSON.parse(sliceBalancedJson(stripped));
 }
 async function poolResponses(question, responses, judgeModelId, judgeProvider, cc, runtime) {
   if (responses.length === 0 || responses.every((r2) => r2.error)) {
@@ -36662,10 +36700,7 @@ Return ONLY valid JSON (no markdown):
 }
 function parseDossierJSON(raw) {
   const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
-  const start = stripped.indexOf("{");
-  const end = stripped.lastIndexOf("}");
-  const json = start !== -1 && end > start ? stripped.slice(start, end + 1) : stripped;
-  return JSON.parse(json);
+  return JSON.parse(sliceBalancedJson(stripped));
 }
 function toStrList(v2) {
   const arr = Array.isArray(v2) ? v2 : v2 == null ? [] : [v2];
@@ -37349,28 +37384,32 @@ var GLOBAL_SAFETY_ARGS = ["-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/nu
 var SHA1_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 var emptyTreeHashCache = /* @__PURE__ */ new Map();
 async function filterNeutralizeEnv(repoPath) {
+  let stdout;
   try {
-    const { stdout } = await execFileAsync(
+    ({ stdout } = await execFileAsync(
       "git",
       ["config", "-z", "--get-regexp", "^filter\\..*\\.(clean|smudge|process)$"],
       { cwd: repoPath, timeout: GIT_TIMEOUT_MS }
+    ));
+  } catch (err) {
+    if (err.code === 1) return {};
+    throw new Error(
+      "could not enumerate repo filter config to neutralize clean/smudge/process filters \u2014 refusing the diff for safety (retry, or narrow the ref)"
     );
-    const keys = [];
-    for (const rec of stdout.split("\0")) {
-      if (!rec) continue;
-      const key = rec.split("\n", 1)[0];
-      if (/^filter\..+\.(clean|smudge|process)$/.test(key)) keys.push(key);
-    }
-    if (!keys.length) return {};
-    const env = { GIT_CONFIG_COUNT: String(keys.length) };
-    keys.forEach((k2, i2) => {
-      env[`GIT_CONFIG_KEY_${i2}`] = k2;
-      env[`GIT_CONFIG_VALUE_${i2}`] = "";
-    });
-    return env;
-  } catch {
-    return {};
   }
+  const keys = [];
+  for (const rec of stdout.split("\0")) {
+    if (!rec) continue;
+    const key = rec.split("\n", 1)[0];
+    if (/^filter\..+\.(clean|smudge|process)$/.test(key)) keys.push(key);
+  }
+  if (!keys.length) return {};
+  const env = { GIT_CONFIG_COUNT: String(keys.length) };
+  keys.forEach((k2, i2) => {
+    env[`GIT_CONFIG_KEY_${i2}`] = k2;
+    env[`GIT_CONFIG_VALUE_${i2}`] = "";
+  });
+  return env;
 }
 async function emptyTreeHash(repoPath) {
   const cached3 = emptyTreeHashCache.get(repoPath);

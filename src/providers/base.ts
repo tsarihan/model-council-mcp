@@ -110,21 +110,62 @@ export class CappedBuffer {
 }
 
 /**
- * Reasoning models emit their chain-of-thought wrapped in <think>…</think>.
- * Some wrap it fully; others emit only the closing </think> (the opening tag is
- * implicit, so the reasoning is everything before it). Strip both shapes so
- * callers get just the answer. Text with no think tags is returned trimmed but
- * otherwise unchanged.
+ * Reasoning models emit their chain-of-thought wrapped in a reasoning tag.
+ * Some wrap it fully; others emit only the closing tag (the opening is implicit,
+ * so the reasoning is everything before it). Strip both shapes so callers get
+ * just the answer. Text with no such tag is returned trimmed but unchanged.
+ *
+ * Covers the two tag names actually seen in the wild — `<think>` (DeepSeek,
+ * Qwen, nemotron, most local reasoners) and `<thinking>` (Anthropic-style, some
+ * OpenAI-compatible builds) — since a member that emits `<thinking>…</thinking>`
+ * inline in its content would otherwise leak its whole chain-of-thought into the
+ * answer shown to the council. (Ollama returns reasoning in a separate
+ * `message.thinking` field, handled at that layer, not here.)
  */
+const REASON_TAG = 'think|thinking';
 export function stripThinkBlocks(text: string): string {
   if (!text) return text;
-  // Remove complete <think>…</think> blocks.
-  let out = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
-  // Handle a dangling closing tag (chain-of-thought with no opening <think>):
-  // everything up to and including the final </think> is reasoning.
-  const close = out.toLowerCase().lastIndexOf('</think>');
-  if (close !== -1) out = out.slice(close + '</think>'.length);
+  // Remove complete <tag>…</tag> blocks (tag name matched case-insensitively).
+  let out = text.replace(new RegExp(`<(?:${REASON_TAG})>[\\s\\S]*?</(?:${REASON_TAG})>`, 'gi'), '');
+  // Handle a dangling closing tag (chain-of-thought with no opening tag):
+  // everything up to and including the final closing tag is reasoning.
+  const m = out.match(new RegExp(`</(?:${REASON_TAG})>(?![\\s\\S]*</(?:${REASON_TAG})>)`, 'i'));
+  if (m && m.index !== undefined) out = out.slice(m.index + m[0].length);
   return out.trim();
+}
+
+/**
+ * Extract a single JSON object from model output that may wrap it in prose or a
+ * markdown fence. Finds the FIRST `{` and its BALANCED matching `}` — respecting
+ * string literals and escapes — rather than the last `}` in the whole string.
+ * A judge that appends explanatory text CONTAINING a brace (e.g. "…{json}\nLet
+ * me know if you'd like {more}") is a common, reproducible behaviour that the
+ * old `indexOf('{')..lastIndexOf('}')` slice would over-capture, breaking
+ * JSON.parse and spuriously degrading an otherwise-valid judge result. Falls
+ * back to the widest slice if no balanced object is found (a genuinely truncated
+ * object still gets its best chance).
+ */
+export function sliceBalancedJson(text: string): string {
+  const start = text.indexOf('{');
+  if (start === -1) return text;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === '\\') esc = true;
+      else if (c === '"') inStr = false;
+    } else if (c === '"') {
+      inStr = true;
+    } else if (c === '{') {
+      depth++;
+    } else if (c === '}') {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  const end = text.lastIndexOf('}');
+  return end > start ? text.slice(start, end + 1) : text;
 }
 
 /**

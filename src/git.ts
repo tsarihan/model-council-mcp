@@ -91,29 +91,38 @@ const emptyTreeHashCache = new Map<string, string>();
  * as a pointer, bounded by the existing MAX_DIFF_BYTES cap.
  */
 async function filterNeutralizeEnv(repoPath: string): Promise<Record<string, string>> {
+  let stdout: string;
   try {
-    const { stdout } = await execFileAsync(
+    ({ stdout } = await execFileAsync(
       'git', ['config', '-z', '--get-regexp', '^filter\\..*\\.(clean|smudge|process)$'],
       { cwd: repoPath, timeout: GIT_TIMEOUT_MS },
+    ));
+  } catch (err) {
+    // `git config --get-regexp` exits 1 when there are simply NO matching filter
+    // keys — the common, SAFE case (nothing to neutralize). But ANY OTHER failure
+    // (a git error/exit 128, a timeout, git-not-found) means we could NOT
+    // enumerate the repo's filters, so we cannot prove none are configured.
+    // FAIL CLOSED: refuse the diff rather than run a working-tree conversion with
+    // filters possibly live (an unmitigated arbitrary-command-execution path).
+    if ((err as { code?: unknown }).code === 1) return {};
+    throw new Error(
+      'could not enumerate repo filter config to neutralize clean/smudge/process filters — ' +
+      'refusing the diff for safety (retry, or narrow the ref)',
     );
-    const keys: string[] = [];
-    for (const rec of stdout.split('\0')) {
-      if (!rec) continue;
-      const key = rec.split('\n', 1)[0];
-      if (/^filter\..+\.(clean|smudge|process)$/.test(key)) keys.push(key);
-    }
-    if (!keys.length) return {};
-    const env: Record<string, string> = { GIT_CONFIG_COUNT: String(keys.length) };
-    keys.forEach((k, i) => {
-      env[`GIT_CONFIG_KEY_${i}`] = k;
-      env[`GIT_CONFIG_VALUE_${i}`] = ''; // empty command = no-op pass-through
-    });
-    return env;
-  } catch {
-    // Exit 1 = no matching filter keys (the common case); any other failure
-    // means we couldn't enumerate — either way there's nothing to inject.
-    return {};
   }
+  const keys: string[] = [];
+  for (const rec of stdout.split('\0')) {
+    if (!rec) continue;
+    const key = rec.split('\n', 1)[0];
+    if (/^filter\..+\.(clean|smudge|process)$/.test(key)) keys.push(key);
+  }
+  if (!keys.length) return {};
+  const env: Record<string, string> = { GIT_CONFIG_COUNT: String(keys.length) };
+  keys.forEach((k, i) => {
+    env[`GIT_CONFIG_KEY_${i}`] = k;
+    env[`GIT_CONFIG_VALUE_${i}`] = ''; // empty command = no-op pass-through
+  });
+  return env;
 }
 
 /**

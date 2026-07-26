@@ -249,6 +249,45 @@ console.log('▶ stripThinkBlocks (reasoning-model <think> leakage)');
   check('multiline reasoning stripped', stripThinkBlocks('<think>line1\nline2\nline3</think>Final') === 'Final');
   check('empty string → empty', stripThinkBlocks('') === '');
   check('unclosed <think> left intact (no answer to salvage)', stripThinkBlocks('<think>cut off mid').startsWith('<think>'));
+  // round-11 [5]: also cover <thinking>…</thinking> (Anthropic-style / some
+  // OpenAI-compatible builds) — a member emitting it inline would otherwise leak
+  // its whole chain-of-thought into the answer.
+  check('paired <thinking>…</thinking> removed', stripThinkBlocks('<thinking>deliberating</thinking>The answer.') === 'The answer.');
+  check('closing-only </thinking> → keep text after it', stripThinkBlocks('reasoning...\n</thinking>\nFinal answer.') === 'Final answer.');
+  check('mixed: <thinking> block then plain text', stripThinkBlocks('<THINKING>x\ny</THINKING>Done') === 'Done');
+}
+
+console.log('▶ sliceBalancedJson (judge JSON extraction robust to trailing prose with braces)');
+{
+  const { sliceBalancedJson } = await import('../dist/providers/base.js');
+  const parse = (s) => JSON.parse(sliceBalancedJson(s));
+  // round-11 [3]: a judge that appends prose CONTAINING a brace after the JSON
+  // used to break lastIndexOf('}')-based extraction, spuriously degrading a
+  // perfectly valid judge result.
+  check('trailing prose with a brace does not corrupt extraction',
+    parse('{"a":1,"b":"x"}\n\nLet me know if you want {more} detail.').a === 1);
+  check('leading prose before the object is tolerated',
+    parse('Here is the categorization:\n{"commonAgreement":"ok"}').commonAgreement === 'ok');
+  check('a brace INSIDE a string value is not mistaken for the close',
+    parse('{"note":"use a } brace","ok":true}').ok === true);
+  check('nested objects extract fully',
+    parse('{"outer":{"inner":{"deep":1}}} trailing }').outer.inner.deep === 1);
+  check('escaped quote inside a string is handled',
+    parse('{"s":"a \\" } b"}').s === 'a " } b');
+  check('markdown-fence + trailing text still yields the object',
+    JSON.parse(sliceBalancedJson('{"x":[1,2,3]}```\nsome note }')).x.length === 3);
+}
+
+console.log('▶ maxTokensCapFrom400 (Anthropic reactive max_tokens clamp)');
+{
+  const { maxTokensCapFrom400 } = await import('../dist/providers/anthropic.js');
+  check('parses the allowed max from a real 400 message',
+    maxTokensCapFrom400({ status: 400, message: 'max_tokens: 32768 > 8192, which is the maximum allowed number of output tokens for claude-haiku-4-5' }) === 8192);
+  check('non-400 error → null (not a max_tokens problem)',
+    maxTokensCapFrom400({ status: 429, message: 'rate limited' }) === null);
+  check('400 without a max_tokens mention → null',
+    maxTokensCapFrom400({ status: 400, message: 'invalid model' }) === null);
+  check('non-error input → null (no throw)', maxTokensCapFrom400(null) === null);
 }
 
 console.log('▶ clampMaxTokens (fit output to server context / max_model_len)');
@@ -503,6 +542,23 @@ console.log('▶ deconfliction round: open-topic prompt + exact-match resolution
   const r2 = detectResolutions(r1.remaining, { conflicting: [], commonAgreement: 'Converged.' }, new Set(['B']));
   check('party-erasure: a later-round dropout of the preserved party is still caught (not falsely resolved)',
     r2.resolved.length === 0 && r2.partyDropout === true, JSON.stringify(r2));
+
+  // ── Partial-overlap within ONE position must not drop a party (round-11 [1]) ──
+  // A single position held by BOTH A and B ([A,B]); the judge re-lists it with
+  // only A. The earlier merge dropped the whole position (losing B); the fix
+  // preserves B individually. Round 1:
+  const p1 = detectResolutions(
+    [{ id: 'c2', topic: 'Y', positions: [{ models: ['A', 'B'], position: 'shared' }] }],
+    { conflicting: [{ topic: 'Y', positions: [{ models: ['A'], position: 'shared' }] }], commonAgreement: null },
+    new Set(['B']),
+  );
+  const p1parties = new Set(p1.remaining.flatMap(c => c.positions.flatMap(x => x.models)));
+  check('partial-overlap: B is preserved when it shared a position with A and only A was re-listed',
+    p1parties.has('A') && p1parties.has('B'), JSON.stringify(p1.remaining));
+  // Round 2: B errors again, topic vanishes → dropout still detected.
+  const p2 = detectResolutions(p1.remaining, { conflicting: [], commonAgreement: 'Converged.' }, new Set(['B']));
+  check('partial-overlap: a later B-dropout is still caught (not falsely resolved)',
+    p2.resolved.length === 0 && p2.partyDropout === true, JSON.stringify(p2));
 }
 
 console.log('▶ judgeQuestion routing: the judge sees the ORIGINAL question, never the attachment-bearing augmented one (round-9 W3, prompt-injection)');

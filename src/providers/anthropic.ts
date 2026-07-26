@@ -6,6 +6,22 @@ import {
 } from './base.js';
 import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
 
+/**
+ * If `err` is Anthropic's 400 for max_tokens exceeding a model's output cap,
+ * return the allowed maximum parsed from the message; else null. The message
+ * shape is "max_tokens: 32768 > 8192, which is the maximum allowed number of
+ * output tokens for <model>". Exported for direct unit testing.
+ */
+export function maxTokensCapFrom400(err: unknown): number | null {
+  const e = err as { status?: number; message?: string } | null;
+  if (!e || e.status !== 400) return null;
+  const msg = String(e.message ?? '');
+  if (!/max_tokens/i.test(msg)) return null;
+  const m = msg.match(/max_tokens[^0-9]*\d+\s*>\s*(\d+)/i) ?? msg.match(/maximum allowed[^0-9]*(\d+)/i);
+  const n = m ? parseInt(m[1], 10) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 // Curated list — Anthropic's REST API has no model-listing endpoint
 const ANTHROPIC_MODELS = [
   { id: 'claude-opus-4-5',    label: 'Claude Opus 4.5' },
@@ -182,15 +198,34 @@ export class AnthropicProvider implements Provider {
       ? `${systemParts}\n\nRespond with valid JSON only.`.trim()
       : systemParts || undefined;
 
-    const res = await this.client.messages.create(
-      {
-        model,
-        max_tokens: opts.maxTokens ?? 16000,
-        ...(systemText ? { system: systemText } : {}),
-        messages: userMessages,
-      },
-      { timeout: opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS },
-    );
+    const requested = opts.maxTokens ?? 16000;
+    const body = {
+      model,
+      max_tokens: requested,
+      ...(systemText ? { system: systemText } : {}),
+      messages: userMessages,
+    };
+    const reqOpts = { timeout: opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS };
+
+    let res;
+    try {
+      res = await this.client.messages.create(body, reqOpts);
+    } catch (err) {
+      // Anthropic hard-rejects (400) when max_tokens exceeds a model's output
+      // cap (e.g. an older model capped at 8192). Unlike Ollama / OpenAI-
+      // compatible servers, the Anthropic API exposes no per-model max-output
+      // metadata to clamp against ahead of time, so clamp REACTIVELY: parse the
+      // allowed max out of the error and retry once. This keeps a generous
+      // MAX_TOKENS default (32768) working against a low-cap model instead of
+      // silently erroring the member. Any other error, or an unparseable cap,
+      // propagates unchanged.
+      const cap = maxTokensCapFrom400(err);
+      if (cap !== null && cap < requested) {
+        res = await this.client.messages.create({ ...body, max_tokens: cap }, reqOpts);
+      } else {
+        throw err;
+      }
+    }
 
     const block = res.content[0];
     return block?.type === 'text' ? block.text : '';

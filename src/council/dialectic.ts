@@ -22,7 +22,7 @@ import {
   RawResponse,
   RuntimeConfig,
 } from '../types.js';
-import { ChatImage, Provider } from '../providers/base.js';
+import { ChatImage, Provider, sliceBalancedJson } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
 import { CompleteConfig } from './categorizer.js';
 import {
@@ -122,11 +122,9 @@ function parseDossierJSON(raw: string): RawDossierJSON {
     .replace(/^```(?:json)?\s*/im, '')
     .replace(/\s*```\s*$/im, '')
     .trim();
-  // Tolerate a prose preamble/postamble around the JSON object.
-  const start = stripped.indexOf('{');
-  const end = stripped.lastIndexOf('}');
-  const json = start !== -1 && end > start ? stripped.slice(start, end + 1) : stripped;
-  return JSON.parse(json) as RawDossierJSON;
+  // Tolerate a prose preamble/postamble around the JSON object (incl. trailing
+  // prose containing braces — see sliceBalancedJson).
+  return JSON.parse(sliceBalancedJson(stripped)) as RawDossierJSON;
 }
 
 /** Coerce an untrusted JSON value to a clean string[] (judge output is not to be trusted). */

@@ -1549,6 +1549,36 @@ async function main() {
       check('configure_council: an explicit models:[] still clears the council (not treated as all-rejected)',
         Array.isArray(clearRes.council?.members) ? clearRes.council.members.length === 0 : /auto/.test(String(clearRes.council?.members)),
         JSON.stringify(clearRes.council));
+
+      // ── Unknown parameters are REJECTED, not silently stripped (real-world report) ──
+      // Zod's default strips unrecognized keys, so a caller passing `members:`
+      // (what get_council_config REPORTS the council as) instead of `models:`,
+      // or `ResponseMode:` instead of `response_mode:`, got a cheerful
+      // status:"updated" while NOTHING was applied — a silent no-op reported as
+      // success. Schemas are now .strict() with an instructive did-you-mean error.
+      await cfgClient3.callTool({ name: 'configure_council', arguments: { models: ['ollama:small-a'] } });
+      let badParamThrew = false, badParamMsg = '';
+      try {
+        await cfgClient3.callTool({ name: 'configure_council', arguments: { members: ['ollama:small-b'], ResponseMode: 'dialectic' } });
+      } catch (e) { badParamThrew = true; badParamMsg = String(e?.message ?? e); }
+      check('unknown params: rejected instead of silently succeeding', badParamThrew, badParamMsg);
+      check('unknown params: names the offending key ("members")', /Unknown parameter "members"/.test(badParamMsg), badParamMsg);
+      check('unknown params: suggests the right one (members → models)', /did you mean "models"/.test(badParamMsg), badParamMsg);
+      check('unknown params: catches camelCase slip (ResponseMode → response_mode)', /did you mean "response_mode"/.test(badParamMsg), badParamMsg);
+      check('unknown params: lists the valid parameters', /valid: models, judge_model, response_mode/.test(badParamMsg), badParamMsg);
+      check('unknown params: points at the README', /github\.com\/tsarihan\/model-council-mcp/.test(badParamMsg), badParamMsg);
+      const cfgAfterBadParam = parseToolResult(await cfgClient3.callTool({ name: 'get_council_config', arguments: {} }));
+      check('unknown params: council genuinely unchanged (the no-op is now visible, not silent)',
+        (cfgAfterBadParam.council?.members ?? []).includes('ollama:small-a'), JSON.stringify(cfgAfterBadParam.council?.members));
+      // A correct call must still work — strictness must not break normal usage.
+      const goodAfterBad = parseToolResult(await cfgClient3.callTool({ name: 'configure_council', arguments: { models: ['ollama:small-b'], response_mode: 'individual' } }));
+      check('unknown params: a CORRECT call still succeeds after strictness', (goodAfterBad.council?.members ?? []).includes('ollama:small-b'), JSON.stringify(goodAfterBad.council));
+      // ask_council rejects unknown params too (not just configure_council).
+      let askBadThrew = false, askBadMsg = '';
+      try {
+        await cfgClient3.callTool({ name: 'ask_council', arguments: { question: 'hi', responseMode: 'individual' } });
+      } catch (e) { askBadThrew = true; askBadMsg = String(e?.message ?? e); }
+      check('unknown params: ask_council also rejects (suggests mode)', askBadThrew && /Unknown parameter "responseMode"/.test(askBadMsg), askBadMsg);
       await cfgClient3.close();
       rmSync(cfgDir, { recursive: true, force: true });
     }

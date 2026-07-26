@@ -295,6 +295,106 @@ async function initCouncil(): Promise<void> {
 
 // ─── Tool schemas (zod) ───────────────────────────────────────────────────────
 
+const README_URL = 'https://github.com/tsarihan/model-council-mcp#readme';
+
+/** Levenshtein distance — small inputs (parameter names) only. */
+function editDistance(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[n];
+}
+
+/**
+ * Semantic aliases — predictable confusions caused by this API's OWN vocabulary,
+ * which edit distance can't catch because they aren't typos:
+ *  - `members`: what get_council_config/council_status REPORT the council as, so
+ *    a caller that reads the config naturally passes `members` back in (the
+ *    real-world report that prompted this). configure_council wants `models`.
+ *  - `mode`: ask_council's parameter for the same concept configure_council
+ *    calls `response_mode`.
+ *  - the rest are natural shorthands for the longer canonical names.
+ * Keys are normalized (lowercase, alphanumerics only) before lookup.
+ */
+const PARAM_ALIASES: Record<string, string> = {
+  members: 'models', member: 'models', model: 'models', councilmodels: 'models',
+  mode: 'response_mode', responsemode: 'response_mode',
+  judge: 'judge_model', judgemodel: 'judge_model',
+  rounds: 'max_deconflict_rounds', maxrounds: 'max_deconflict_rounds',
+  autocouncil: 'auto_council',
+};
+
+/**
+ * Best "did you mean" for an unrecognized parameter name. In order: a
+ * normalized match (case/underscore-insensitive — catches `ResponseMode` →
+ * `response_mode`), a semantic alias (catches `members` → `models`), then
+ * nearest edit distance for genuine typos. Returns undefined when nothing is
+ * close enough to be worth guessing. A suggestion is only offered when the
+ * target is actually valid for THIS tool.
+ */
+function suggestKey(unknownKey: string, validKeys: string[]): string | undefined {
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const target = norm(unknownKey);
+  const exact = validKeys.find(k => norm(k) === target);
+  if (exact) return exact;
+  const alias = PARAM_ALIASES[target];
+  if (alias && validKeys.includes(alias)) return alias;
+  let best: string | undefined;
+  let bestD = Infinity;
+  for (const k of validKeys) {
+    const d = editDistance(target, norm(k));
+    if (d < bestD) { bestD = d; best = k; }
+  }
+  // Only suggest when genuinely close: <=2 edits, or <=1/3 of the name's length.
+  return best !== undefined && bestD <= Math.max(2, Math.floor(target.length / 3)) ? best : undefined;
+}
+
+/**
+ * Parse a tool's arguments, turning a schema violation into an INSTRUCTIVE
+ * error instead of a raw Zod dump.
+ *
+ * The schemas are `.strict()` so an unknown parameter is REJECTED rather than
+ * silently stripped. That matters: Zod's default is to drop unrecognized keys,
+ * so a caller passing `members:` (instead of `models:`) or `ResponseMode:`
+ * (instead of `response_mode:`) got a cheerful `status: "updated"` while
+ * nothing was actually applied — a silent no-op reported as success, which is
+ * exactly the failure mode this tool exists to avoid. Reported from real use.
+ */
+function parseToolInput<T extends z.ZodTypeAny>(schema: T, args: unknown, toolName: string): z.infer<T> {
+  try {
+    return schema.parse(args ?? {}) as z.infer<T>;
+  } catch (err) {
+    if (!(err instanceof z.ZodError)) throw err;
+    const shape = (schema as unknown as { _def?: { shape?: () => Record<string, unknown> } })._def?.shape;
+    const validKeys = shape ? Object.keys(shape()) : [];
+    const lines: string[] = [];
+    for (const issue of err.issues) {
+      if (issue.code === 'unrecognized_keys') {
+        for (const key of issue.keys) {
+          const hint = suggestKey(key, validKeys);
+          lines.push(
+            `Unknown parameter "${key}" for ${toolName}` +
+            (hint ? ` — did you mean "${hint}"?` : '') +
+            (validKeys.length ? ` (valid: ${validKeys.join(', ')})` : ' (this tool takes no parameters)'),
+          );
+        }
+      } else {
+        lines.push(`${issue.path.join('.') || '(root)'}: ${issue.message}`);
+      }
+    }
+    throw new McpError(
+      ErrorCode.InvalidParams,
+      `${lines.join('\n')}\nNothing was changed. See ${README_URL} for usage.`,
+    );
+  }
+}
+
 const ListModelsInput = z.object({
   filter_provider: z
     .string()
@@ -302,7 +402,7 @@ const ListModelsInput = z.object({
     .describe(
       'Optional provider to filter by (ollama, openai, anthropic, xai, vllm, trtllm, sglang, claude-cli, codex-cli, grok-cli)',
     ),
-});
+}).strict();
 
 const ConfigureCouncilInput = z.object({
   models: z
@@ -346,7 +446,7 @@ const ConfigureCouncilInput = z.object({
       'When true (default) and no models are set, the council is auto-populated ' +
         'from all available Ollama chat models (local + :cloud).',
     ),
-});
+}).strict();
 
 const AskCouncilInput = z.object({
   question: z.string().describe('The question or prompt to send to the council.'),
@@ -420,7 +520,7 @@ const AskCouncilInput = z.object({
         'without vision support are automatically skipped for this call (see ' +
         'visionRouting in the result). Caps: 8 MB/image, 24 MB total, 6 images.',
     ),
-});
+}).strict();
 
 // Async variant takes the same inputs as ask_council.
 const AskCouncilAsyncInput = AskCouncilInput;
@@ -434,16 +534,16 @@ const GetCouncilResultInput = z.object({
     .boolean()
     .optional()
     .describe('List recent background jobs (metadata only) instead of fetching one.'),
-});
+}).strict();
 
-const GetCouncilConfigInput = z.object({});
+const GetCouncilConfigInput = z.object({}).strict();
 
 const SetupCouncilInput = z.object({
   chatgpt: z.string().optional().describe('ChatGPT tier: free | plus | pro5x | pro20x'),
   claude: z.string().optional().describe('Claude tier: free | pro | max5x | max20x'),
   grok: z.string().optional().describe('Grok (X.AI subscription CLI) tier: free | supergrok | premiumplus | heavy'),
   ollama: z.string().optional().describe('Ollama tier: free | pro | max'),
-});
+}).strict();
 
 // ─── Tool definitions ─────────────────────────────────────────────────────────
 
@@ -793,7 +893,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     switch (name) {
       // ── list_models ──────────────────────────────────────────────────────
       case 'list_models': {
-        const input = ListModelsInput.parse(args ?? {});
+        const input = parseToolInput(ListModelsInput, args, 'list_models');
         const models = await orchestrator.listAllModels();
         const filtered = input.filter_provider
           ? models.filter(m => m.provider === input.filter_provider)
@@ -828,7 +928,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
 
       // ── configure_council ────────────────────────────────────────────────
       case 'configure_council': {
-        const input = ConfigureCouncilInput.parse(args ?? {});
+        const input = parseToolInput(ConfigureCouncilInput, args, 'configure_council');
         const update: Partial<CouncilConfig> = {};
 
         // Track IDs we couldn't parse (typo / missing "provider:" prefix) or that
@@ -981,7 +1081,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
 
       // ── ask_council ──────────────────────────────────────────────────────
       case 'ask_council': {
-        const input = AskCouncilInput.parse(args ?? {});
+        const input = parseToolInput(AskCouncilInput, args, 'ask_council');
         const result = await runCouncil(input, onProgress);
 
         return {
@@ -996,7 +1096,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
 
       // ── ask_council_async ────────────────────────────────────────────────
       case 'ask_council_async': {
-        const input = AskCouncilAsyncInput.parse(args ?? {});
+        const input = parseToolInput(AskCouncilAsyncInput, args, 'ask_council_async');
         const job = jobs.start(input.question, {
           mode: (input.mode as string | undefined) ?? orchestrator.getConfig().responseMode,
           memberCount: orchestrator.getConfig().members.length || undefined,
@@ -1029,7 +1129,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
 
       // ── get_council_result ───────────────────────────────────────────────
       case 'get_council_result': {
-        const input = GetCouncilResultInput.parse(args ?? {});
+        const input = parseToolInput(GetCouncilResultInput, args, 'get_council_result');
         if (!input.job_id || input.list) {
           return {
             content: [
@@ -1201,7 +1301,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
 
       // ── setup_council ────────────────────────────────────────────────────
       case 'setup_council': {
-        const input = SetupCouncilInput.parse(args ?? {});
+        const input = parseToolInput(SetupCouncilInput, args, 'setup_council');
         // Set this BEFORE the await below (round 6 finding), not after this
         // call's own updateConfig — setup_council's `detectEnvironment` call
         // is genuinely slow (real subprocess probes). Setting the flag only

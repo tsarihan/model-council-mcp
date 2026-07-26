@@ -37886,11 +37886,82 @@ async function initCouncil() {
   } catch {
   }
 }
+var README_URL = "https://github.com/tsarihan/model-council-mcp#readme";
+function editDistance(a2, b2) {
+  const m2 = a2.length, n2 = b2.length;
+  let prev = Array.from({ length: n2 + 1 }, (_2, j2) => j2);
+  for (let i2 = 1; i2 <= m2; i2++) {
+    const cur = [i2];
+    for (let j2 = 1; j2 <= n2; j2++) {
+      cur[j2] = Math.min(prev[j2] + 1, cur[j2 - 1] + 1, prev[j2 - 1] + (a2[i2 - 1] === b2[j2 - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[n2];
+}
+var PARAM_ALIASES = {
+  members: "models",
+  member: "models",
+  model: "models",
+  councilmodels: "models",
+  mode: "response_mode",
+  responsemode: "response_mode",
+  judge: "judge_model",
+  judgemodel: "judge_model",
+  rounds: "max_deconflict_rounds",
+  maxrounds: "max_deconflict_rounds",
+  autocouncil: "auto_council"
+};
+function suggestKey(unknownKey, validKeys) {
+  const norm = (s2) => s2.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const target = norm(unknownKey);
+  const exact = validKeys.find((k2) => norm(k2) === target);
+  if (exact) return exact;
+  const alias = PARAM_ALIASES[target];
+  if (alias && validKeys.includes(alias)) return alias;
+  let best;
+  let bestD = Infinity;
+  for (const k2 of validKeys) {
+    const d2 = editDistance(target, norm(k2));
+    if (d2 < bestD) {
+      bestD = d2;
+      best = k2;
+    }
+  }
+  return best !== void 0 && bestD <= Math.max(2, Math.floor(target.length / 3)) ? best : void 0;
+}
+function parseToolInput(schema, args, toolName) {
+  try {
+    return schema.parse(args ?? {});
+  } catch (err) {
+    if (!(err instanceof external_exports.ZodError)) throw err;
+    const shape = schema._def?.shape;
+    const validKeys = shape ? Object.keys(shape()) : [];
+    const lines = [];
+    for (const issue2 of err.issues) {
+      if (issue2.code === "unrecognized_keys") {
+        for (const key of issue2.keys) {
+          const hint = suggestKey(key, validKeys);
+          lines.push(
+            `Unknown parameter "${key}" for ${toolName}` + (hint ? ` \u2014 did you mean "${hint}"?` : "") + (validKeys.length ? ` (valid: ${validKeys.join(", ")})` : " (this tool takes no parameters)")
+          );
+        }
+      } else {
+        lines.push(`${issue2.path.join(".") || "(root)"}: ${issue2.message}`);
+      }
+    }
+    throw new McpError(
+      ErrorCode.InvalidParams,
+      `${lines.join("\n")}
+Nothing was changed. See ${README_URL} for usage.`
+    );
+  }
+}
 var ListModelsInput = external_exports.object({
   filter_provider: external_exports.string().optional().describe(
     "Optional provider to filter by (ollama, openai, anthropic, xai, vllm, trtllm, sglang, claude-cli, codex-cli, grok-cli)"
   )
-});
+}).strict();
 var ConfigureCouncilInput = external_exports.object({
   models: external_exports.array(external_exports.string()).max(100, "At most 100 council members are supported per call.").optional().describe(
     'Model IDs for council members. Format: "provider:model" or "provider/serverId:model". Examples: "ollama:llama3", "vllm/vllm-gpu1:meta-llama/Llama-3-8B", "openai:gpt-4o". Max 100.'
@@ -37905,7 +37976,7 @@ var ConfigureCouncilInput = external_exports.object({
   auto_council: external_exports.boolean().optional().describe(
     "When true (default) and no models are set, the council is auto-populated from all available Ollama chat models (local + :cloud)."
   )
-});
+}).strict();
 var AskCouncilInput = external_exports.object({
   question: external_exports.string().describe("The question or prompt to send to the council."),
   mode: external_exports.enum(["individual", "categorized", "deconflicted", "pooled", "dialectic"]).optional().describe("Override the default response mode for this call only."),
@@ -37927,19 +37998,19 @@ var AskCouncilInput = external_exports.object({
   images: external_exports.array(external_exports.string()).optional().describe(
     "Optional local image paths (png/jpg/jpeg/gif/webp). Auto-detected vision-capable council members are queried with the image(s); members without vision support are automatically skipped for this call (see visionRouting in the result). Caps: 8 MB/image, 24 MB total, 6 images."
   )
-});
+}).strict();
 var AskCouncilAsyncInput = AskCouncilInput;
 var GetCouncilResultInput = external_exports.object({
   job_id: external_exports.string().optional().describe("Job id returned by ask_council_async. Omit (or set list=true) to list recent jobs."),
   list: external_exports.boolean().optional().describe("List recent background jobs (metadata only) instead of fetching one.")
-});
-var GetCouncilConfigInput = external_exports.object({});
+}).strict();
+var GetCouncilConfigInput = external_exports.object({}).strict();
 var SetupCouncilInput = external_exports.object({
   chatgpt: external_exports.string().optional().describe("ChatGPT tier: free | plus | pro5x | pro20x"),
   claude: external_exports.string().optional().describe("Claude tier: free | pro | max5x | max20x"),
   grok: external_exports.string().optional().describe("Grok (X.AI subscription CLI) tier: free | supergrok | premiumplus | heavy"),
   ollama: external_exports.string().optional().describe("Ollama tier: free | pro | max")
-});
+}).strict();
 var TOOLS = [
   {
     name: "list_models",
@@ -38167,7 +38238,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     switch (name) {
       // ── list_models ──────────────────────────────────────────────────────
       case "list_models": {
-        const input = ListModelsInput.parse(args ?? {});
+        const input = parseToolInput(ListModelsInput, args, "list_models");
         const models = await orchestrator.listAllModels();
         const filtered = input.filter_provider ? models.filter((m2) => m2.provider === input.filter_provider) : models;
         return {
@@ -38198,7 +38269,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       }
       // ── configure_council ────────────────────────────────────────────────
       case "configure_council": {
-        const input = ConfigureCouncilInput.parse(args ?? {});
+        const input = parseToolInput(ConfigureCouncilInput, args, "configure_council");
         const update = {};
         const rejected = [];
         const unavailable = [];
@@ -38297,7 +38368,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       }
       // ── ask_council ──────────────────────────────────────────────────────
       case "ask_council": {
-        const input = AskCouncilInput.parse(args ?? {});
+        const input = parseToolInput(AskCouncilInput, args, "ask_council");
         const result = await runCouncil(input, onProgress);
         return {
           content: [
@@ -38310,7 +38381,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       }
       // ── ask_council_async ────────────────────────────────────────────────
       case "ask_council_async": {
-        const input = AskCouncilAsyncInput.parse(args ?? {});
+        const input = parseToolInput(AskCouncilAsyncInput, args, "ask_council_async");
         const job = jobs.start(input.question, {
           mode: input.mode ?? orchestrator.getConfig().responseMode,
           memberCount: orchestrator.getConfig().members.length || void 0
@@ -38337,7 +38408,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       }
       // ── get_council_result ───────────────────────────────────────────────
       case "get_council_result": {
-        const input = GetCouncilResultInput.parse(args ?? {});
+        const input = parseToolInput(GetCouncilResultInput, args, "get_council_result");
         if (!input.job_id || input.list) {
           return {
             content: [
@@ -38487,7 +38558,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       }
       // ── setup_council ────────────────────────────────────────────────────
       case "setup_council": {
-        const input = SetupCouncilInput.parse(args ?? {});
+        const input = parseToolInput(SetupCouncilInput, args, "setup_council");
         explicitlyConfigured = true;
         const subs = loadSubscriptions();
         const tiers = effectiveTiers(subs);

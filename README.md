@@ -316,6 +316,8 @@ Update the council at runtime (changes persist for the session).
 
 All fields are optional — only supplied fields are updated. `models` is capped at 100 entries.
 
+> **Parameter names are strict.** An unrecognized parameter is **rejected with an error**, never silently ignored — so a call that doesn't do what you meant fails loudly instead of returning a cheerful `"status": "updated"` while changing nothing. The error names the offending key, suggests the intended one, and lists the valid parameters. Two easy slips worth knowing: the council is **set** with `models` but **reported** (by `get_council_config` / `council_status`) as `members`; and the response mode is `response_mode` here but `mode` on `ask_council`.
+
 ---
 
 ### `ask_council`

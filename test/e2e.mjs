@@ -486,7 +486,7 @@ async function main() {
       const seen = JSON.stringify(dbgCtx);
       check('context: inline marker reached members', /INLINE_MARKER_7/.test(seen));
       check('context: file contents reached members', /FILE_MARKER_42/.test(seen));
-      check('context: file path labelled', /FILE: /.test(seen) && /snippet\.txt/.test(seen));
+      check('context: file path labelled', /FILE:[0-9a-f]+: /.test(seen) && /snippet\.txt/.test(seen), seen);
       // A missing file is a clear error, not a silent drop.
       let threw = false;
       try {
@@ -521,7 +521,7 @@ async function main() {
         });
         const dbgGit = JSON.stringify(await (await fetch(`${MOCK_URL}/debug`)).json());
         check('git_ref: diff content reached members', /GIT_DIFF_MARKER_88/.test(dbgGit), dbgGit);
-        check('git_ref: labelled with the requested ref', /GIT DIFF \(uncommitted\)/.test(dbgGit), dbgGit);
+        check('git_ref: labelled with the requested ref', /GIT DIFF:[0-9a-f]+ \(uncommitted\)/.test(dbgGit), dbgGit);
 
         // A ref with no changes is a clear error, not a silent no-op.
         let threwEmpty = false;

@@ -8,6 +8,7 @@
  * can tell attachments apart from the question.
  */
 import { readFile, stat } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { extname, resolve } from 'node:path';
 import { buildGitDiff } from './git.js';
 
@@ -37,15 +38,23 @@ export async function buildAugmentedQuestion(
   input: ContextInput,
 ): Promise<string> {
   const blocks: string[] = [];
+  // A random per-call token embedded in every fence marker below. Attached
+  // file/diff content is untrusted (it can come from an arbitrary local file
+  // or a git diff in a repo under review) — without a nonce, a fixed marker
+  // string like "----- QUESTION -----" could be forged by content that
+  // contains that exact line, tricking a member into treating attacker text
+  // as the real question. The nonce can't be predicted in advance, so a
+  // forged marker in attached content won't match the real one.
+  const nonce = randomUUID().slice(0, 8);
 
   const inline = input.context?.trim();
   if (inline) {
-    blocks.push(`----- CONTEXT -----\n${inline}`);
+    blocks.push(`----- CONTEXT:${nonce} -----\n${inline}`);
   }
 
   if (input.gitRef?.trim()) {
     const diff = await buildGitDiff({ ref: input.gitRef, repo: input.gitRepo });
-    blocks.push(`----- GIT DIFF (${input.gitRef.trim()}) -----\n${diff}`);
+    blocks.push(`----- GIT DIFF:${nonce} (${input.gitRef.trim()}) -----\n${diff}`);
   }
 
   const files = input.files ?? [];
@@ -71,17 +80,12 @@ export async function buildAugmentedQuestion(
     if (!info.isFile()) {
       throw new Error(`Attached path is not a file: ${raw}`);
     }
+    // Fast-path rejection on the stat'd size (avoids reading an obviously-huge
+    // file at all), but NOT the only check — see the actual-size check below.
     if (info.size > MAX_FILE_BYTES) {
       throw new Error(
         `Attached file too large: ${raw} (${Math.round(info.size / 1024)} KB > ` +
           `${Math.round(MAX_FILE_BYTES / 1024)} KB limit). Trim it or pass an excerpt via "context".`,
-      );
-    }
-    total += info.size;
-    if (total > MAX_TOTAL_BYTES) {
-      throw new Error(
-        `Attached files exceed the combined ${Math.round(MAX_TOTAL_BYTES / 1024)} KB limit. ` +
-          `Attach fewer/smaller files.`,
       );
     }
     let body: string;
@@ -90,13 +94,30 @@ export async function buildAugmentedQuestion(
     } catch {
       throw new Error(`Could not read attached file as UTF-8 text: ${raw}`);
     }
-    blocks.push(`----- FILE: ${raw} -----\n${body}`);
+    // Re-check against the ACTUAL bytes read, not just the earlier stat() —
+    // stat-then-read is a TOCTOU window (e.g. a symlink retargeted between the
+    // two calls) that could otherwise smuggle a larger file past the size cap.
+    const actualBytes = Buffer.byteLength(body, 'utf8');
+    if (actualBytes > MAX_FILE_BYTES) {
+      throw new Error(
+        `Attached file too large: ${raw} (${Math.round(actualBytes / 1024)} KB > ` +
+          `${Math.round(MAX_FILE_BYTES / 1024)} KB limit). Trim it or pass an excerpt via "context".`,
+      );
+    }
+    total += actualBytes;
+    if (total > MAX_TOTAL_BYTES) {
+      throw new Error(
+        `Attached files exceed the combined ${Math.round(MAX_TOTAL_BYTES / 1024)} KB limit. ` +
+          `Attach fewer/smaller files.`,
+      );
+    }
+    blocks.push(`----- FILE:${nonce}: ${raw} -----\n${body}`);
   }
 
   if (blocks.length === 0) return question;
 
   return (
     `${blocks.join('\n\n')}\n\n` +
-    `----- QUESTION -----\n${question}`
+    `----- QUESTION:${nonce} -----\n${question}`
   );
 }

@@ -56,20 +56,31 @@ export async function loadImages(paths: string[] | undefined): Promise<ChatImage
     if (!info.isFile()) {
       throw new Error(`Attached path is not a file: ${raw}`);
     }
+    // Fast-path rejection on the stat'd size (avoids reading an obviously-huge
+    // file at all), but NOT the only check — see the actual-size check below.
     if (info.size > MAX_IMAGE_BYTES) {
       throw new Error(
         `Attached image too large: ${raw} (${Math.round(info.size / 1024)} KB > ` +
           `${Math.round(MAX_IMAGE_BYTES / 1024)} KB limit).`,
       );
     }
-    total += info.size;
+    const buf = await readFile(path);
+    // Re-check against the ACTUAL bytes read, not just the earlier stat() —
+    // stat-then-read is a TOCTOU window (e.g. a symlink retargeted between the
+    // two calls) that could otherwise smuggle a larger file past the size cap.
+    if (buf.byteLength > MAX_IMAGE_BYTES) {
+      throw new Error(
+        `Attached image too large: ${raw} (${Math.round(buf.byteLength / 1024)} KB > ` +
+          `${Math.round(MAX_IMAGE_BYTES / 1024)} KB limit).`,
+      );
+    }
+    total += buf.byteLength;
     if (total > MAX_TOTAL_IMAGE_BYTES) {
       throw new Error(
         `Attached images exceed the combined ${Math.round(MAX_TOTAL_IMAGE_BYTES / (1024 * 1024))} MB limit. ` +
           `Attach fewer/smaller images.`,
       );
     }
-    const buf = await readFile(path);
     out.push({ base64: buf.toString('base64'), mimeType });
   }
   return out;

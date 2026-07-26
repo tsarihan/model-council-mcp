@@ -37003,6 +37003,7 @@ function quotaWarning(report, tiers, subs) {
 
 // src/context.ts
 var import_promises = require("node:fs/promises");
+var import_node_crypto = require("node:crypto");
 var import_node_path6 = require("node:path");
 
 // src/git.ts
@@ -37071,14 +37072,15 @@ var MAX_FILES = 20;
 var IMAGE_EXTENSIONS = /* @__PURE__ */ new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif"]);
 async function buildAugmentedQuestion(question, input) {
   const blocks = [];
+  const nonce = (0, import_node_crypto.randomUUID)().slice(0, 8);
   const inline = input.context?.trim();
   if (inline) {
-    blocks.push(`----- CONTEXT -----
+    blocks.push(`----- CONTEXT:${nonce} -----
 ${inline}`);
   }
   if (input.gitRef?.trim()) {
     const diff = await buildGitDiff({ ref: input.gitRef, repo: input.gitRepo });
-    blocks.push(`----- GIT DIFF (${input.gitRef.trim()}) -----
+    blocks.push(`----- GIT DIFF:${nonce} (${input.gitRef.trim()}) -----
 ${diff}`);
   }
   const files = input.files ?? [];
@@ -37108,25 +37110,31 @@ ${diff}`);
         `Attached file too large: ${raw} (${Math.round(info.size / 1024)} KB > ${Math.round(MAX_FILE_BYTES / 1024)} KB limit). Trim it or pass an excerpt via "context".`
       );
     }
-    total += info.size;
-    if (total > MAX_TOTAL_BYTES) {
-      throw new Error(
-        `Attached files exceed the combined ${Math.round(MAX_TOTAL_BYTES / 1024)} KB limit. Attach fewer/smaller files.`
-      );
-    }
     let body;
     try {
       body = await (0, import_promises.readFile)(path, "utf8");
     } catch {
       throw new Error(`Could not read attached file as UTF-8 text: ${raw}`);
     }
-    blocks.push(`----- FILE: ${raw} -----
+    const actualBytes = Buffer.byteLength(body, "utf8");
+    if (actualBytes > MAX_FILE_BYTES) {
+      throw new Error(
+        `Attached file too large: ${raw} (${Math.round(actualBytes / 1024)} KB > ${Math.round(MAX_FILE_BYTES / 1024)} KB limit). Trim it or pass an excerpt via "context".`
+      );
+    }
+    total += actualBytes;
+    if (total > MAX_TOTAL_BYTES) {
+      throw new Error(
+        `Attached files exceed the combined ${Math.round(MAX_TOTAL_BYTES / 1024)} KB limit. Attach fewer/smaller files.`
+      );
+    }
+    blocks.push(`----- FILE:${nonce}: ${raw} -----
 ${body}`);
   }
   if (blocks.length === 0) return question;
   return `${blocks.join("\n\n")}
 
------ QUESTION -----
+----- QUESTION:${nonce} -----
 ${question}`;
 }
 
@@ -37174,20 +37182,25 @@ async function loadImages(paths) {
         `Attached image too large: ${raw} (${Math.round(info.size / 1024)} KB > ${Math.round(MAX_IMAGE_BYTES / 1024)} KB limit).`
       );
     }
-    total += info.size;
+    const buf = await (0, import_promises2.readFile)(path);
+    if (buf.byteLength > MAX_IMAGE_BYTES) {
+      throw new Error(
+        `Attached image too large: ${raw} (${Math.round(buf.byteLength / 1024)} KB > ${Math.round(MAX_IMAGE_BYTES / 1024)} KB limit).`
+      );
+    }
+    total += buf.byteLength;
     if (total > MAX_TOTAL_IMAGE_BYTES) {
       throw new Error(
         `Attached images exceed the combined ${Math.round(MAX_TOTAL_IMAGE_BYTES / (1024 * 1024))} MB limit. Attach fewer/smaller images.`
       );
     }
-    const buf = await (0, import_promises2.readFile)(path);
     out.push({ base64: buf.toString("base64"), mimeType });
   }
   return out;
 }
 
 // src/jobs.ts
-var import_node_crypto = require("node:crypto");
+var import_node_crypto2 = require("node:crypto");
 var MAX_JOBS = 50;
 var QUESTION_PREVIEW = 200;
 var JobStore = class {
@@ -37195,7 +37208,7 @@ var JobStore = class {
   /** Register a running job and return its record (id is a UUID). */
   start(question, meta) {
     const job = {
-      id: (0, import_node_crypto.randomUUID)(),
+      id: (0, import_node_crypto2.randomUUID)(),
       status: "running",
       question: question.slice(0, QUESTION_PREVIEW),
       mode: meta.mode,
@@ -37575,7 +37588,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.25"
+    version: "0.2.26"
   },
   {
     capabilities: { tools: {} },

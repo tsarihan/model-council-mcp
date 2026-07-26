@@ -18,7 +18,7 @@ import {
   RoundSummary,
   RuntimeConfig,
 } from '../types.js';
-import { Provider } from '../providers/base.js';
+import { ChatImage, Provider } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
 import { categorize, buildSynthesisPrompt } from './categorizer.js';
 import { completeWithRetry, Member, queryMembers } from './query.js';
@@ -148,6 +148,13 @@ export interface DeconflictInput {
    * genuine zero-conflict finding. Must not be reported as a confident 100%.
    */
   judgeDegraded?: boolean;
+  /**
+   * Re-attached to every round's member queries — a member re-examining a
+   * conflict about an image must still be looking at it, not recalling its
+   * own round-0 description. Never sent to the judge (categorize() works from
+   * the members' text responses only).
+   */
+  images?: ChatImage[];
 }
 
 export async function deconflict(
@@ -162,6 +169,7 @@ export async function deconflict(
     judgeProvider,
     runtime,
     verbose,
+    images,
   } = input;
 
   const cc = {
@@ -234,7 +242,7 @@ export async function deconflict(
 
     // ── Ask each council member about the open conflicts ──────────────────
     const roundPrompt = buildConflictRoundPrompt(question, openConflicts, round);
-    const roundResponses = await queryMembers(roundPrompt, members, runtime);
+    const roundResponses = await queryMembers(roundPrompt, members, runtime, {}, images);
 
     // ── Judge re-categorizes these round-specific responses ───────────────
     let newCateg: Awaited<ReturnType<typeof categorize>>;

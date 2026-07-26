@@ -716,6 +716,81 @@ async function main() {
       const dbgConcVis = await (await fetch(`${MOCK_URL}/debug`)).json();
       check('vision: detection phase respects local concurrency (max 1 in flight)',
         dbgConcVis.maxConcurrent === 1, `maxConcurrent=${dbgConcVis.maxConcurrent}`);
+
+      // ── Images must reach every round's MEMBER queries (reconsideration/
+      // defense/selection/deconflict-round), but never a JUDGE call (pool
+      // digest/dossier/categorize) — a judge distils members' text responses,
+      // it never sees the attached image directly.
+      console.log('\n▶ images threaded through pooled/dialectic/deconflict rounds');
+
+      // Pooled: repoll (member) must carry images; pool-digest (judge) must not.
+      await resetMock();
+      await client.callTool({
+        name: 'configure_council',
+        arguments: {
+          models: ['ollama:vision-a', 'ollama:vision-b'],
+          judge_model: 'ollama:vision-b',
+          response_mode: 'pooled',
+        },
+      });
+      await client.callTool({
+        name: 'ask_council',
+        arguments: { question: "What's in this picture?", mode: 'pooled', images: [imgFile] },
+      });
+      const dbgPoolImg = await (await fetch(`${MOCK_URL}/debug`)).json();
+      check('images/pooled: reconsideration (member) round carried the image',
+        Array.isArray(dbgPoolImg.lastRepollImages) && dbgPoolImg.lastRepollImages[0] === expectedB64,
+        JSON.stringify(dbgPoolImg.lastRepollImages));
+      check('images/pooled: pool-digest (judge) call never received the image',
+        !dbgPoolImg.lastPoolDigestImages, JSON.stringify(dbgPoolImg.lastPoolDigestImages));
+
+      // Dialectic: defense + selection (member) must carry images; dossier (judge) must not.
+      await resetMock();
+      await client.callTool({
+        name: 'configure_council',
+        arguments: {
+          models: ['ollama:vision-a', 'ollama:vision-b'],
+          judge_model: 'ollama:vision-b',
+          response_mode: 'dialectic',
+        },
+      });
+      await client.callTool({
+        name: 'ask_council',
+        arguments: { question: "What's in this picture?", mode: 'dialectic', images: [imgFile] },
+      });
+      const dbgDialecticImg = await (await fetch(`${MOCK_URL}/debug`)).json();
+      check('images/dialectic: defense (member) round carried the image',
+        Array.isArray(dbgDialecticImg.lastDefenseImages) && dbgDialecticImg.lastDefenseImages[0] === expectedB64,
+        JSON.stringify(dbgDialecticImg.lastDefenseImages));
+      check('images/dialectic: selection (member) round carried the image',
+        Array.isArray(dbgDialecticImg.lastSelectionImages) && dbgDialecticImg.lastSelectionImages[0] === expectedB64,
+        JSON.stringify(dbgDialecticImg.lastSelectionImages));
+      check('images/dialectic: dossier (judge) call never received the image',
+        !dbgDialecticImg.lastDossierImages, JSON.stringify(dbgDialecticImg.lastDossierImages));
+
+      // Deconflicted: round query (member) must carry images; categorize (judge) must not.
+      await resetMock();
+      await client.callTool({
+        name: 'configure_council',
+        arguments: {
+          models: ['ollama:vision-a', 'ollama:vision-b'],
+          judge_model: 'ollama:vision-b',
+          response_mode: 'deconflicted',
+        },
+      });
+      await client.callTool({
+        name: 'ask_council',
+        arguments: {
+          question: "What's in this picture?", mode: 'deconflicted',
+          max_deconflict_rounds: 1, images: [imgFile],
+        },
+      });
+      const dbgDeconflictImg = await (await fetch(`${MOCK_URL}/debug`)).json();
+      check('images/deconflicted: round (member) query carried the image',
+        Array.isArray(dbgDeconflictImg.lastDeconflictRoundImages) && dbgDeconflictImg.lastDeconflictRoundImages[0] === expectedB64,
+        JSON.stringify(dbgDeconflictImg.lastDeconflictRoundImages));
+      check('images/deconflicted: categorize (judge) call never received the image',
+        !dbgDeconflictImg.lastCategorizeImages, JSON.stringify(dbgDeconflictImg.lastCategorizeImages));
     } finally {
       rmSync(imgDir, { recursive: true, force: true });
     }

@@ -16,7 +16,7 @@
  * the neutral pool before and after reconsideration so movement is observable.
  */
 import { ModelId, PooledDigest, PooledResult, RawResponse, RuntimeConfig } from '../types.js';
-import { Provider } from '../providers/base.js';
+import { ChatImage, Provider } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
 import { CompleteConfig } from './categorizer.js';
 import { completeWithRetry, EmptyCompletionError, Member, queryMembers } from './query.js';
@@ -172,6 +172,13 @@ export interface PooledInput {
   runtime: RuntimeConfig;
   /** When true, include the initial (round-0) raw responses in the result. */
   verbose: boolean;
+  /**
+   * Re-attached to the reconsideration round's member queries — a member
+   * "revising its view of an image" must see the image again, not work from
+   * its own round-0 description of it. Never sent to the judge (poolResponses
+   * works from the members' text responses only).
+   */
+  images?: ChatImage[];
 }
 
 export async function runPooled(input: PooledInput): Promise<PooledResult> {
@@ -183,6 +190,7 @@ export async function runPooled(input: PooledInput): Promise<PooledResult> {
     judgeProvider,
     runtime,
     verbose,
+    images,
   } = input;
   const cc: CompleteConfig = {
     maxTokens: runtime.maxTokens, retries: runtime.retries, timeoutMs: runtime.requestTimeoutMs,
@@ -199,7 +207,7 @@ export async function runPooled(input: PooledInput): Promise<PooledResult> {
 
   // 2. Re-poll every member with the neutral digest (no attribution/counts/order).
   const repollPrompt = buildRepollPrompt(question, initialPool);
-  const reconsidered = await queryMembers(repollPrompt, members, runtime);
+  const reconsidered = await queryMembers(repollPrompt, members, runtime, {}, images);
 
   // 3. Judge distils the reconsidered answers into a second neutral pool.
   //    No winner is declared — the two pools let the caller see any movement.

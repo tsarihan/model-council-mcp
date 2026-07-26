@@ -22,7 +22,7 @@ import {
   RawResponse,
   RuntimeConfig,
 } from '../types.js';
-import { Provider } from '../providers/base.js';
+import { ChatImage, Provider } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
 import { CompleteConfig } from './categorizer.js';
 import {
@@ -279,6 +279,13 @@ export interface DialecticInput {
   runtime: RuntimeConfig;
   /** When true, include the initial (thesis) responses in the result. */
   verbose: boolean;
+  /**
+   * Re-attached to the defense and selection rounds' member queries — a member
+   * defending or re-selecting from a description of an image must still be
+   * looking at it, not recalling its own round-0 description. Never sent to
+   * the judge (buildDossierPrompt works from the members' text responses only).
+   */
+  images?: ChatImage[];
 }
 
 export async function runDialectic(input: DialecticInput): Promise<DialecticResult> {
@@ -290,6 +297,7 @@ export async function runDialectic(input: DialecticInput): Promise<DialecticResu
     judgeProvider,
     runtime,
     verbose,
+    images,
   } = input;
   const cc: CompleteConfig = {
     maxTokens: runtime.maxTokens, retries: runtime.retries, timeoutMs: runtime.requestTimeoutMs,
@@ -311,6 +319,8 @@ export async function runDialectic(input: DialecticInput): Promise<DialecticResu
     (_member, i) => buildDefensePrompt(question, optionsBlock, initialResponses[i]?.response ?? ''),
     members,
     runtime,
+    {},
+    images,
   );
 
   // 3. Judge compiles the pros/cons dossier.
@@ -330,6 +340,8 @@ export async function runDialectic(input: DialecticInput): Promise<DialecticResu
     buildSelectionPrompt(question, prosCons),
     members,
     runtime,
+    {},
+    images,
   );
 
   const judgeDegraded = digest.judgeDegraded || prosConsResult.judgeDegraded;

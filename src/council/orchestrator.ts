@@ -335,6 +335,7 @@ export class CouncilOrchestrator {
           judgeProvider,
           runtime,
           verbose,
+          images,
         });
         return visionRouting ? { ...pooled, visionRouting } : pooled;
       }
@@ -350,6 +351,7 @@ export class CouncilOrchestrator {
           judgeProvider,
           runtime,
           verbose,
+          images,
         });
         return visionRouting ? { ...dialectic, visionRouting } : dialectic;
       }
@@ -386,6 +388,7 @@ export class CouncilOrchestrator {
         runtime,
         verbose,
         judgeDegraded: catResult.judgeDegraded,
+        images,
       })) as DeconflictedResult;
       return visionRouting ? { ...dec, visionRouting } : dec;
     } catch (err) {

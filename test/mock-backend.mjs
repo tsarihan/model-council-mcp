@@ -69,6 +69,18 @@ const CAPABILITIES = {
 
 let lastImages = null; // last /api/chat request's `images` array on the user message, if any
 
+// Per-prompt-type images, so a test can prove images reach MEMBER round-queries
+// (repoll/defense/selection/deconflict-round) but never a JUDGE call (categorize/
+// pool-digest/dossier) — `lastImages` alone can't distinguish this since it's
+// just whatever the most recent call happened to carry.
+let lastCategorizeImages = undefined;
+let lastPoolDigestImages = undefined;
+let lastDossierImages = undefined;
+let lastRepollImages = undefined;
+let lastDefenseImages = undefined;
+let lastSelectionImages = undefined;
+let lastDeconflictRoundImages = undefined;
+
 // Judge categorization responses, indexed by call number.
 function categorizationFor(call) {
   if (call === 1) {
@@ -207,6 +219,7 @@ function chatResponse(body) {
 
   if (content.includes('Categorize these responses')) {
     categorizeCalls++;
+    lastCategorizeImages = lastImages;
     return JSON.stringify(categorizationFor(categorizeCalls));
   }
 
@@ -216,6 +229,7 @@ function chatResponse(body) {
   }
 
   if (content.includes('[Deconfliction round')) {
+    lastDeconflictRoundImages = lastImages;
     return `[${model}] After reconsidering, I can align with exponential backoff. ` +
            `On caching I still lean toward my original position.`;
   }
@@ -223,12 +237,14 @@ function chatResponse(body) {
   // Pooled/Delphi: judge distils responses into a neutral digest.
   if (content.includes('pooled digest')) {
     poolCalls++;
+    lastPoolDigestImages = lastImages;
     return JSON.stringify(poolDigestFor(poolCalls));
   }
 
   // Pooled/Delphi: member re-poll against the neutral, attribution-free digest.
   if (content.includes('in no particular order')) {
     lastRepollPrompt = content;
+    lastRepollImages = lastImages;
     const reconsidered = {
       'small-a': 'On reflection I keep exponential backoff; write-through caching is non-essential.',
       'small-b': 'Weighing the pooled reasoning, I move from fixed-interval to exponential backoff.',
@@ -239,6 +255,7 @@ function chatResponse(body) {
 
   // Dialectic: judge compiles the pros/cons dossier (capitalised marker is unique).
   if (content.includes('DIALECTICAL pros/cons')) {
+    lastDossierImages = lastImages;
     return JSON.stringify({
       options: [
         {
@@ -258,6 +275,7 @@ function chatResponse(body) {
   // Dialectic: member defends its initial pick and critiques the alternatives.
   if (content.includes('Defend your initial selection')) {
     lastDefensePrompt = content;
+    lastDefenseImages = lastImages;
     defensePrompts[model] = content; // per-member, for index-alignment assertions
     const defense = {
       'small-a': 'Defending exponential backoff: it adapts to load; fixed-interval risks hammering a down service.',
@@ -270,6 +288,7 @@ function chatResponse(body) {
   // Dialectic: member re-selects a ranked top-3 from the pros/cons dossier.
   if (content.includes('Weighing both sides')) {
     lastSelectionPrompt = content;
+    lastSelectionImages = lastImages;
     return `#1 Exponential backoff — adaptive under load, accepting added complexity.\n` +
            `#2 Fixed-interval retry — a simple fallback where predictability matters.`;
   }
@@ -316,6 +335,13 @@ const server = http.createServer((req, res) => {
     lastNumPredict = null;
     lastUserPrompt = null;
     lastImages = null;
+    lastCategorizeImages = undefined;
+    lastPoolDigestImages = undefined;
+    lastDossierImages = undefined;
+    lastRepollImages = undefined;
+    lastDefenseImages = undefined;
+    lastSelectionImages = undefined;
+    lastDeconflictRoundImages = undefined;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;
@@ -323,7 +349,12 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'GET' && req.url === '/debug') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ maxConcurrent, lastNumPredict, lastRepollPrompt, lastDefensePrompt, defensePrompts, lastSelectionPrompt, lastUserPrompt, lastImages, challengeCalls }));
+    res.end(JSON.stringify({
+      maxConcurrent, lastNumPredict, lastRepollPrompt, lastDefensePrompt, defensePrompts,
+      lastSelectionPrompt, lastUserPrompt, lastImages, challengeCalls,
+      lastCategorizeImages, lastPoolDigestImages, lastDossierImages,
+      lastRepollImages, lastDefenseImages, lastSelectionImages, lastDeconflictRoundImages,
+    }));
     return;
   }
 

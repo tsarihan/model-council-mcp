@@ -36022,7 +36022,8 @@ async function deconflict(input) {
     judgeModelId,
     judgeProvider,
     runtime,
-    verbose
+    verbose,
+    images
   } = input;
   const cc = {
     maxTokens: runtime.maxTokens,
@@ -36077,7 +36078,7 @@ async function deconflict(input) {
   for (let round = 1; round <= maxRounds; round++) {
     const enteringCount = openConflicts.length;
     const roundPrompt = buildConflictRoundPrompt(question, openConflicts, round);
-    const roundResponses = await queryMembers(roundPrompt, members, runtime);
+    const roundResponses = await queryMembers(roundPrompt, members, runtime, {}, images);
     let newCateg;
     try {
       newCateg = await categorize(
@@ -36293,7 +36294,8 @@ async function runPooled(input) {
     judgeModelId,
     judgeProvider,
     runtime,
-    verbose
+    verbose,
+    images
   } = input;
   const cc = {
     maxTokens: runtime.maxTokens,
@@ -36308,7 +36310,7 @@ async function runPooled(input) {
     cc
   );
   const repollPrompt = buildRepollPrompt(question, initialPool);
-  const reconsidered = await queryMembers(repollPrompt, members, runtime);
+  const reconsidered = await queryMembers(repollPrompt, members, runtime, {}, images);
   const finalPool = await poolResponses(
     question,
     reconsidered,
@@ -36494,7 +36496,8 @@ async function runDialectic(input) {
     judgeModelId,
     judgeProvider,
     runtime,
-    verbose
+    verbose,
+    images
   } = input;
   const cc = {
     maxTokens: runtime.maxTokens,
@@ -36512,7 +36515,9 @@ async function runDialectic(input) {
   const defenses = await queryMembersVarying(
     (_member, i2) => buildDefensePrompt(question, optionsBlock, initialResponses[i2]?.response ?? ""),
     members,
-    runtime
+    runtime,
+    {},
+    images
   );
   const prosConsResult = await buildProsCons(
     question,
@@ -36527,7 +36532,9 @@ async function runDialectic(input) {
   const selections = await queryMembers(
     buildSelectionPrompt(question, prosCons),
     members,
-    runtime
+    runtime,
+    {},
+    images
   );
   const judgeDegraded = digest.judgeDegraded || prosConsResult.judgeDegraded;
   return {
@@ -36744,7 +36751,8 @@ var CouncilOrchestrator = class {
           judgeModelId,
           judgeProvider,
           runtime,
-          verbose
+          verbose,
+          images
         });
         return visionRouting ? { ...pooled2, visionRouting } : pooled2;
       }
@@ -36756,7 +36764,8 @@ var CouncilOrchestrator = class {
           judgeModelId,
           judgeProvider,
           runtime,
-          verbose
+          verbose,
+          images
         });
         return visionRouting ? { ...dialectic, visionRouting } : dialectic;
       }
@@ -36787,7 +36796,8 @@ var CouncilOrchestrator = class {
         judgeProvider,
         runtime,
         verbose,
-        judgeDegraded: catResult.judgeDegraded
+        judgeDegraded: catResult.judgeDegraded,
+        images
       });
       return visionRouting ? { ...dec, visionRouting } : dec;
     } catch (err) {
@@ -37622,7 +37632,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.30"
+    version: "0.2.31"
   },
   {
     capabilities: { tools: {} },

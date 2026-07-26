@@ -74,28 +74,45 @@ const emptyTreeHashCache = new Map<string, string>();
  * version-agnostic (no GIT_ATTR_SOURCE dependency), closing the hole on all git
  * versions and all attribute layers. `git config --get-regexp` only READS config
  * (runs no filter); the keys it returns are canonical (no shell, no newline/null
- * in a -z key) and passed straight back as `-c <key>=` argv, never via a shell.
+ * in a -z key).
+ *
+ * The override is injected via GIT_CONFIG_COUNT / GIT_CONFIG_KEY_<i> /
+ * GIT_CONFIG_VALUE_<i> env vars, NOT `-c key=value` argv. An attacker controls
+ * .git/config, so a filter can be NAMED with an `=` — `[filter "x=y"]`, referenced
+ * from .git/info/attributes as `* filter=x=y`. `-c filter.x=y.clean=` splits on the
+ * FIRST `=`, so it would set `filter.x`=`y.clean=` and leave `filter."x=y".clean`
+ * live — the filter still fires (verified). The GIT_CONFIG_KEY_<i>/VALUE_<i> pair
+ * carries key and value as SEPARATE env vars with no `=`-splitting, so any
+ * subsection name is handled. (GIT_CONFIG_COUNT is git >= 2.31, broader than
+ * GIT_ATTR_SOURCE's 2.40, so this stays version-agnostic.)
+ *
  * Legit filters (e.g. git-lfs) are also disabled for the diff — correct for an
  * untrusted-repo review: an LFS working-tree file simply shows raw rather than
  * as a pointer, bounded by the existing MAX_DIFF_BYTES cap.
  */
-async function filterNeutralizeArgs(repoPath: string): Promise<string[]> {
+async function filterNeutralizeEnv(repoPath: string): Promise<Record<string, string>> {
   try {
     const { stdout } = await execFileAsync(
       'git', ['config', '-z', '--get-regexp', '^filter\\..*\\.(clean|smudge|process)$'],
       { cwd: repoPath, timeout: GIT_TIMEOUT_MS },
     );
-    const args: string[] = [];
+    const keys: string[] = [];
     for (const rec of stdout.split('\0')) {
       if (!rec) continue;
       const key = rec.split('\n', 1)[0];
-      if (/^filter\..+\.(clean|smudge|process)$/.test(key)) args.push('-c', `${key}=`);
+      if (/^filter\..+\.(clean|smudge|process)$/.test(key)) keys.push(key);
     }
-    return args;
+    if (!keys.length) return {};
+    const env: Record<string, string> = { GIT_CONFIG_COUNT: String(keys.length) };
+    keys.forEach((k, i) => {
+      env[`GIT_CONFIG_KEY_${i}`] = k;
+      env[`GIT_CONFIG_VALUE_${i}`] = ''; // empty command = no-op pass-through
+    });
+    return env;
   } catch {
     // Exit 1 = no matching filter keys (the common case); any other failure
-    // means we couldn't enumerate — either way there's nothing to add here.
-    return [];
+    // means we couldn't enumerate — either way there's nothing to inject.
+    return {};
   }
 }
 
@@ -263,16 +280,16 @@ export async function buildGitDiff(input: GitDiffInput): Promise<string> {
   const repoPath = await assertGitRepo(resolve(input.repo?.trim() || process.cwd()));
 
   // Neutralize clean/smudge/process filter drivers (complete, all git versions
-  // — see filterNeutralizeArgs) plus GIT_ATTR_SOURCE=empty-tree (belt-and-
+  // — see filterNeutralizeEnv) plus GIT_ATTR_SOURCE=empty-tree (belt-and-
   // suspenders, blanks the tree .gitattributes layer on git >= 2.40).
-  const filterArgs = await filterNeutralizeArgs(repoPath);
-  const args = [...GLOBAL_SAFETY_ARGS, ...filterArgs, ...diffArgsForRef(ref)];
+  const filterEnv = await filterNeutralizeEnv(repoPath);
+  const args = [...GLOBAL_SAFETY_ARGS, ...diffArgsForRef(ref)];
   const attrSource = await emptyTreeHash(repoPath);
   let stdout: string;
   try {
     ({ stdout } = await execFileAsync('git', args, {
       cwd: repoPath,
-      env: { ...process.env, GIT_ATTR_SOURCE: attrSource },
+      env: { ...process.env, GIT_ATTR_SOURCE: attrSource, ...filterEnv },
       maxBuffer: MAX_DIFF_BYTES * 2,
       timeout: GIT_TIMEOUT_MS,
       killSignal: 'SIGKILL',

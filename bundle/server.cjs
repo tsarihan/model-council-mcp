@@ -37348,22 +37348,28 @@ var NO_HELPERS = ["--no-ext-diff", "--no-textconv"];
 var GLOBAL_SAFETY_ARGS = ["-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null"];
 var SHA1_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 var emptyTreeHashCache = /* @__PURE__ */ new Map();
-async function filterNeutralizeArgs(repoPath) {
+async function filterNeutralizeEnv(repoPath) {
   try {
     const { stdout } = await execFileAsync(
       "git",
       ["config", "-z", "--get-regexp", "^filter\\..*\\.(clean|smudge|process)$"],
       { cwd: repoPath, timeout: GIT_TIMEOUT_MS }
     );
-    const args = [];
+    const keys = [];
     for (const rec of stdout.split("\0")) {
       if (!rec) continue;
       const key = rec.split("\n", 1)[0];
-      if (/^filter\..+\.(clean|smudge|process)$/.test(key)) args.push("-c", `${key}=`);
+      if (/^filter\..+\.(clean|smudge|process)$/.test(key)) keys.push(key);
     }
-    return args;
+    if (!keys.length) return {};
+    const env = { GIT_CONFIG_COUNT: String(keys.length) };
+    keys.forEach((k2, i2) => {
+      env[`GIT_CONFIG_KEY_${i2}`] = k2;
+      env[`GIT_CONFIG_VALUE_${i2}`] = "";
+    });
+    return env;
   } catch {
-    return [];
+    return {};
   }
 }
 async function emptyTreeHash(repoPath) {
@@ -37442,14 +37448,14 @@ async function buildGitDiff(input) {
     );
   }
   const repoPath = await assertGitRepo((0, import_node_path6.resolve)(input.repo?.trim() || process.cwd()));
-  const filterArgs = await filterNeutralizeArgs(repoPath);
-  const args = [...GLOBAL_SAFETY_ARGS, ...filterArgs, ...diffArgsForRef(ref)];
+  const filterEnv = await filterNeutralizeEnv(repoPath);
+  const args = [...GLOBAL_SAFETY_ARGS, ...diffArgsForRef(ref)];
   const attrSource = await emptyTreeHash(repoPath);
   let stdout;
   try {
     ({ stdout } = await execFileAsync("git", args, {
       cwd: repoPath,
-      env: { ...process.env, GIT_ATTR_SOURCE: attrSource },
+      env: { ...process.env, GIT_ATTR_SOURCE: attrSource, ...filterEnv },
       maxBuffer: MAX_DIFF_BYTES * 2,
       timeout: GIT_TIMEOUT_MS,
       killSignal: "SIGKILL"

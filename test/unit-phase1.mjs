@@ -837,32 +837,56 @@ console.log('▶ buildGitDiff validation (src/git.ts)');
     // and the round-9 GIT_ATTR_SOURCE-only fix was proven to still fire the
     // filter through it). The round-10 fix disables the FILTER itself, so both
     // vectors must be dead.
+    // Matrix over: attribute source (tree vs info/attributes), filter DRIVER
+    // (clean vs process), and filter NAME (simple vs one containing '=' — an
+    // attacker controls .git/config so `[filter "x=y"]` is reachable, and a
+    // `-c filter.x=y.clean=` override splits on the first '=' and misses it, so
+    // the neutralization is done via GIT_CONFIG_KEY/VALUE env injection).
+    const cases = [];
     for (const attrVia of ['tracked .gitattributes', '.git/info/attributes']) {
+      for (const driver of ['clean', 'process']) {
+        for (const fname of ['pwn', 'x=y']) {
+          cases.push({ attrVia, driver, fname });
+        }
+      }
+    }
+    for (const { attrVia, driver, fname } of cases) {
       const filterRepo = mkdtempSync(join(tmpdir(), 'mc-git-filter-'));
       const marker = join(tmpdir(), `mc-filter-fired-${filterRepo.split('-').pop()}`);
+      const label = `${driver} filter "${fname}" via ${attrVia}`;
       try {
         execFileSync('git', ['init', '-q'], { cwd: filterRepo });
         execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: filterRepo });
         execFileSync('git', ['config', 'user.name', 'Test'], { cwd: filterRepo });
-        // Attacker-controlled .git/config: the clean filter drops a marker file
-        // (side effect standing in for arbitrary command execution), passing
-        // content through via `cat` so the diff still functions.
-        execFileSync('git', ['config', 'filter.pwn.clean', `sh -c 'touch ${marker}; cat'`], { cwd: filterRepo });
+        // Attacker-controlled .git/config: the filter drops a marker file (side
+        // effect standing in for arbitrary command execution). `process` filters
+        // speak a length-prefixed protocol, so a `process` command that isn't a
+        // real filter still EXECUTES (our RCE concern) before erroring — the
+        // marker is what matters, not that the diff completes cleanly.
+        const cmd = `sh -c 'touch ${marker}; cat'`;
+        execFileSync('git', ['config', `filter.${fname}.${driver}`, cmd], { cwd: filterRepo });
         const doc = join(filterRepo, 'doc.txt');
-        if (attrVia === 'tracked .gitattributes') writeFileSync(join(filterRepo, '.gitattributes'), '* filter=pwn\n');
-        else writeFileSync(join(filterRepo, '.git', 'info', 'attributes'), '* filter=pwn\n');
+        const attrLine = `* filter=${fname}\n`;
+        if (attrVia === 'tracked .gitattributes') writeFileSync(join(filterRepo, '.gitattributes'), attrLine);
+        else writeFileSync(join(filterRepo, '.git', 'info', 'attributes'), attrLine);
         writeFileSync(doc, 'original\n');
         // Stage + commit with the filter disabled so SETUP itself never fires it.
-        execFileSync('git', ['-c', 'filter.pwn.clean=cat', 'add', '.'], { cwd: filterRepo });
-        execFileSync('git', ['-c', 'filter.pwn.clean=cat', 'commit', '-q', '-m', 'init'], { cwd: filterRepo });
+        const off = ['-c', `filter.${fname}.${driver}=`];
+        execFileSync('git', [...off, 'add', '.'], { cwd: filterRepo });
+        execFileSync('git', [...off, 'commit', '-q', '-m', 'init'], { cwd: filterRepo });
         writeFileSync(doc, 'original\nmodified\n');
         rmSync(marker, { force: true }); // clear stray marker so the assertion reflects ONLY buildGitDiff
 
-        const fdiff = await buildGitDiff({ ref: 'unstaged', repo: filterRepo });
-        check(`clean filter does NOT execute on an unstaged diff (via ${attrVia})`,
+        let fdiff = '';
+        try { fdiff = await buildGitDiff({ ref: 'unstaged', repo: filterRepo }); } catch { /* a process filter may make git error; the marker check is the point */ }
+        check(`filter does NOT execute on an unstaged diff (${label})`,
           !existsSync(marker), `marker present: ${marker}`);
-        check(`diff still shows the change with filters neutralized (via ${attrVia})`,
-          /\+modified/.test(fdiff), fdiff);
+        // The clean-filter cases must still produce a correct diff; process-filter
+        // cases may legitimately error, so only assert diff content for clean.
+        if (driver === 'clean') {
+          check(`diff still shows the change with filters neutralized (${label})`,
+            /\+modified/.test(fdiff), fdiff);
+        }
       } finally {
         rmSync(filterRepo, { recursive: true, force: true });
         rmSync(marker, { force: true });

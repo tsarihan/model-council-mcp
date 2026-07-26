@@ -403,6 +403,9 @@ Send a question to the full council.
 }
 ```
 
+`judgeDegraded: true` is added (empty `conflicting`/`complementary`, `commonAgreement: null`) only when the judge
+model failed to produce usable/parseable output — a real "the council agreed on everything" result never sets it.
+
 #### Deconflicted result
 
 ```json
@@ -424,8 +427,15 @@ Send a question to the full council.
 }
 ```
 
-**Deconfliction score**: `resolved / totalConflicts × 100`.  
+**Deconfliction score**: `resolved / totalConflicts × 100`.
 100 % means all conflicts resolved; n/m means n conflicts resolved out of m found.
+`judgeDegraded: true` marks any run a judge failure affected — never set on a genuine outcome.
+Two cases: if the judge failed on the *initial* categorization, no conflict count could even be
+established, so `deconflictionScore` is `null` (not a fabricated 100 %). If a *later* round's
+judge output failed, the loop stops without inventing a resolution for the conflicts that round
+was assessing — `deconflictionScore` is still a real number computed from whichever rounds did
+succeed, but treat it as a pessimistic **lower bound**: conflicts left "unresolved" may only look
+that way because the judge never got to re-assess them, not because the council truly disagreed.
 
 #### Pooled result (Delphi)
 

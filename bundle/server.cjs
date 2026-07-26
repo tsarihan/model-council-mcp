@@ -35830,7 +35830,8 @@ async function categorize(question, responses, judgeModelId, judgeProvider, cc, 
         commonAgreement: null,
         complementary: [],
         conflicting: [],
-        judgeModel: modelIdLabel(judgeModelId)
+        judgeModel: modelIdLabel(judgeModelId),
+        judgeDegraded: true
       };
     }
     throw new Error(
@@ -35846,7 +35847,8 @@ async function categorize(question, responses, judgeModelId, judgeProvider, cc, 
       commonAgreement: null,
       complementary: [],
       conflicting: [],
-      judgeModel: modelIdLabel(judgeModelId)
+      judgeModel: modelIdLabel(judgeModelId),
+      judgeDegraded: true
     };
   }
   const existingSet = new Set(existingConflictIds);
@@ -36024,13 +36026,14 @@ async function deconflict(input) {
       question,
       roundsTaken: 0,
       maxRounds,
-      deconflictionScore: 100,
+      deconflictionScore: input.judgeDegraded ? null : 100,
       resolved: 0,
       totalConflicts: 0,
       finalSynthesis: synthesis2,
       unresolvedConflicts: [],
       roundHistory: [],
       judgeModel: judgeLabel,
+      ...input.judgeDegraded ? { judgeDegraded: true } : {},
       ...verboseFields
     };
   }
@@ -36038,6 +36041,7 @@ async function deconflict(input) {
   const allResolved = [];
   const roundHistory = [];
   const roundDetails = [];
+  let midLoopJudgeFailure = false;
   for (let round = 1; round <= maxRounds; round++) {
     const enteringCount = openConflicts.length;
     const roundPrompt = buildConflictRoundPrompt(question, openConflicts, round);
@@ -36053,6 +36057,29 @@ async function deconflict(input) {
         openConflicts.map((c2) => c2.id)
       );
     } catch {
+      midLoopJudgeFailure = true;
+      roundHistory.push({
+        round,
+        conflictsEntering: enteringCount,
+        conflictsResolved: 0,
+        conflictsRemaining: enteringCount
+      });
+      if (verbose) {
+        roundDetails.push({
+          round,
+          conflictsEntering: enteringCount,
+          responses: roundResponses,
+          commonAgreement: null,
+          complementary: [],
+          conflicting: [],
+          resolved: [],
+          remaining: openConflicts
+        });
+      }
+      break;
+    }
+    if (newCateg.judgeDegraded) {
+      midLoopJudgeFailure = true;
       roundHistory.push({
         round,
         conflictsEntering: enteringCount,
@@ -36122,6 +36149,7 @@ async function deconflict(input) {
     unresolvedConflicts: openConflicts,
     roundHistory,
     judgeModel: judgeLabel,
+    ...midLoopJudgeFailure ? { judgeDegraded: true } : {},
     ...verbose ? {
       initialResponses: input.initialResponses,
       initialCategorization: {
@@ -36713,7 +36741,8 @@ var CouncilOrchestrator = class {
         judgeModelId,
         judgeProvider,
         runtime,
-        verbose
+        verbose,
+        judgeDegraded: catResult.judgeDegraded
       });
       return visionRouting ? { ...dec, visionRouting } : dec;
     } catch (err) {
@@ -37492,7 +37521,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.21"
+    version: "0.2.22"
   },
   {
     capabilities: { tools: {} },

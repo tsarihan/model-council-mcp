@@ -142,6 +142,12 @@ export interface DeconflictInput {
   runtime: RuntimeConfig;
   /** When true, the result includes the initial categorization and per-round detail. */
   verbose: boolean;
+  /**
+   * True when the initial categorization (categorize() upstream) failed to
+   * produce usable output — `initialConflicts` is an empty FALLBACK, not a
+   * genuine zero-conflict finding. Must not be reported as a confident 100%.
+   */
+  judgeDegraded?: boolean;
 }
 
 export async function deconflict(
@@ -177,7 +183,10 @@ export async function deconflict(
     : {};
 
   if (totalConflicts === 0) {
-    // Nothing to deconflict — synthesize directly
+    // Nothing to deconflict — synthesize directly. But if the INITIAL
+    // categorization itself was degraded (judge failure/unparseable output),
+    // an empty conflict list is a fallback, not a genuine finding — reporting
+    // a confident 100% here would fabricate the flagship convergence metric.
     const synthesis = await synthesize(
       judgeProvider,
       judgeModelId.model,
@@ -195,13 +204,14 @@ export async function deconflict(
       question,
       roundsTaken: 0,
       maxRounds,
-      deconflictionScore: 100,
+      deconflictionScore: input.judgeDegraded ? null : 100,
       resolved: 0,
       totalConflicts: 0,
       finalSynthesis: synthesis,
       unresolvedConflicts: [],
       roundHistory: [],
       judgeModel: judgeLabel,
+      ...(input.judgeDegraded ? { judgeDegraded: true } : {}),
       ...verboseFields,
     };
   }
@@ -210,6 +220,14 @@ export async function deconflict(
   const allResolved: ConflictItem[] = [];
   const roundHistory: RoundSummary[] = [];
   const roundDetails: DeconflictRoundDetail[] = [];
+  // Set when a round's judge output is missing/unparseable (thrown error OR
+  // categorize()'s own graceful degrade). `resolved`/`totalConflicts`/score
+  // still reflect a genuine measurement from whatever rounds DID succeed —
+  // this only flags that a judge outage cut the loop short, so the resulting
+  // score is a pessimistic lower bound (some "unresolved" conflicts may only
+  // look that way because the judge never got to re-assess them), not
+  // necessarily the council's true convergence.
+  let midLoopJudgeFailure = false;
 
   for (let round = 1; round <= maxRounds; round++) {
     const enteringCount = openConflicts.length;
@@ -231,6 +249,37 @@ export async function deconflict(
       );
     } catch {
       // Judge failed — stop here
+      midLoopJudgeFailure = true;
+      roundHistory.push({
+        round,
+        conflictsEntering: enteringCount,
+        conflictsResolved: 0,
+        conflictsRemaining: enteringCount,
+      });
+      if (verbose) {
+        roundDetails.push({
+          round,
+          conflictsEntering: enteringCount,
+          responses: roundResponses,
+          commonAgreement: null,
+          complementary: [],
+          conflicting: [],
+          resolved: [],
+          remaining: openConflicts,
+        });
+      }
+      break;
+    }
+
+    if (newCateg.judgeDegraded) {
+      // categorize() didn't throw, but only because it degrades gracefully to
+      // an empty conflicting[] on judge failure/unparseable JSON (see
+      // categorizer.ts). Left unchecked, detectResolutions() would read that
+      // empty array as "the judge no longer sees any of these conflicts" and
+      // mark every open conflict resolved — fabricating consensus from a
+      // judge outage. Treat exactly like the genuine-error catch above: stop,
+      // keep every open conflict as remaining, don't touch allResolved.
+      midLoopJudgeFailure = true;
       roundHistory.push({
         round,
         conflictsEntering: enteringCount,
@@ -311,6 +360,7 @@ export async function deconflict(
     unresolvedConflicts: openConflicts,
     roundHistory,
     judgeModel: judgeLabel,
+    ...(midLoopJudgeFailure ? { judgeDegraded: true } : {}),
     ...(verbose
       ? {
           initialResponses: input.initialResponses,

@@ -180,6 +180,31 @@ function chatResponse(body) {
     return '';
   }
 
+  // Judge that answers the INITIAL categorization validly (so a real conflict
+  // exists and a deconfliction round loop actually runs), then degrades to
+  // unparseable JSON on every later round — proves a mid-loop judge failure
+  // can't be silently read as "the conflict is now resolved" (categorizeCalls
+  // is shared across all models/tests, but each test resets it via /reset).
+  if (model === 'flaky-judge' && content.includes('Categorize these responses')) {
+    categorizeCalls++;
+    if (categorizeCalls === 1) {
+      return JSON.stringify({
+        commonAgreement: 'Partial agreement on logging.',
+        complementary: [],
+        conflicting: [
+          {
+            topic: 'retry strategy',
+            positions: [
+              { models: ['ollama:small-a'], position: 'exponential backoff' },
+              { models: ['ollama:small-b'], position: 'fixed interval retry' },
+            ],
+          },
+        ],
+      });
+    }
+    return '{not valid json';
+  }
+
   if (content.includes('Categorize these responses')) {
     categorizeCalls++;
     return JSON.stringify(categorizationFor(categorizeCalls));

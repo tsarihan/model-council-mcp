@@ -374,6 +374,7 @@ export class CouncilOrchestrator {
         judgeProvider,
         runtime,
         verbose,
+        judgeDegraded: catResult.judgeDegraded,
       })) as DeconflictedResult;
       return visionRouting ? { ...dec, visionRouting } : dec;
     } catch (err) {

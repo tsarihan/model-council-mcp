@@ -170,6 +170,13 @@ export interface CategorizedResult {
   conflicting: ConflictItem[];
   rawResponses: RawResponse[];
   judgeModel: string;     // label
+  /**
+   * True when the judge model produced no usable output or unparseable JSON
+   * for this categorization. When true, `commonAgreement`/`complementary`/
+   * `conflicting` are empty as a FALLBACK, not a genuine "council perfectly
+   * agreed" finding — check this before trusting an empty `conflicting` array.
+   */
+  judgeDegraded?: boolean;
   visionRouting?: VisionRouting;
 }
 
@@ -197,14 +204,33 @@ export interface DeconflictedResult {
   question: string;
   roundsTaken: number;
   maxRounds: number;
-  /** 0-100, percentage of conflicts resolved */
-  deconflictionScore: number;
+  /**
+   * 0-100, percentage of conflicts resolved — or `null` when the judge failed
+   * before an initial conflict count could even be established, meaning no
+   * genuine measurement exists at all. Null on ONLY: the judge produced no
+   * usable/parseable output for the initial categorization. Never confuse
+   * with a real 100 (all known conflicts resolved) or a real 0 (none were).
+   */
+  deconflictionScore: number | null;
   resolved: number;
   totalConflicts: number;
   finalSynthesis: string;
   unresolvedConflicts: ConflictItem[];
   roundHistory: RoundSummary[];
   judgeModel: string;     // label
+  /**
+   * True when a judge failure (no usable output, or unparseable JSON)
+   * affected this run. Two distinct cases, both flagged the same way:
+   *  - the INITIAL categorization failed → no conflict count could even be
+   *    established → `deconflictionScore` is null (no measurement at all).
+   *  - a LATER round's judge output failed → the loop stopped there rather
+   *    than fabricating a resolution, so `deconflictionScore` is still a
+   *    real number computed from whatever rounds did succeed, but treat it
+   *    as a pessimistic LOWER BOUND: conflicts left "unresolved" may only
+   *    look that way because the judge never got to re-assess them.
+   * Never set on a genuine outcome (real 100%, real 0%, real partial score).
+   */
+  judgeDegraded?: boolean;
   // ── Verbose-only fields (present when verbose is requested) ──
   /** The initial fan-out responses from every council member. */
   initialResponses?: RawResponse[];

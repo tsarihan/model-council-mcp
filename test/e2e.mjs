@@ -139,6 +139,7 @@ async function main() {
     check('total conflicts 2', dec.totalConflicts === 2, `got ${dec.totalConflicts}`);
     check('resolved 2', dec.resolved === 2, `got ${dec.resolved}`);
     check('score 100', dec.deconflictionScore === 100, `got ${dec.deconflictionScore}`);
+    check('a genuine full resolution is NOT flagged judgeDegraded', dec.judgeDegraded === undefined, `got ${dec.judgeDegraded}`);
     check('rounds taken 2', dec.roundsTaken === 2, `got ${dec.roundsTaken}`);
     check('no unresolved conflicts', dec.unresolvedConflicts?.length === 0, `got ${dec.unresolvedConflicts?.length}`);
     check('round history length 2', dec.roundHistory?.length === 2, `got ${dec.roundHistory?.length}`);
@@ -399,6 +400,43 @@ async function main() {
     check('empty judge → still returns a categorized result', ej.mode === 'categorized', `got mode=${ej.mode}`);
     check('empty judge → no-conflict fallback', Array.isArray(ej.conflicting) && ej.conflicting.length === 0, `conflicting=${JSON.stringify(ej.conflicting)}`);
     check('empty judge → member answers preserved', ej.rawResponses?.length === 2, `got ${ej.rawResponses?.length}`);
+    check('empty judge → categorized result flagged judgeDegraded (not a genuine 0-conflict finding)', ej.judgeDegraded === true, `got ${ej.judgeDegraded}`);
+
+    // ── Test: judge failure must not fabricate a false 100% deconfliction score ─
+    // (a judge outage on the INITIAL categorization degrades conflicting[] to
+    // empty — deconflict() must not read that as "0 conflicts, 100% resolved".)
+    console.log('\n▶ empty judge: deconfliction score must be null, not a false 100%');
+    await resetMock();
+    await client.callTool({
+      name: 'configure_council',
+      arguments: { models: ['ollama:small-a', 'ollama:small-b'], judge_model: 'ollama:empty-judge', response_mode: 'deconflicted' },
+    });
+    const decEmpty = parseToolResult(await client.callTool({
+      name: 'ask_council', arguments: { question: 'How to handle errors?', mode: 'deconflicted' },
+    }));
+    check('empty judge (deconflicted): score is null, not a fabricated 100', decEmpty.deconflictionScore === null, `got ${decEmpty.deconflictionScore}`);
+    check('empty judge (deconflicted): judgeDegraded true', decEmpty.judgeDegraded === true, `got ${decEmpty.judgeDegraded}`);
+    check('empty judge (deconflicted): totalConflicts 0 (fallback, not a genuine count)', decEmpty.totalConflicts === 0);
+
+    // ── Test: mid-loop judge failure must not fabricate a resolution ───────────
+    // The judge answers round 1 validly (1 real conflict), then goes malformed
+    // on round 2 — detectResolutions() must NOT read the malformed round's
+    // empty conflicting[] as "the conflict is now resolved".
+    console.log('\n▶ flaky judge: mid-loop failure must not fabricate a resolution');
+    await resetMock();
+    await client.callTool({
+      name: 'configure_council',
+      arguments: { models: ['ollama:small-a', 'ollama:small-b'], judge_model: 'ollama:flaky-judge', response_mode: 'deconflicted' },
+    });
+    const decFlaky = parseToolResult(await client.callTool({
+      name: 'ask_council', arguments: { question: 'How to handle errors?', mode: 'deconflicted', max_deconflict_rounds: 3 },
+    }));
+    check('flaky judge: total conflicts 1 (genuine, from the valid initial round)', decFlaky.totalConflicts === 1, `got ${decFlaky.totalConflicts}`);
+    check('flaky judge: 0 resolved (round 2 failure must not fabricate a resolution)', decFlaky.resolved === 0, `got ${decFlaky.resolved}`);
+    check('flaky judge: score 0, a real lower-bound measurement (not null — the initial count was real)', decFlaky.deconflictionScore === 0, `got ${decFlaky.deconflictionScore}`);
+    check('flaky judge: judgeDegraded true (score is a pessimistic lower bound, judge outage cut the loop short)', decFlaky.judgeDegraded === true, `got ${decFlaky.judgeDegraded}`);
+    check('flaky judge: 1 unresolved conflict remains open', decFlaky.unresolvedConflicts?.length === 1, `got ${decFlaky.unresolvedConflicts?.length}`);
+    check('flaky judge: only 1 round ran (stopped at the malformed round, did not retry to maxRounds)', decFlaky.roundsTaken === 1, `got ${decFlaky.roundsTaken}`);
 
     // ── Test: file / context attachment ───────────────────────────────────────
     console.log('\n▶ ask_council with context + files');

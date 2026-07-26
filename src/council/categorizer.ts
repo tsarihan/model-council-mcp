@@ -110,9 +110,13 @@ export async function categorize(
       cc.retries,
     );
   } catch (err) {
-    // Judge produced no usable output after all retries → degrade gracefully to
-    // a no-conflict result (treat every response as individual), matching the
-    // JSON-parse fallback below. A genuine provider error still propagates.
+    // Judge produced no usable output after all retries → degrade gracefully
+    // rather than failing the whole request, matching the JSON-parse fallback
+    // below. `judgeDegraded: true` marks this an INDETERMINATE result, not a
+    // confident "no conflicts found" — without it, a judge outage is
+    // indistinguishable from genuine 100% consensus (see deconflict.ts, which
+    // reads this flag before trusting an empty `conflicting` array). A genuine
+    // provider error still propagates.
     if (err instanceof EmptyCompletionError) {
       return {
         question,
@@ -120,6 +124,7 @@ export async function categorize(
         complementary: [],
         conflicting: [],
         judgeModel: modelIdLabel(judgeModelId),
+        judgeDegraded: true,
       };
     }
     throw new Error(
@@ -131,13 +136,14 @@ export async function categorize(
   try {
     parsed = parseCategorizationJSON(rawJson);
   } catch {
-    // Fallback: couldn't parse → treat everything as individual
+    // Fallback: couldn't parse → same indeterminate marker as above.
     return {
       question,
       commonAgreement: null,
       complementary: [],
       conflicting: [],
       judgeModel: modelIdLabel(judgeModelId),
+      judgeDegraded: true,
     };
   }
 

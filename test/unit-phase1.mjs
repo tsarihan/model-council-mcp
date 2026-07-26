@@ -179,6 +179,27 @@ console.log('▶ judge-JSON shape guards (categorize/pool do not crash on wrong 
   check('poolResponses: object options → empty, no crash', Array.isArray(badPool.options) && badPool.options.length === 0);
 }
 
+console.log('▶ categorize: judgeDegraded flags a judge failure, distinct from genuine consensus');
+{
+  const { categorize } = await import('../dist/council/categorizer.js');
+  const judgeId = { provider: 'ollama', model: 'j' };
+  const cc = { maxTokens: 100, retries: 1, timeoutMs: 5000 };
+  const resp = [{ modelId: { provider: 'ollama', model: 'a' }, label: 'ollama:a', response: 'x', latencyMs: 1 }];
+  const fakeJudge = (json) => ({ config: { type: 'ollama' }, serverId: 'ollama', complete: async () => json, listModels: async () => [], ping: async () => true });
+
+  const malformed = await categorize('q', resp, judgeId, fakeJudge('{not valid json'), cc);
+  check('malformed JSON → conflicting empty (fallback)', malformed.conflicting.length === 0 && malformed.complementary.length === 0);
+  check('malformed JSON → judgeDegraded true', malformed.judgeDegraded === true);
+
+  // complete() resolving to '' on every attempt exhausts retries → EmptyCompletionError.
+  const emptyJudge = await categorize('q', resp, judgeId, fakeJudge(''), cc);
+  check('empty completion → judgeDegraded true', emptyJudge.judgeDegraded === true);
+
+  // A genuine zero-conflict finding must NOT be flagged — only judge failure is.
+  const genuine = await categorize('q', resp, judgeId, fakeJudge('{"commonAgreement":"All agree.","complementary":[],"conflicting":[]}'), cc);
+  check('genuine zero-conflict result → judgeDegraded NOT set', genuine.judgeDegraded === undefined);
+}
+
 console.log('▶ persistent state round-trip');
 const dir = mkdtempSync(join(tmpdir(), 'mc-state-'));
 process.env.MODEL_COUNCIL_STATE = join(dir, 'state.json');

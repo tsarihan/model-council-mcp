@@ -81,6 +81,7 @@ import { join } from 'node:path';
 import { CappedBuffer, ChatImage, ChatMessage, CompletionOptions, Provider } from './base.js';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
 import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
+import { redactUrlUserinfo } from '../config.js';
 
 const DEFAULT_MODELS = ['opus', 'sonnet'];
 const DEFAULT_TIMEOUT_MS = 300_000;
@@ -99,7 +100,6 @@ interface RunResult {
 }
 
 /**
-/**
  * Ambient env vars that redirect where a `claude` subprocess sends its
  * requests, in Claude Code's own backend-selection precedence order (higher
  * entries WIN over a plain ANTHROPIC_BASE_URL — confirmed against the Claude
@@ -111,24 +111,6 @@ interface RunResult {
  * a real exfiltration path. They are cleared ONLY in harness mode; see the
  * subscription branch for why they must be LEFT ALONE there.
  */
-/**
- * Strip HTTP basic-auth userinfo (`user:pass@`) from a URL before it goes into
- * a human-visible label. CLAUDE_CLI_OLLAMA_ADDRESS may legitimately carry
- * credentials (`http://user:pass@host:11434`); listModels()/get_council_config
- * surface the harness address verbatim to any MCP client, IDE log, or shared
- * transcript, so the raw address would leak that secret. Falls back to a manual
- * regex if the string isn't a parseable URL (never throws).
- */
-export function redactUrlUserinfo(url: string): string {
-  try {
-    const u = new URL(url);
-    if (u.username || u.password) { u.username = ''; u.password = ''; return u.toString(); }
-    return url;
-  } catch {
-    return url.replace(/(\/\/)[^/@]*@/, '$1');
-  }
-}
-
 const HARNESS_REDIRECT_VARS = [
   // Highest precedence: force an alternate backend, overriding ANTHROPIC_BASE_URL.
   'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',

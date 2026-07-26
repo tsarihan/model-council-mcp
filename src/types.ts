@@ -86,7 +86,7 @@ export interface SubscriptionTiers {
  * Runtime tuning knobs, set via environment / plugin userConfig.
  */
 export interface RuntimeConfig {
-  /** Max tokens requested per completion (default 16000). */
+  /** Max output tokens requested per completion (default 32768), clamped per-model to fit context. */
   maxTokens: number;
   /** Max concurrent cloud requests — fallback default when a pool has no explicit limit. */
   cloudConcurrency: number;

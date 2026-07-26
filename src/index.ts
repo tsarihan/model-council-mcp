@@ -30,7 +30,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 
-import { KNOWN_PROVIDERS, loadConfig, modelIdLabel, parseModelId } from './config.js';
+import { KNOWN_PROVIDERS, loadConfig, modelIdLabel, parseModelId, redactUrlUserinfo } from './config.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { CouncilOrchestrator } from './council/orchestrator.js';
 import { ProgressReporter } from './council/query.js';
@@ -42,6 +42,36 @@ import { buildAugmentedQuestion } from './context.js';
 import { assertGitRepo } from './git.js';
 import { loadImages } from './images.js';
 import { JobStore } from './jobs.js';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+
+// The server version, read from package.json at load so the MCP `version` never
+// drifts from the shipped package (a hardcoded string went stale across releases
+// — 0.2.47 while the package was already 0.2.49). package.json sits one level up
+// from both dist/index.js and bundle/server.cjs. Resolved two ways so it works
+// in BOTH builds: (1) via import.meta.url — correct in the native-ESM dist and
+// symlink-proof for a global `bin` install; esbuild stubs import.meta to {} in
+// the CJS bundle, so `new URL(..., undefined)` throws there and is skipped;
+// (2) relative to the running entry script (process.argv[1]) — covers the CJS
+// bundle, which is never itself a symlinked bin. Falls back to 0.0.0 only if a
+// stripped deployment has neither.
+const MC_VERSION: string = (() => {
+  const readV = (p: string | URL): string | null => {
+    try {
+      const v = JSON.parse(readFileSync(p, 'utf8')).version;
+      return typeof v === 'string' ? v : null;
+    } catch { return null; }
+  };
+  try {
+    const v = readV(new URL('../package.json', import.meta.url));
+    if (v) return v;
+  } catch { /* CJS bundle: import.meta.url is undefined → fall through */ }
+  if (process.argv[1]) {
+    const v = readV(join(dirname(process.argv[1]), '..', 'package.json'));
+    if (v) return v;
+  }
+  return '0.0.0';
+})();
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
@@ -696,7 +726,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.47',
+    version: MC_VERSION,
   },
   {
     capabilities: { tools: {} },
@@ -1034,7 +1064,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
           type: s.type,
           label: s.label,
           baseUrl: s.type === 'ollama' || s.type === 'vllm' || s.type === 'trtllm' || s.type === 'sglang'
-            ? s.baseUrl
+            ? redactUrlUserinfo(s.baseUrl) // strip any embedded basic-auth creds from output
             : '(cloud)',
           hasApiKey: !!s.apiKey,
         }));
@@ -1103,7 +1133,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     GROK_CLI: 'true → add a Grok-subscription member via the local `grok` CLI (no API key/billing)',
                     GROK_CLI_MODELS: 'Comma-separated model names for the Grok CLI member (default: grok-4.5)',
                     GROK_CLI_PATH: 'Path to the grok executable (default: grok)',
-                    MAX_TOKENS: 'Max tokens per completion (default: 16000)',
+                    MAX_TOKENS: 'Max output tokens per completion (default: 32768), clamped per-model to fit context',
                     CLOUD_CONCURRENCY: 'Optional override: caps ALL cloud pools (overrides per-tier limits). Unset = tiers drive it.',
                     LOCAL_CONCURRENCY: 'Max concurrent local requests (default: 1; 0 = unlimited)',
                     COMPLETION_RETRIES: 'Attempts per completion before giving up on empty/error (default: 3)',
@@ -1127,7 +1157,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         const report = await detectEnvironment(registry, tiers, subs);
         const cfg = orchestrator.getConfig();
         const members = cfg.members.map(m => modelIdLabel(m.modelId));
-        const ollamaUrl = appConfig.servers.find(s => s.type === 'ollama')?.baseUrl ?? '';
+        // Redacted: surfaced in a user-facing "not reachable at <url>" hint below.
+        const ollamaUrl = redactUrlUserinfo(appConfig.servers.find(s => s.type === 'ollama')?.baseUrl ?? '');
         const hints: string[] = [];
         if (!report.claude.installed) hints.push('Claude CLI not found — install the Claude Code CLI and log in to add Claude subscription members.');
         else if (!report.claude.usable) hints.push('Claude CLI is installed but not usable — run `claude` then `/login` (or `claude setup-token`).');

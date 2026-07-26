@@ -482,6 +482,27 @@ console.log('▶ deconfliction round: open-topic prompt + exact-match resolution
   const noErrors = detectResolutions([twoParty()], { conflicting: [], commonAgreement: 'Converged.' });
   check('party-dropout: with no errored members, behavior is unchanged (genuine resolution)',
     noErrors.resolved.length === 1 && noErrors.partyDropout === false);
+
+  // ── Party erasure across rounds must NOT defeat the guard (round-10 [3]) ──
+  // A persisting conflict whose party is dropped from the judge's fresh
+  // positions (because it errored) must keep that party in its carried-forward
+  // positions — otherwise a LATER round where the same party errors again finds
+  // no party-in-positions match and falsely resolves. Round 1: X(A:P1,B:P2)
+  // still listed, but B errored so the judge re-lists only A.
+  const r1 = detectResolutions(
+    [{ id: 'c1', topic: 'X', positions: [{ models: ['A'], position: 'P1' }, { models: ['B'], position: 'P2' }] }],
+    { conflicting: [{ topic: 'X', positions: [{ models: ['A'], position: 'P1' }] }], commonAgreement: null },
+    new Set(['B']),
+  );
+  const r1parties = new Set(r1.remaining.flatMap(c => c.positions.flatMap(p => p.models)));
+  check('party-erasure: a party dropped from the judge\'s fresh positions is preserved in the carried-forward conflict',
+    r1.remaining.length === 1 && r1parties.has('A') && r1parties.has('B'), JSON.stringify(r1.remaining));
+
+  // Round 2: topic X vanishes and B errors again. Because B was preserved above,
+  // the dropout is still detected → carried forward, NOT falsely resolved.
+  const r2 = detectResolutions(r1.remaining, { conflicting: [], commonAgreement: 'Converged.' }, new Set(['B']));
+  check('party-erasure: a later-round dropout of the preserved party is still caught (not falsely resolved)',
+    r2.resolved.length === 0 && r2.partyDropout === true, JSON.stringify(r2));
 }
 
 console.log('▶ judgeQuestion routing: the judge sees the ORIGINAL question, never the attachment-bearing augmented one (round-9 W3, prompt-injection)');
@@ -810,36 +831,42 @@ console.log('▶ buildGitDiff validation (src/git.ts)');
     // fire for the working-tree modes, while the diff still shows the change.
     // (git >= 2.40 required for GIT_ATTR_SOURCE; the test env is 2.50.)
     const { existsSync } = await import('node:fs');
-    const filterRepo = mkdtempSync(join(tmpdir(), 'mc-git-filter-'));
-    const marker = join(tmpdir(), `mc-filter-fired-${filterRepo.split('-').pop()}`);
-    try {
-      execFileSync('git', ['init', '-q'], { cwd: filterRepo });
-      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: filterRepo });
-      execFileSync('git', ['config', 'user.name', 'Test'], { cwd: filterRepo });
-      // Attacker-controlled .git/config: the clean filter drops a marker file
-      // (side effect standing in for arbitrary command execution), passing
-      // content through via `cat` so the diff still functions.
-      execFileSync('git', ['config', 'filter.pwn.clean', `sh -c 'touch ${marker}; cat'`], { cwd: filterRepo });
-      const doc = join(filterRepo, 'doc.txt');
-      writeFileSync(join(filterRepo, '.gitattributes'), '* filter=pwn\n');
-      writeFileSync(doc, 'original\n');
-      // Stage + commit with the filter disabled so SETUP itself never fires it
-      // (git add/commit would otherwise run the clean filter and create the
-      // marker before buildGitDiff is even called).
-      execFileSync('git', ['-c', 'filter.pwn.clean=cat', 'add', '.'], { cwd: filterRepo });
-      execFileSync('git', ['-c', 'filter.pwn.clean=cat', 'commit', '-q', '-m', 'init'], { cwd: filterRepo });
-      writeFileSync(doc, 'original\nmodified\n');
-      // Clear any stray marker so the assertion reflects ONLY buildGitDiff.
-      rmSync(marker, { force: true });
+    // Test BOTH attribute sources that assign `filter=pwn`: a tracked
+    // `.gitattributes` (tree layer) AND `.git/info/attributes` (the layer
+    // GIT_ATTR_SOURCE does NOT cover — an archived repo ships it inside .git/,
+    // and the round-9 GIT_ATTR_SOURCE-only fix was proven to still fire the
+    // filter through it). The round-10 fix disables the FILTER itself, so both
+    // vectors must be dead.
+    for (const attrVia of ['tracked .gitattributes', '.git/info/attributes']) {
+      const filterRepo = mkdtempSync(join(tmpdir(), 'mc-git-filter-'));
+      const marker = join(tmpdir(), `mc-filter-fired-${filterRepo.split('-').pop()}`);
+      try {
+        execFileSync('git', ['init', '-q'], { cwd: filterRepo });
+        execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: filterRepo });
+        execFileSync('git', ['config', 'user.name', 'Test'], { cwd: filterRepo });
+        // Attacker-controlled .git/config: the clean filter drops a marker file
+        // (side effect standing in for arbitrary command execution), passing
+        // content through via `cat` so the diff still functions.
+        execFileSync('git', ['config', 'filter.pwn.clean', `sh -c 'touch ${marker}; cat'`], { cwd: filterRepo });
+        const doc = join(filterRepo, 'doc.txt');
+        if (attrVia === 'tracked .gitattributes') writeFileSync(join(filterRepo, '.gitattributes'), '* filter=pwn\n');
+        else writeFileSync(join(filterRepo, '.git', 'info', 'attributes'), '* filter=pwn\n');
+        writeFileSync(doc, 'original\n');
+        // Stage + commit with the filter disabled so SETUP itself never fires it.
+        execFileSync('git', ['-c', 'filter.pwn.clean=cat', 'add', '.'], { cwd: filterRepo });
+        execFileSync('git', ['-c', 'filter.pwn.clean=cat', 'commit', '-q', '-m', 'init'], { cwd: filterRepo });
+        writeFileSync(doc, 'original\nmodified\n');
+        rmSync(marker, { force: true }); // clear stray marker so the assertion reflects ONLY buildGitDiff
 
-      const fdiff = await buildGitDiff({ ref: 'unstaged', repo: filterRepo });
-      check('gitattributes clean filter does NOT execute on an unstaged working-tree diff',
-        !existsSync(marker), `marker present: ${marker}`);
-      check('diff still shows the working-tree change with filters neutralized',
-        /\+modified/.test(fdiff), fdiff);
-    } finally {
-      rmSync(filterRepo, { recursive: true, force: true });
-      rmSync(marker, { force: true });
+        const fdiff = await buildGitDiff({ ref: 'unstaged', repo: filterRepo });
+        check(`clean filter does NOT execute on an unstaged diff (via ${attrVia})`,
+          !existsSync(marker), `marker present: ${marker}`);
+        check(`diff still shows the change with filters neutralized (via ${attrVia})`,
+          /\+modified/.test(fdiff), fdiff);
+      } finally {
+        rmSync(filterRepo, { recursive: true, force: true });
+        rmSync(marker, { force: true });
+      }
     }
 
     let threwNotRepo = false;
@@ -1606,6 +1633,18 @@ console.log('▶ loadConfig: strictParseInt rejects a numeric PREFIX with traili
     check('envInt: a clean integer still parses normally', cfgClean.runtime.maxTokens === 8000, cfgClean.runtime.maxTokens);
     check('MAX_DECONFLICT_ROUNDS: a clean integer still parses normally', cfgClean.council.maxDeconflictRounds === 5, cfgClean.council.maxDeconflictRounds);
 
+    // [round-10 5] a self-hosted server URL with embedded basic-auth creds must
+    // NOT leak those creds into the server LABEL (surfaced by list_models /
+    // get_council_config), while baseUrl stays raw for the actual connection.
+    process.env.VLLM_SERVERS = 'gpu1:http://user:s3cr3t@10.0.0.5:8000';
+    const cfgCred = loadConfig();
+    const vllmCred = cfgCred.servers.find(s => s.type === 'vllm');
+    check('self-hosted server label redacts embedded basic-auth credentials',
+      !!vllmCred && !vllmCred.label.includes('s3cr3t'), vllmCred?.label);
+    check('self-hosted server baseUrl stays raw (needed for the real connection)',
+      vllmCred?.baseUrl.includes('s3cr3t'), vllmCred?.baseUrl);
+    delete process.env.VLLM_SERVERS;
+
     // MAX_TOKENS is configurable higher for longer answers on large-context models.
     process.env.MAX_TOKENS = '65536';
     check('MAX_TOKENS: a higher explicit value is honoured (longer answers on big-context models)',
@@ -1762,12 +1801,16 @@ console.log('▶ Ollama-harness member: the documented "claude-cli/claude-cli-ol
 
   // [6] harness listModels sets serverId (so surfaced id is fully-qualified) and
   // redacts basic-auth userinfo from the address in the human-visible label.
-  const { ClaudeCliProvider, redactUrlUserinfo } = await import('../dist/providers/claude-cli.js');
+  const { ClaudeCliProvider } = await import('../dist/providers/claude-cli.js');
+  const { redactUrlUserinfo } = await import('../dist/config.js');
   check('redactUrlUserinfo: strips user:pass@ from a credentialed URL',
     redactUrlUserinfo('http://user:s3cr3t@host:11434') === 'http://host:11434/',
     redactUrlUserinfo('http://user:s3cr3t@host:11434'));
   check('redactUrlUserinfo: leaves a credential-free URL unchanged',
     redactUrlUserinfo('http://localhost:11434') === 'http://localhost:11434');
+  check('redactUrlUserinfo: strips a userinfo-only (no password) credential',
+    !redactUrlUserinfo('http://token@host:8000/v1').includes('token'),
+    redactUrlUserinfo('http://token@host:8000/v1'));
   const credProvider = new ClaudeCliProvider({ id: 'claude-cli-ollama', type: 'claude-cli', baseUrl: '(harness)', label: 'h', models: ['glm-5.2:cloud'], anthropicBaseUrl: 'http://user:s3cr3t@host:11434' });
   const credModels = await credProvider.listModels();
   check('harness listModels: label does NOT leak basic-auth credentials',

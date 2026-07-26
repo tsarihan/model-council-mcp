@@ -24637,12 +24637,27 @@ function parseOpenAICompatibleServers(raw, type) {
 function normalizeUrl(u2) {
   return /^https?:\/\//i.test(u2) ? u2 : `http://${u2}`;
 }
+function redactUrlUserinfo(url) {
+  try {
+    const u2 = new URL(url);
+    if (u2.username || u2.password) {
+      u2.username = "";
+      u2.password = "";
+      return u2.toString();
+    }
+    return url;
+  } catch {
+    return url.replace(/(\/\/)[^/@]*@/, "$1");
+  }
+}
 function buildServer(type, name, baseUrl) {
   return {
     id: `${type}-${name}`,
     type,
     baseUrl,
-    label: `${type.toUpperCase()} \u203A ${name}  (${baseUrl})`
+    // Redact any basic-auth creds embedded in the URL from the human-visible
+    // label (baseUrl itself is kept raw for the actual connection).
+    label: `${type.toUpperCase()} \u203A ${name}  (${redactUrlUserinfo(baseUrl)})`
   };
 }
 var KNOWN_PROVIDERS = /* @__PURE__ */ new Set([
@@ -31871,14 +31886,16 @@ var OpenAICompatibleProvider = class {
   async maxModelLen(model) {
     const cached3 = this.maxLenCache.get(model);
     if (cached3 !== void 0) return cached3 ?? void 0;
+    let listedOk = false;
     try {
       const list = await this.client.models.list({ timeout: 1e4 });
       for (const m2 of list.data) {
         this.maxLenCache.set(m2.id, typeof m2.max_model_len === "number" ? m2.max_model_len : null);
       }
+      listedOk = true;
     } catch {
     }
-    if (!this.maxLenCache.has(model)) this.maxLenCache.set(model, null);
+    if (listedOk && !this.maxLenCache.has(model)) this.maxLenCache.set(model, null);
     return this.maxLenCache.get(model) ?? void 0;
   }
   /**
@@ -35099,19 +35116,6 @@ var MIME_EXT = {
   "image/gif": "gif",
   "image/webp": "webp"
 };
-function redactUrlUserinfo(url) {
-  try {
-    const u2 = new URL(url);
-    if (u2.username || u2.password) {
-      u2.username = "";
-      u2.password = "";
-      return u2.toString();
-    }
-    return url;
-  } catch {
-    return url.replace(/(\/\/)[^/@]*@/, "$1");
-  }
-}
 var HARNESS_REDIRECT_VARS = [
   // Highest precedence: force an alternate backend, overriding ANTHROPIC_BASE_URL.
   "CLAUDE_CODE_USE_BEDROCK",
@@ -36212,6 +36216,13 @@ For each conflict above, please do ONE of:
 
 Be concise and direct.`;
 }
+function mergePositionsByModel(prev, updated) {
+  const updatedModels = new Set(updated.flatMap((p2) => p2.models ?? []));
+  const droppedParties = prev.filter(
+    (p2) => (p2.models ?? []).length > 0 && !(p2.models ?? []).some((m2) => updatedModels.has(m2))
+  );
+  return [...updated, ...droppedParties];
+}
 function detectResolutions(previous, newCateg, erroredLabels = /* @__PURE__ */ new Set()) {
   const norm = (s2) => String(s2 ?? "").trim().toLowerCase().replace(/\s+/g, " ");
   const resolved = [];
@@ -36222,7 +36233,7 @@ function detectResolutions(previous, newCateg, erroredLabels = /* @__PURE__ */ n
     const prevTopic = norm(prev.topic);
     const updated = newCateg.conflicting.find((c2) => norm(c2.topic) === prevTopic);
     if (updated) {
-      remaining.push({ ...updated, id: prev.id });
+      remaining.push({ ...updated, id: prev.id, positions: mergePositionsByModel(prev.positions, updated.positions) });
       matchedNewTopics.add(norm(updated.topic));
     } else if (prev.positions.some((p2) => (p2.models ?? []).some((m2) => erroredLabels.has(m2)))) {
       remaining.push(prev);
@@ -37337,6 +37348,24 @@ var NO_HELPERS = ["--no-ext-diff", "--no-textconv"];
 var GLOBAL_SAFETY_ARGS = ["-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null"];
 var SHA1_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 var emptyTreeHashCache = /* @__PURE__ */ new Map();
+async function filterNeutralizeArgs(repoPath) {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["config", "-z", "--get-regexp", "^filter\\..*\\.(clean|smudge|process)$"],
+      { cwd: repoPath, timeout: GIT_TIMEOUT_MS }
+    );
+    const args = [];
+    for (const rec of stdout.split("\0")) {
+      if (!rec) continue;
+      const key = rec.split("\n", 1)[0];
+      if (/^filter\..+\.(clean|smudge|process)$/.test(key)) args.push("-c", `${key}=`);
+    }
+    return args;
+  } catch {
+    return [];
+  }
+}
 async function emptyTreeHash(repoPath) {
   const cached3 = emptyTreeHashCache.get(repoPath);
   if (cached3) return cached3;
@@ -37413,7 +37442,8 @@ async function buildGitDiff(input) {
     );
   }
   const repoPath = await assertGitRepo((0, import_node_path6.resolve)(input.repo?.trim() || process.cwd()));
-  const args = [...GLOBAL_SAFETY_ARGS, ...diffArgsForRef(ref)];
+  const filterArgs = await filterNeutralizeArgs(repoPath);
+  const args = [...GLOBAL_SAFETY_ARGS, ...filterArgs, ...diffArgsForRef(ref)];
   const attrSource = await emptyTreeHash(repoPath);
   let stdout;
   try {
@@ -37651,6 +37681,29 @@ var JobStore = class {
 };
 
 // src/index.ts
+var import_node_fs9 = require("node:fs");
+var import_node_path9 = require("node:path");
+var import_meta2 = {};
+var MC_VERSION = (() => {
+  const readV = (p2) => {
+    try {
+      const v2 = JSON.parse((0, import_node_fs9.readFileSync)(p2, "utf8")).version;
+      return typeof v2 === "string" ? v2 : null;
+    } catch {
+      return null;
+    }
+  };
+  try {
+    const v2 = readV(new URL("../package.json", import_meta2.url));
+    if (v2) return v2;
+  } catch {
+  }
+  if (process.argv[1]) {
+    const v2 = readV((0, import_node_path9.join)((0, import_node_path9.dirname)(process.argv[1]), "..", "package.json"));
+    if (v2) return v2;
+  }
+  return "0.0.0";
+})();
 function boot() {
   const appConfig2 = loadConfig();
   const registry3 = new ProviderRegistry(appConfig2.servers);
@@ -38023,7 +38076,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.47"
+    version: MC_VERSION
   },
   {
     capabilities: { tools: {} },
@@ -38247,7 +38300,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
           id: s2.id,
           type: s2.type,
           label: s2.label,
-          baseUrl: s2.type === "ollama" || s2.type === "vllm" || s2.type === "trtllm" || s2.type === "sglang" ? s2.baseUrl : "(cloud)",
+          baseUrl: s2.type === "ollama" || s2.type === "vllm" || s2.type === "trtllm" || s2.type === "sglang" ? redactUrlUserinfo(s2.baseUrl) : "(cloud)",
           hasApiKey: !!s2.apiKey
         }));
         const explicit = cfg.members.map((m2) => modelIdLabel(m2.modelId));
@@ -38310,7 +38363,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     GROK_CLI: "true \u2192 add a Grok-subscription member via the local `grok` CLI (no API key/billing)",
                     GROK_CLI_MODELS: "Comma-separated model names for the Grok CLI member (default: grok-4.5)",
                     GROK_CLI_PATH: "Path to the grok executable (default: grok)",
-                    MAX_TOKENS: "Max tokens per completion (default: 16000)",
+                    MAX_TOKENS: "Max output tokens per completion (default: 32768), clamped per-model to fit context",
                     CLOUD_CONCURRENCY: "Optional override: caps ALL cloud pools (overrides per-tier limits). Unset = tiers drive it.",
                     LOCAL_CONCURRENCY: "Max concurrent local requests (default: 1; 0 = unlimited)",
                     COMPLETION_RETRIES: "Attempts per completion before giving up on empty/error (default: 3)",
@@ -38332,7 +38385,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         const report = await detectEnvironment(registry2, tiers, subs);
         const cfg = orchestrator.getConfig();
         const members = cfg.members.map((m2) => modelIdLabel(m2.modelId));
-        const ollamaUrl = appConfig.servers.find((s2) => s2.type === "ollama")?.baseUrl ?? "";
+        const ollamaUrl = redactUrlUserinfo(appConfig.servers.find((s2) => s2.type === "ollama")?.baseUrl ?? "");
         const hints = [];
         if (!report.claude.installed) hints.push("Claude CLI not found \u2014 install the Claude Code CLI and log in to add Claude subscription members.");
         else if (!report.claude.usable) hints.push("Claude CLI is installed but not usable \u2014 run `claude` then `/login` (or `claude setup-token`).");

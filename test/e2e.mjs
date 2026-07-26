@@ -77,6 +77,20 @@ async function main() {
   await client.connect(transport);
 
   try {
+    // ── Test: server reports the package.json version (never stale) ───────────
+    // A hardcoded MCP `version` string went stale across releases (0.2.47 while
+    // the package was 0.2.49); it's now read from package.json at load. Assert
+    // the running server (dist OR bundle, whichever SERVER_ENTRY points at)
+    // reports exactly the package version so a regression can't reintroduce drift.
+    console.log('\n▶ server version');
+    {
+      const { readFileSync } = await import('node:fs');
+      const pkgVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+      const reported = client.getServerVersion?.()?.version;
+      check(`server reports package.json version (${pkgVersion}), not a stale hardcoded string`,
+        reported === pkgVersion, `reported ${reported}, package ${pkgVersion}`);
+    }
+
     // ── Test: tools are listed ────────────────────────────────────────────────
     console.log('\n▶ list tools');
     const tools = await client.listTools();

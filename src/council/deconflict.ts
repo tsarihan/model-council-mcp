@@ -11,6 +11,7 @@
 import {
   ComplementaryItem,
   ConflictItem,
+  ConflictPosition,
   DeconflictedResult,
   DeconflictRoundDetail,
   ModelId,
@@ -93,6 +94,24 @@ Be concise and direct.`;
  * `unresolvedConflicts` non-empty and the loop honest rather than letting it
  * falsely terminate at 100%.
  */
+/**
+ * Union two rounds' conflict positions BY MODEL LABEL: keep all of the judge's
+ * fresh positions, plus any prior position whose parties are entirely absent
+ * this round (a fully-dropped party, e.g. one that errored). This keeps every
+ * party that has EVER been recorded for a conflict present in its positions, so
+ * the party-dropout guard can still recognise a dropped member in a later round.
+ */
+function mergePositionsByModel(
+  prev: ConflictPosition[],
+  updated: ConflictPosition[],
+): ConflictPosition[] {
+  const updatedModels = new Set(updated.flatMap(p => p.models ?? []));
+  const droppedParties = prev.filter(
+    p => (p.models ?? []).length > 0 && !(p.models ?? []).some(m => updatedModels.has(m)),
+  );
+  return [...updated, ...droppedParties];
+}
+
 export function detectResolutions(
   previous: ConflictItem[],
   newCateg: Awaited<ReturnType<typeof categorize>>,
@@ -118,7 +137,15 @@ export function detectResolutions(
       // round's categorize() call would otherwise make the same persisting
       // conflict look like a different one to any caller correlating ids
       // across `initialCategorization`/`rounds`/`unresolvedConflicts`).
-      remaining.push({ ...updated, id: prev.id });
+      //
+      // Preserve any PARTY the judge dropped from this round's positions —
+      // e.g. a member that errored this round is filtered out of the judge
+      // prompt, so it won't appear in `updated.positions`. Replacing positions
+      // wholesale would ERASE that party's label, and a LATER round where the
+      // same member errors again would then find no party-in-positions match
+      // and falsely resolve the conflict (defeating the dropout guard below).
+      // Union by model label so the party set only ever grows.
+      remaining.push({ ...updated, id: prev.id, positions: mergePositionsByModel(prev.positions, updated.positions) });
       matchedNewTopics.add(norm(updated.topic));
     } else if (prev.positions.some(p => (p.models ?? []).some(m => erroredLabels.has(m)))) {
       // The topic vanished from the judge's output — but a MEMBER that is a

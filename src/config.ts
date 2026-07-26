@@ -96,6 +96,26 @@ function normalizeUrl(u: string): string {
   return /^https?:\/\//i.test(u) ? u : `http://${u}`;
 }
 
+/**
+ * Strip HTTP basic-auth userinfo (`user:pass@`) from a URL before it reaches
+ * any human-visible surface — server labels, list_models, get_council_config,
+ * council_status. A base URL / address (CLAUDE_CLI_OLLAMA_ADDRESS, a
+ * VLLM_SERVERS entry, an Ollama address) may legitimately embed credentials,
+ * and these surfaces are echoed to MCP clients, IDE logs, and shared
+ * transcripts — so the raw value would leak the secret to anyone who reads
+ * them. Falls back to a manual regex if the string isn't a parseable URL
+ * (never throws).
+ */
+export function redactUrlUserinfo(url: string): string {
+  try {
+    const u = new URL(url);
+    if (u.username || u.password) { u.username = ''; u.password = ''; return u.toString(); }
+    return url;
+  } catch {
+    return url.replace(/(\/\/)[^/@]*@/, '$1');
+  }
+}
+
 function buildServer(
   type: ProviderType,
   name: string,
@@ -105,7 +125,9 @@ function buildServer(
     id: `${type}-${name}`,
     type,
     baseUrl,
-    label: `${type.toUpperCase()} › ${name}  (${baseUrl})`,
+    // Redact any basic-auth creds embedded in the URL from the human-visible
+    // label (baseUrl itself is kept raw for the actual connection).
+    label: `${type.toUpperCase()} › ${name}  (${redactUrlUserinfo(baseUrl)})`,
   };
 }
 

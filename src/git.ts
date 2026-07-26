@@ -52,25 +52,62 @@ const SHA1_EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 const emptyTreeHashCache = new Map<string, string>();
 
 /**
- * Resolve a repo's EMPTY-tree object hash. NO_HELPERS/GLOBAL_SAFETY_ARGS close
- * external-diff/textconv/fsmonitor/hooks, but a `git diff` of the WORKING TREE
- * ('unstaged'/'uncommitted') must convert working-tree content to object form,
- * which runs a repo-configured `.gitattributes` clean-filter driver
- * (`[filter "x"] clean = <cmd>` in .git/config, activated by an in-tree
- * `.gitattributes` `* filter=x`) — arbitrary command execution the other flags
- * don't cover, and squarely inside the "repo delivered as an archive" threat
- * model GLOBAL_SAFETY_ARGS already names. Pointing GIT_ATTR_SOURCE (git >= 2.40)
- * at the empty tree makes git honor NO .gitattributes at all, so no filter
- * runs. The empty-tree hash differs by object format (SHA-1 vs SHA-256), so we
- * resolve it per-repo via `git hash-object` (hashing /dev/null, which writes
- * nothing and runs no filter) rather than hardcoding — a hardcoded SHA-1 hash
- * would be an invalid object in a SHA-256 repo and could break its diffs.
- * Cached per repoPath (object format is a fixed per-repo property).
+ * Neutralize repo-configured clean/smudge/process FILTER drivers for the diff.
  *
- * NOTE: GIT_ATTR_SOURCE is a no-op on git < 2.40, which silently ignores it —
- * the filter mitigation does not apply there. macOS and modern Linux ship
- * git >= 2.40, so the common case is covered; older gits fall back to the
- * pre-existing (still filter-exposed) behavior rather than breaking.
+ * NO_HELPERS/GLOBAL_SAFETY_ARGS close external-diff/textconv/fsmonitor/hooks,
+ * but a `git diff` of the WORKING TREE ('unstaged'/'uncommitted') converts
+ * working-tree content to object form, which runs a repo-configured clean
+ * filter (`[filter "x"] clean = <cmd>` in .git/config) for any path a
+ * `filter=x` attribute matches — arbitrary command execution, squarely inside
+ * the "repo delivered as an archive (.git/config included)" threat model
+ * GLOBAL_SAFETY_ARGS already names.
+ *
+ * A `filter=x` attribute can be assigned from THREE sources: the tree/worktree
+ * `.gitattributes`, `$GIT_DIR/info/attributes`, and `core.attributesFile` — and
+ * an archived repo controls all three (info/attributes ships inside .git/).
+ * GIT_ATTR_SOURCE=empty-tree only blanks the FIRST layer and only on git >= 2.40
+ * (verified: an attribute in .git/info/attributes still fires the filter under
+ * GIT_ATTR_SOURCE alone). So instead of chasing every attribute source, disable
+ * the FILTER itself: enumerate the repo's `filter.<name>.{clean,smudge,process}`
+ * config keys and override each to empty (a no-op pass-through). This is
+ * source-agnostic (no attribute assignment can invoke a disabled filter) AND
+ * version-agnostic (no GIT_ATTR_SOURCE dependency), closing the hole on all git
+ * versions and all attribute layers. `git config --get-regexp` only READS config
+ * (runs no filter); the keys it returns are canonical (no shell, no newline/null
+ * in a -z key) and passed straight back as `-c <key>=` argv, never via a shell.
+ * Legit filters (e.g. git-lfs) are also disabled for the diff — correct for an
+ * untrusted-repo review: an LFS working-tree file simply shows raw rather than
+ * as a pointer, bounded by the existing MAX_DIFF_BYTES cap.
+ */
+async function filterNeutralizeArgs(repoPath: string): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync(
+      'git', ['config', '-z', '--get-regexp', '^filter\\..*\\.(clean|smudge|process)$'],
+      { cwd: repoPath, timeout: GIT_TIMEOUT_MS },
+    );
+    const args: string[] = [];
+    for (const rec of stdout.split('\0')) {
+      if (!rec) continue;
+      const key = rec.split('\n', 1)[0];
+      if (/^filter\..+\.(clean|smudge|process)$/.test(key)) args.push('-c', `${key}=`);
+    }
+    return args;
+  } catch {
+    // Exit 1 = no matching filter keys (the common case); any other failure
+    // means we couldn't enumerate — either way there's nothing to add here.
+    return [];
+  }
+}
+
+/**
+ * Resolve a repo's EMPTY-tree object hash for GIT_ATTR_SOURCE. This is now
+ * belt-and-suspenders on top of filterNeutralizeArgs (which is the complete,
+ * source- and version-agnostic mitigation): it blanks the tree `.gitattributes`
+ * layer on git >= 2.40. The empty-tree hash differs by object format (SHA-1 vs
+ * SHA-256), so we resolve it per-repo via `git hash-object` (hashing /dev/null,
+ * which writes nothing and runs no filter) rather than hardcoding — a hardcoded
+ * SHA-1 hash would be an invalid object in a SHA-256 repo and could break its
+ * diffs. Cached per repoPath (object format is a fixed per-repo property).
  */
 async function emptyTreeHash(repoPath: string): Promise<string> {
   const cached = emptyTreeHashCache.get(repoPath);
@@ -225,9 +262,11 @@ export async function buildGitDiff(input: GitDiffInput): Promise<string> {
   // actually checked.
   const repoPath = await assertGitRepo(resolve(input.repo?.trim() || process.cwd()));
 
-  const args = [...GLOBAL_SAFETY_ARGS, ...diffArgsForRef(ref)];
-  // Neutralize attribute-driven clean/smudge filters (see emptyTreeHash) by
-  // sourcing .gitattributes from the empty tree — no attributes, no filters.
+  // Neutralize clean/smudge/process filter drivers (complete, all git versions
+  // — see filterNeutralizeArgs) plus GIT_ATTR_SOURCE=empty-tree (belt-and-
+  // suspenders, blanks the tree .gitattributes layer on git >= 2.40).
+  const filterArgs = await filterNeutralizeArgs(repoPath);
+  const args = [...GLOBAL_SAFETY_ARGS, ...filterArgs, ...diffArgsForRef(ref)];
   const attrSource = await emptyTreeHash(repoPath);
   let stdout: string;
   try {

@@ -79,16 +79,25 @@ export class OpenAICompatibleProvider implements Provider {
   private async maxModelLen(model: string): Promise<number | undefined> {
     const cached = this.maxLenCache.get(model);
     if (cached !== undefined) return cached ?? undefined;
+    let listedOk = false;
     try {
       // Metadata call — keep it short so a wedged server can't stall the ask here.
       const list = await this.client.models.list({ timeout: 10_000 });
       for (const m of list.data as Array<{ id: string; max_model_len?: number }>) {
         this.maxLenCache.set(m.id, typeof m.max_model_len === 'number' ? m.max_model_len : null);
       }
+      listedOk = true;
     } catch {
       /* unreachable / rate-limited → leave unknown, no clamp */
     }
-    if (!this.maxLenCache.has(model)) this.maxLenCache.set(model, null);
+    // Memoize the "server listed successfully but this model advertised no
+    // max_model_len" case as null (a real, stable negative). But do NOT cache
+    // null when the LISTING ITSELF failed (listedOk === false) — that's a
+    // transient blip, and caching it would permanently disable clamping for the
+    // process (re-exposing vLLM/SGLang's max_tokens hard-reject) with no retry.
+    // Matches the Ollama provider's fetchShow discipline: cache only on success,
+    // stay retryable on failure.
+    if (listedOk && !this.maxLenCache.has(model)) this.maxLenCache.set(model, null);
     return this.maxLenCache.get(model) ?? undefined;
   }
 

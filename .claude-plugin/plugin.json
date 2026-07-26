@@ -1,7 +1,7 @@
 {
   "name": "model-council",
   "description": "Ask a council of local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, X.AI Grok) AI models. Get individual, categorized (agreement / complementary / conflicting), or fully deconflicted answers with a resolution score.",
-  "version": "0.2.50",
+  "version": "0.2.51",
   "author": {
     "name": "Tom Sarihan"
   },
@@ -118,8 +118,8 @@
     "max_tokens": {
       "type": "number",
       "title": "Max response tokens",
-      "description": "Maximum tokens requested per model completion.",
-      "default": 16000,
+      "description": "Maximum OUTPUT tokens requested per completion. Clamped per-model to fit each server's context window, so a generous value gives longer answers on large-context models. CLI members (claude/codex/grok) ignore it (subscription-managed).",
+      "default": 32768,
       "min": 256,
       "max": 200000
     },
@@ -149,7 +149,7 @@
     "request_timeout_ms": {
       "type": "number",
       "title": "Per-request timeout (ms)",
-      "description": "Wall-clock timeout for a single model completion before it's recorded as a timed-out member (default 120000 = 2 min). Raise it for slow local models (large MLX/GGUF); CLI providers keep a 300s floor regardless.",
+      "description": "Wall-clock timeout for a single model completion before it's recorded as a timed-out member (default 120000 = 2 min). Raise it for slow local models (large MLX/GGUF) or full-repo-access reviews — it's honoured verbatim by every provider, including claude-cli/codex-cli/grok-cli (no 300s floor).",
       "default": 120000,
       "min": 5000,
       "max": 1200000

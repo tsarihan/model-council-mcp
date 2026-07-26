@@ -279,6 +279,30 @@ async function main() {
     check('config persisted: rounds', gcfg.council?.maxDeconflictRounds === 5, `got ${gcfg.council?.maxDeconflictRounds}`);
     check('providers reported', Array.isArray(gcfg.providers) && gcfg.providers.length >= 1);
 
+    // ── Test: malformed judge_model is rejected, not silently downgraded ───────
+    // Set a real, explicit judge first...
+    await client.callTool({
+      name: 'configure_council',
+      arguments: { judge_model: 'ollama:big-judge' },
+    });
+    const beforeBad = parseToolResult(await client.callTool({ name: 'get_council_config', arguments: {} }));
+    check('judge_model: explicit judge set', beforeBad.council?.judgeModel === 'ollama:big-judge', JSON.stringify(beforeBad.council));
+    // ...then confirm a typo is rejected with a clear error, not silently
+    // swapped to "auto" (which would clear the just-set judge with no visible
+    // signal to the caller).
+    let threwBadJudge = false, badJudgeMsg = '';
+    try {
+      await client.callTool({ name: 'configure_council', arguments: { judge_model: 'claud:opus' } });
+    } catch (e) { threwBadJudge = true; badJudgeMsg = String(e?.message ?? e); }
+    check('judge_model: malformed value throws a clear error', threwBadJudge && /not a valid model id/i.test(badJudgeMsg), badJudgeMsg);
+    const afterBad = parseToolResult(await client.callTool({ name: 'get_council_config', arguments: {} }));
+    check('judge_model: the earlier explicit judge is UNCHANGED after the rejected call', afterBad.council?.judgeModel === 'ollama:big-judge', JSON.stringify(afterBad.council));
+    // The literal string "auto" is still a recognized, explicit way to clear
+    // back to auto-select — equivalent to omitting the field.
+    await client.callTool({ name: 'configure_council', arguments: { judge_model: 'auto' } });
+    const afterAuto = parseToolResult(await client.callTool({ name: 'get_council_config', arguments: {} }));
+    check('judge_model: "auto" explicitly clears back to auto-select', /auto/i.test(afterAuto.council?.judgeModel ?? ''), JSON.stringify(afterAuto.council));
+
     // ── Test: ZERO-CONFIG auto-council ────────────────────────────────────────
     console.log('\n▶ auto-council (empty config → discover Ollama models)');
     await resetMock();
@@ -1027,7 +1051,7 @@ async function main() {
   });
   const detectClient = new Client({ name: 'detect-e2e', version: '1.0.0' }, { capabilities: {} });
   await detectClient.connect(detectTransport);
-  let rebootClient, loggedOutClient, loDir, claudeFreeClient, cfDir;
+  let rebootClient, loggedOutClient, loDir, claudeFreeClient, cfDir, tierFallbackClient, tfDir;
   try {
     const st = parseToolResult(await detectClient.callTool({ name: 'council_status', arguments: {} }));
     check('status: ollama reachable', st.detected?.ollama?.reachable === true);
@@ -1159,14 +1183,48 @@ async function main() {
     const cfSetup = parseToolResult(await claudeFreeClient.callTool({ name: 'setup_council', arguments: {} }));
     check('claude free tier: claude-cli members excluded from auto-council', !(cfSetup.council?.members ?? []).some(l => l.startsWith('claude-cli:')), (cfSetup.council?.members ?? []).join(','));
     await claudeFreeClient.close(); claudeFreeClient = undefined;
+
+    // effectiveTiers/resolveTier fallback: if subscriptions.json ever renames
+    // or removes the hardcoded literal default tier itself (here, claude's
+    // "pro"), falling back to that literal unconditionally would return an
+    // invalid tier just as readily as the invalid input it was guarding
+    // against. Point a fresh boot at a custom subscriptions.json where
+    // claude's tiers don't include "pro" at all — no env/state tier is set,
+    // so resolution falls all the way through to the literal default, which
+    // must itself be re-validated rather than trusted.
+    tfDir = mkdtempSync(join(tmpdir(), 'mc-e2e-tf-'));
+    const customSubsPath = join(tfDir, 'subscriptions.json');
+    const realSubs = JSON.parse(readFileSync(join('config', 'subscriptions.json'), 'utf8'));
+    writeFileSync(customSubsPath, JSON.stringify({
+      ...realSubs,
+      providers: {
+        ...realSubs.providers,
+        claude: { ...realSubs.providers.claude, tiers: { starter: { cloud: false }, elite: { cloud: true, concurrency: 2 } } },
+      },
+    }));
+    const tfTransport = new StdioClientTransport({
+      command: 'node', args: [serverEntry],
+      env: {
+        ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK,
+        MODEL_COUNCIL_SUBSCRIPTIONS: customSubsPath, MODEL_COUNCIL_STATE: join(tfDir, 'state.json'),
+      },
+    });
+    tierFallbackClient = new Client({ name: 'tf-e2e', version: '1.0.0' }, { capabilities: {} });
+    await tierFallbackClient.connect(tfTransport);
+    const tf = parseToolResult(await tierFallbackClient.callTool({ name: 'council_status', arguments: {} }));
+    check('tier fallback: claude tier is NOT the stale hardcoded default ("pro", absent from this subscriptions.json)', tf.tiers?.claude !== 'pro', JSON.stringify(tf.tiers));
+    check('tier fallback: claude tier is a value this subscriptions.json actually defines', ['starter', 'elite'].includes(tf.tiers?.claude), JSON.stringify(tf.tiers));
+    await tierFallbackClient.close(); tierFallbackClient = undefined;
   } finally {
     try { await detectClient.close(); } catch { /* already closed */ }
     try { if (rebootClient) await rebootClient.close(); } catch { /* noop */ }
     try { if (loggedOutClient) await loggedOutClient.close(); } catch { /* noop */ }
     try { if (claudeFreeClient) await claudeFreeClient.close(); } catch { /* noop */ }
+    try { if (tierFallbackClient) await tierFallbackClient.close(); } catch { /* noop */ }
     rmSync(stateDir, { recursive: true, force: true });
     if (loDir) rmSync(loDir, { recursive: true, force: true });
     if (cfDir) rmSync(cfDir, { recursive: true, force: true });
+    if (tfDir) rmSync(tfDir, { recursive: true, force: true });
   }
 
   mock.kill();

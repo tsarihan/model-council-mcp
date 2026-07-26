@@ -26,11 +26,27 @@ export interface Job {
 const MAX_JOBS = 50;
 const QUESTION_PREVIEW = 200;
 
+// evict() only ever drops FINISHED jobs (by design — a running job's result
+// would otherwise be lost). That leaves running jobs with no ceiling at all:
+// every ask_council_async call starts immediately and launches its own full
+// council fan-out, so an unbounded number of concurrent calls could queue an
+// unbounded number of concurrent fan-outs (independent of, and on top of,
+// query.ts's own per-provider concurrency pools). Cap admission instead of
+// trying to cap something already in flight.
+const MAX_RUNNING_JOBS = 20;
+
 export class JobStore {
   private jobs = new Map<string, Job>();
 
-  /** Register a running job and return its record (id is a UUID). */
+  /** Register a running job and return its record (id is a UUID). Throws if too many jobs are already running. */
   start(question: string, meta: { mode?: string; memberCount?: number }): Job {
+    const running = [...this.jobs.values()].filter(j => j.status === 'running').length;
+    if (running >= MAX_RUNNING_JOBS) {
+      throw new Error(
+        `Too many background council runs in flight (${running}/${MAX_RUNNING_JOBS}). ` +
+          `Wait for one to finish (get_council_result) before starting another.`,
+      );
+    }
     const job: Job = {
       id: randomUUID(),
       status: 'running',

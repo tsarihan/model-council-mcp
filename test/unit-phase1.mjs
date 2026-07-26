@@ -594,6 +594,23 @@ console.log('▶ withTimeoutOrThrow (detectOllama reachable-on-timeout fix)');
   check('rejects on timeout instead of resolving with a fallback', threw);
 }
 
+console.log('▶ JobStore: running-job admission cap (evict() only ever drops finished jobs)');
+{
+  const { JobStore } = await import('../dist/jobs.js');
+  const store = new JobStore();
+  const started = [];
+  for (let i = 0; i < 20; i++) started.push(store.start(`q${i}`, {}));
+  check('20 running jobs start fine (at the cap)', started.length === 20);
+  let threwAt21 = false, msg = '';
+  try { store.start('q21', {}); } catch (e) { threwAt21 = true; msg = e.message; }
+  check('21st concurrent running job is rejected, not silently queued', threwAt21 && /too many/i.test(msg), msg);
+  // Finishing one frees a slot — the cap is on RUNNING jobs, not total ever started.
+  store.finish(started[0].id, { ok: true });
+  let threwAfterFinish = false;
+  try { store.start('q22', {}); } catch { threwAfterFinish = true; }
+  check('a slot frees up once a running job finishes', !threwAfterFinish);
+}
+
 console.log('▶ CappedBuffer (bounds CLI subprocess stdout/stderr accumulation)');
 {
   const { CappedBuffer } = await import('../dist/providers/base.js');

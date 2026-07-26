@@ -24688,8 +24688,10 @@ function loadConfig() {
   const subs = loadSubscriptions();
   const state = loadState();
   const resolveTier = (provider, envName, def) => {
+    const valid = validTiers(provider, subs);
     const chosen = state.tiers?.[provider] ?? envClean(envName) ?? def;
-    return validTiers(provider, subs).includes(chosen) ? chosen : def;
+    if (valid.includes(chosen)) return chosen;
+    return valid.includes(def) ? def : valid[0] ?? def;
   };
   const tiers = {
     chatgpt: resolveTier("chatgpt", "CHATGPT_TIER", "plus"),
@@ -37227,10 +37229,17 @@ async function loadImages(paths) {
 var import_node_crypto2 = require("node:crypto");
 var MAX_JOBS = 50;
 var QUESTION_PREVIEW = 200;
+var MAX_RUNNING_JOBS = 20;
 var JobStore = class {
   jobs = /* @__PURE__ */ new Map();
-  /** Register a running job and return its record (id is a UUID). */
+  /** Register a running job and return its record (id is a UUID). Throws if too many jobs are already running. */
   start(question, meta) {
+    const running = [...this.jobs.values()].filter((j2) => j2.status === "running").length;
+    if (running >= MAX_RUNNING_JOBS) {
+      throw new Error(
+        `Too many background council runs in flight (${running}/${MAX_RUNNING_JOBS}). Wait for one to finish (get_council_result) before starting another.`
+      );
+    }
     const job = {
       id: (0, import_node_crypto2.randomUUID)(),
       status: "running",
@@ -37334,7 +37343,8 @@ function effectiveTiers(subs = loadSubscriptions()) {
   const stateTiers = loadState().tiers ?? {};
   const guard = (p2) => {
     const v2 = stateTiers[p2] ?? appConfig.tiers[p2];
-    return validTiers(p2, subs).includes(v2) ? v2 : appConfig.tiers[p2];
+    if (validTiers(p2, subs).includes(v2)) return v2;
+    return validTiers(p2, subs)[0] ?? appConfig.tiers[p2];
   };
   return { chatgpt: guard("chatgpt"), claude: guard("claude"), grok: guard("grok"), ollama: guard("ollama") };
 }
@@ -37368,7 +37378,7 @@ var ConfigureCouncilInput = external_exports.object({
     'Model IDs for council members. Format: "provider:model" or "provider/serverId:model". Examples: "ollama:llama3", "vllm/vllm-gpu1:meta-llama/Llama-3-8B", "openai:gpt-4o"'
   ),
   judge_model: external_exports.string().optional().describe(
-    'Model to act as judge for categorisation/deconfliction. Same format as models. Omit for "auto" (picks largest council member).'
+    'Model to act as judge for categorisation/deconfliction. Same format as models. Omit, or pass "auto", to auto-select (picks largest council member). Any other unparseable value is rejected with an error rather than silently falling back to auto.'
   ),
   response_mode: external_exports.enum(["individual", "categorized", "deconflicted", "pooled", "dialectic"]).optional().describe(
     "individual \u2192 each model responds independently. categorized \u2192 judge groups into agreement/complementary/conflicting. deconflicted \u2192 iterative loop until conflicts resolve or max_rounds reached. pooled \u2192 Delphi-style: members reconsider against a neutral, attribution-free pool of answers. dialectic \u2192 thesis/antithesis/synthesis: members defend their pick, judge builds pros/cons, members re-select."
@@ -37441,7 +37451,7 @@ var TOOLS = [
         },
         judge_model: {
           type: "string",
-          description: "Judge model ID. Same format. Omit for auto (largest council member)."
+          description: 'Judge model ID. Same format. Omit, or pass "auto", for auto-select (largest council member). Any other unparseable value is rejected, not silently treated as auto.'
         },
         response_mode: {
           type: "string",
@@ -37612,7 +37622,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.29"
+    version: "0.2.30"
   },
   {
     capabilities: { tools: {} },
@@ -37691,7 +37701,17 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
           update.members = members;
         }
         if (input.judge_model !== void 0) {
-          update.judgeModelId = parseModelId(input.judge_model) ?? void 0;
+          if (input.judge_model.trim().toLowerCase() === "auto") {
+            update.judgeModelId = void 0;
+          } else {
+            const parsed = parseModelId(input.judge_model);
+            if (!parsed) {
+              throw new Error(
+                `judge_model "${input.judge_model}" is not a valid model id (expected "provider:model", e.g. "openai:gpt-4o", or "auto" to clear it back to automatic selection).`
+              );
+            }
+            update.judgeModelId = parsed;
+          }
         }
         if (input.response_mode !== void 0) {
           update.responseMode = input.response_mode;

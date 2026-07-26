@@ -143,7 +143,16 @@ function effectiveTiers(subs = loadSubscriptions()): SubscriptionTiers {
   const stateTiers = loadState().tiers ?? {};
   const guard = (p: SubProvider): string => {
     const v = stateTiers[p] ?? appConfig.tiers[p];
-    return validTiers(p, subs).includes(v) ? v : appConfig.tiers[p];
+    if (validTiers(p, subs).includes(v)) return v;
+    // The comment above promises falling back to "the boot-sanitised value"
+    // (appConfig.tiers[p]) — but that promise breaks if THAT value is itself
+    // no longer valid (e.g. subscriptions.json was pulled and dropped a tier
+    // appConfig.tiers[p] was set to at boot): falling back to it would just
+    // return the same invalid string. Fall back one step further, to the
+    // provider's first (least-privileged / cloud-denying, "free") tier —
+    // subscriptions.json always lists "free" first for every provider — so
+    // this never returns a value validTiers() itself doesn't recognize.
+    return validTiers(p, subs)[0] ?? appConfig.tiers[p];
   };
   return { chatgpt: guard('chatgpt'), claude: guard('claude'), grok: guard('grok'), ollama: guard('ollama') };
 }
@@ -207,7 +216,8 @@ const ConfigureCouncilInput = z.object({
     .optional()
     .describe(
       'Model to act as judge for categorisation/deconfliction. ' +
-        'Same format as models. Omit for "auto" (picks largest council member).',
+        'Same format as models. Omit, or pass "auto", to auto-select (picks largest council member). ' +
+        'Any other unparseable value is rejected with an error rather than silently falling back to auto.',
     ),
   response_mode: z
     .enum(['individual', 'categorized', 'deconflicted', 'pooled', 'dialectic'])
@@ -374,7 +384,8 @@ const TOOLS = [
         judge_model: {
           type: 'string',
           description:
-            'Judge model ID. Same format. Omit for auto (largest council member).',
+            'Judge model ID. Same format. Omit, or pass "auto", for auto-select (largest council member). ' +
+            'Any other unparseable value is rejected, not silently treated as auto.',
         },
         response_mode: {
           type: 'string',
@@ -610,7 +621,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.29',
+    version: '0.2.30',
   },
   {
     capabilities: { tools: {} },
@@ -738,7 +749,29 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         }
 
         if (input.judge_model !== undefined) {
-          update.judgeModelId = parseModelId(input.judge_model) ?? undefined;
+          // "auto" is a recognized, explicit sentinel for "clear back to
+          // auto-select the largest member" — equivalent to omitting the
+          // field (the documented way), just spelled out. Anything else that
+          // fails to parse is a genuine mistake, not a synonym for "auto":
+          // unlike "models" (a list, where one bad entry can be dropped and
+          // reported alongside the rest that still apply), judge_model is a
+          // single value — silently substituting "auto" for an unparseable
+          // one would clear any previously configured judge with no visible
+          // signal, leaving the caller believing their explicit choice is in
+          // effect while a different model actually adjudicates every
+          // categorized/deconflicted/pooled/dialectic run. Reject outright.
+          if (input.judge_model.trim().toLowerCase() === 'auto') {
+            update.judgeModelId = undefined;
+          } else {
+            const parsed = parseModelId(input.judge_model);
+            if (!parsed) {
+              throw new Error(
+                `judge_model "${input.judge_model}" is not a valid model id (expected "provider:model", ` +
+                  `e.g. "openai:gpt-4o", or "auto" to clear it back to automatic selection).`,
+              );
+            }
+            update.judgeModelId = parsed;
+          }
         }
 
         if (input.response_mode !== undefined) {

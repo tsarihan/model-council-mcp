@@ -178,8 +178,16 @@ export function loadConfig(): AppConfig {
   const subs = loadSubscriptions();
   const state = loadState();
   const resolveTier = (provider: SubProvider, envName: string, def: string): string => {
+    const valid = validTiers(provider, subs);
     const chosen = state.tiers?.[provider] ?? envClean(envName) ?? def;
-    return validTiers(provider, subs).includes(chosen) ? chosen : def;
+    if (valid.includes(chosen)) return chosen;
+    // `def` (the hardcoded literal default, e.g. "pro") is not itself
+    // guaranteed to still be a valid tier — if subscriptions.json ever
+    // renames/removes it, falling back to `def` unconditionally would return
+    // an invalid tier just as readily as `chosen` was. Fall back one step
+    // further, to the provider's first ("free", by convention — see
+    // subscriptions.json) tier, which validTiers() always recognizes.
+    return valid.includes(def) ? def : (valid[0] ?? def);
   };
   const tiers = {
     chatgpt: resolveTier('chatgpt', 'CHATGPT_TIER', 'plus'),

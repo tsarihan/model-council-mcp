@@ -491,7 +491,7 @@ Where `pooled` is deliberately *neutral*, `dialectic` is deliberately *adversari
 
 ### `ask_council_async`
 
-Same inputs as `ask_council` (including `context` / `files` / `git_ref`), but starts the run in the **background** and returns a `job_id` immediately — so a long deconfliction/dialectic run, or a council with slow local models, doesn't block you.
+Same inputs as `ask_council` (including `context` / `files` / `git_ref`), but starts the run in the **background** and returns a `job_id` immediately — so a long deconfliction/dialectic run, or a council with slow local models, doesn't block you. At most 20 jobs may be **running** at once (finished jobs don't count against this — poll `get_council_result` and start more once one completes); a 21st concurrent call is rejected with a clear error rather than silently queued.
 
 ```json
 { "status": "running", "job_id": "6f2c…", "mode": "dialectic", "members": 8 }

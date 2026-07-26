@@ -610,7 +610,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.28',
+    version: '0.2.29',
   },
   {
     capabilities: { tools: {} },

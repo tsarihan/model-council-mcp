@@ -229,18 +229,29 @@ export class CouncilOrchestrator {
       // only ever contains definitive entries, since a transient/inconclusive
       // probe is never cached in-memory in the first place — so future
       // restarts skip re-probing them too.
-      const nextPersisted: Record<string, boolean> = { ...persistedVision };
-      let visionStateChanged = false;
+      //
+      // Collect only what THIS call newly learned (relative to the pre-probe
+      // snapshot above), and merge it via saveState's mutator form — which
+      // reads state fresh at write time — rather than writing a full object
+      // built from that now-possibly-stale snapshot. Two concurrent image
+      // asks each computing a full replacement object from an early read
+      // would otherwise have whichever saveState() call lands second
+      // silently discard the other's newly-learned entries (same-key,
+      // shallow-merge collision, not a torn write — see saveState's comment).
+      const newlyConfirmed: Record<string, boolean> = {};
       for (const m of members) {
         const label = modelIdLabel(m.modelId);
         const cache = m.provider.getVisionCache();
         const value = cache[m.modelId.model];
-        if (value !== undefined && nextPersisted[label] !== value) {
-          nextPersisted[label] = value;
-          visionStateChanged = true;
+        if (value !== undefined && persistedVision[label] !== value) {
+          newlyConfirmed[label] = value;
         }
       }
-      if (visionStateChanged) saveState({ visionCapability: nextPersisted });
+      if (Object.keys(newlyConfirmed).length > 0) {
+        saveState(current => ({
+          visionCapability: { ...(current.visionCapability ?? {}), ...newlyConfirmed },
+        }));
+      }
 
       if (visionMembers.length === 0) {
         throw new Error(

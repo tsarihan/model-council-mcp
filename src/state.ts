@@ -60,12 +60,30 @@ export function loadState(): CouncilState {
 }
 
 /**
- * Merge `patch` into the persisted state and write it back atomically (temp file
- * + rename), so a concurrent reader in another process never observes a
+ * Merge a patch into the persisted state and write it back atomically (temp
+ * file + rename), so a concurrent reader in another process never observes a
  * half-written file. Best-effort — non-fatal if the location is unwritable.
+ *
+ * `patch` may be a plain object OR a mutator function `(current) => patch`.
+ * Prefer the mutator form whenever the patch depends on existing state (e.g.
+ * merging one new entry into an existing map) and the caller read that state
+ * some time ago, possibly across an `await`. A plain object patch is computed
+ * from whatever snapshot the caller took earlier; if the file changed since
+ * then (a concurrent `saveState` from another in-process call), that patch
+ * silently overwrites the newer value for any key it touches. The mutator
+ * form reads a FRESH `loadState()` synchronously, right before this
+ * synchronous read-modify-write completes — with no `await` in between, no
+ * other JS code in this process can interleave, so the merge is race-free
+ * for same-process callers. (A patch built from data that's inherently only
+ * known at write time is unaffected either way and can keep using the plain
+ * form.)
  */
-export function saveState(patch: Partial<CouncilState>): CouncilState {
-  const next: CouncilState = { ...loadState(), ...patch, version: STATE_VERSION };
+export function saveState(
+  patch: Partial<CouncilState> | ((current: CouncilState) => Partial<CouncilState>),
+): CouncilState {
+  const current = loadState();
+  const resolvedPatch = typeof patch === 'function' ? patch(current) : patch;
+  const next: CouncilState = { ...current, ...resolvedPatch, version: STATE_VERSION };
   try {
     const p = statePath();
     mkdirSync(dirname(p), { recursive: true });

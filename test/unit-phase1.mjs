@@ -211,6 +211,26 @@ try {
   check('saved tiers persist', reloaded.tiers?.ollama === 'max', JSON.stringify(reloaded));
   check('saved members persist', Array.isArray(reloaded.members) && reloaded.members[0] === 'ollama:x');
   check('statePath honours MODEL_COUNCIL_STATE', statePath() === process.env.MODEL_COUNCIL_STATE);
+
+  // Mutator-form regression: two "concurrent" writers each merging a NEW key
+  // into visionCapability from a snapshot taken before the other's write —
+  // the plain-object form (patch built from a stale snapshot) drops one
+  // writer's entry; the mutator form (reads state fresh at write time) keeps
+  // both. This is the exact shape of the orchestrator.ts vision-cache race.
+  saveState({ visionCapability: { 'ollama:a': true } });
+  const staleSnapshot = loadState().visionCapability; // { 'ollama:a': true }
+  // A second writer's own newly-learned entry lands in between.
+  saveState(current => ({ visionCapability: { ...(current.visionCapability ?? {}), 'ollama:b': false } }));
+  // First writer now saves using its STALE snapshot as a plain object — this
+  // is the bug pattern being guarded against, not the recommended usage.
+  saveState({ visionCapability: { ...staleSnapshot, 'ollama:a': true } });
+  const afterPlainForm = loadState().visionCapability;
+  check('plain-object patch from a stale snapshot drops a concurrent entry (demonstrates the bug)', afterPlainForm['ollama:b'] === undefined, JSON.stringify(afterPlainForm));
+
+  saveState({ visionCapability: { 'ollama:a': true, 'ollama:b': false } }); // reset
+  saveState(current => ({ visionCapability: { ...(current.visionCapability ?? {}), 'ollama:c': true } }));
+  const afterMutatorForm = loadState().visionCapability;
+  check('mutator-form patch preserves prior entries (reads fresh at write time)', afterMutatorForm['ollama:a'] === true && afterMutatorForm['ollama:b'] === false && afterMutatorForm['ollama:c'] === true, JSON.stringify(afterMutatorForm));
 } finally {
   rmSync(dir, { recursive: true, force: true });
   delete process.env.MODEL_COUNCIL_STATE;

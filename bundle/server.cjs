@@ -24582,7 +24582,9 @@ function loadState() {
   return { version: STATE_VERSION };
 }
 function saveState(patch) {
-  const next = { ...loadState(), ...patch, version: STATE_VERSION };
+  const current = loadState();
+  const resolvedPatch = typeof patch === "function" ? patch(current) : patch;
+  const next = { ...current, ...resolvedPatch, version: STATE_VERSION };
   try {
     const p2 = statePath();
     (0, import_node_fs2.mkdirSync)((0, import_node_path2.dirname)(p2), { recursive: true });
@@ -36664,18 +36666,20 @@ var CouncilOrchestrator = class {
       const checked = await checkVisionPooled(members, runtime, onProgress);
       const visionMembers = checked.filter((c2) => c2.vision).map((c2) => c2.member);
       const skippedNonVision = checked.filter((c2) => !c2.vision).map((c2) => modelIdLabel(c2.member.modelId));
-      const nextPersisted = { ...persistedVision };
-      let visionStateChanged = false;
+      const newlyConfirmed = {};
       for (const m2 of members) {
         const label = modelIdLabel(m2.modelId);
         const cache = m2.provider.getVisionCache();
         const value = cache[m2.modelId.model];
-        if (value !== void 0 && nextPersisted[label] !== value) {
-          nextPersisted[label] = value;
-          visionStateChanged = true;
+        if (value !== void 0 && persistedVision[label] !== value) {
+          newlyConfirmed[label] = value;
         }
       }
-      if (visionStateChanged) saveState({ visionCapability: nextPersisted });
+      if (Object.keys(newlyConfirmed).length > 0) {
+        saveState((current) => ({
+          visionCapability: { ...current.visionCapability ?? {}, ...newlyConfirmed }
+        }));
+      }
       if (visionMembers.length === 0) {
         throw new Error(
           `${images.length} image(s) attached, but none of the ${members.length} configured council member(s) are vision-capable: ${members.map((m2) => modelIdLabel(m2.modelId)).join(", ")}. Add a vision-capable model with configure_council, or ask without images.`
@@ -37608,7 +37612,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.28"
+    version: "0.2.29"
   },
   {
     capabilities: { tools: {} },

@@ -130,7 +130,17 @@ export function isValid(s: unknown): s is Subscriptions {
   };
   const provOk = (p: unknown): boolean => {
     const pi = p as ProviderInfo | null;
-    if (!pi || typeof pi.tiers !== 'object' || pi.tiers === null) return false;
+    // Array.isArray excluded explicitly (typeof [] === 'object' too) and a
+    // non-empty check: Object.values({}).every(...) — and
+    // Object.values([]).every(...) — are both vacuously TRUE for an empty
+    // input, so `{tiers: {}}` or `{tiers: []}` would otherwise pass this
+    // check with ZERO actual tiers defined. validTiers() would then always
+    // return [], and every tier-resolution fallback chain (resolveTier/
+    // effectiveTiers) would report a tier that isn't actually a real key in
+    // this provider's tiers at all — a structurally broken config accepted
+    // as valid instead of falling back to the embedded defaults.
+    if (!pi || typeof pi.tiers !== 'object' || pi.tiers === null || Array.isArray(pi.tiers)) return false;
+    if (Object.keys(pi.tiers).length === 0) return false;
     if (!Object.values(pi.tiers).every(tierOk)) return false;
     if (pi.models !== undefined &&
         !(Array.isArray(pi.models) && pi.models.every(m => typeof m === 'string'))) return false;

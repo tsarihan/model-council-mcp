@@ -24511,7 +24511,8 @@ function isValid2(s2) {
   };
   const provOk = (p2) => {
     const pi = p2;
-    if (!pi || typeof pi.tiers !== "object" || pi.tiers === null) return false;
+    if (!pi || typeof pi.tiers !== "object" || pi.tiers === null || Array.isArray(pi.tiers)) return false;
+    if (Object.keys(pi.tiers).length === 0) return false;
     if (!Object.values(pi.tiers).every(tierOk)) return false;
     if (pi.models !== void 0 && !(Array.isArray(pi.models) && pi.models.every((m2) => typeof m2 === "string"))) return false;
     return true;
@@ -24791,10 +24792,18 @@ function loadConfig() {
       models: grokModels.length ? grokModels : ["grok-4.5"]
     });
   }
-  const members = (envClean("COUNCIL_MODELS") ?? "").split(",").map((s2) => s2.trim()).filter(Boolean).flatMap((s2) => {
+  const warnings = [];
+  const councilModelsRaw = envClean("COUNCIL_MODELS");
+  const councilModelEntries = (councilModelsRaw ?? "").split(",").map((s2) => s2.trim()).filter(Boolean);
+  const members = councilModelEntries.flatMap((s2) => {
     const id = parseModelId(s2);
     return id ? [{ modelId: id }] : [];
   });
+  if (councilModelEntries.length > 0 && members.length === 0) {
+    warnings.push(
+      `COUNCIL_MODELS was set but none of its entries parsed (expected "provider:model", e.g. "ollama:llama3"): ${councilModelEntries.join(", ")} \u2014 falling back to auto-population.`
+    );
+  }
   const judgeStr = envClean("JUDGE_MODEL");
   const judgeModelId = judgeStr && judgeStr !== "auto" ? parseModelId(judgeStr) ?? void 0 : void 0;
   const modeRaw = envClean("RESPONSE_MODE");
@@ -24829,7 +24838,8 @@ function loadConfig() {
       autoCouncil
     },
     runtime,
-    tiers
+    tiers,
+    warnings
   };
 }
 
@@ -37524,6 +37534,10 @@ try {
   process.exit(1);
 }
 var { appConfig, registry: registry2, orchestrator } = booted;
+for (const w2 of appConfig.warnings) {
+  process.stderr.write(`[model-council] warning: ${w2}
+`);
+}
 var jobs = new JobStore();
 var explicitlyConfigured = false;
 try {
@@ -37586,7 +37600,7 @@ function persistedConfigOverrides(persisted) {
     update.maxDeconflictRounds = rounds;
   }
   const judge = persisted.judgeModelId;
-  if (judge && typeof judge.provider === "string" && typeof judge.model === "string") {
+  if (judge && typeof judge.provider === "string" && KNOWN_PROVIDERS.has(judge.provider) && typeof judge.model === "string") {
     update.judgeModelId = judge;
   }
   if (typeof persisted.autoCouncil === "boolean") {
@@ -37873,7 +37887,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.46"
+    version: "0.2.47"
   },
   {
     capabilities: { tools: {} },

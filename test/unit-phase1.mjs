@@ -68,6 +68,18 @@ console.log('▶ subscriptions isValid: per-tier shape (cloud must be boolean, c
   check('curatedCloudModels with a non-string entry → rejected', !isValid(nonStringCurated));
   const nullCurated = { ...subs, curatedCloudModels: [...subs.curatedCloudModels, null] };
   check('curatedCloudModels with a null entry → rejected', !isValid(nullCurated));
+
+  // round 8: a provider's `tiers` being an empty object (or an array) must
+  // be REJECTED, not accepted vacuously — Object.values({}).every(...) and
+  // Object.values([]).every(...) are both trivially true for zero elements,
+  // so without an explicit non-empty + non-array check a provider with
+  // literally NO tiers defined would pass validation, then validTiers()
+  // returns [] and every tier-fallback chain reports a tier that isn't
+  // actually a real key for that provider at all.
+  const emptyTiersProvider = { ...subs, providers: { ...subs.providers, claude: { ...subs.providers.claude, tiers: {} } } };
+  check('a provider with an EMPTY tiers object → rejected', !isValid(emptyTiersProvider));
+  const arrayTiersProvider = { ...subs, providers: { ...subs.providers, claude: { ...subs.providers.claude, tiers: [] } } };
+  check('a provider with an ARRAY (not object) tiers → rejected', !isValid(arrayTiersProvider));
 }
 
 console.log('▶ tier → cloud + concurrency');
@@ -1343,6 +1355,30 @@ console.log('▶ loadConfig: strictParseInt rejects a numeric PREFIX with traili
     const vllmServer = cfgPort.servers.find(s => s.type === 'vllm');
     check('server port parser: a port with trailing garbage falls back to the default port, not a truncated one',
       !!vllmServer && vllmServer.baseUrl === 'http://localhost:8000', JSON.stringify(vllmServer));
+
+    // round 8: a fully-unparseable COUNCIL_MODELS (every entry a typo) must
+    // surface a boot warning — unlike configure_council's equivalent
+    // all-rejected case (which can throw a clear error back to the caller),
+    // a bad env var has no request/response cycle to attach an error to, and
+    // silently falling back to auto-population with NO signal at all would
+    // leave the user unaware their explicit setting was ignored.
+    delete process.env.VLLM_SERVERS;
+    process.env.COUNCIL_MODELS = 'claud:opus,codx:sonnet';
+    const cfgBadCouncil = loadConfig();
+    check('COUNCIL_MODELS fully unparseable: council falls back to empty (auto-population), not a crash',
+      cfgBadCouncil.council.members.length === 0);
+    check('COUNCIL_MODELS fully unparseable: a boot warning is surfaced',
+      cfgBadCouncil.warnings.some(w => /COUNCIL_MODELS/.test(w) && /claud:opus/.test(w)),
+      JSON.stringify(cfgBadCouncil.warnings));
+
+    // A partially-valid COUNCIL_MODELS (at least one real entry) is NOT a
+    // warning case — this is the existing "drop the bad ones, keep the
+    // good ones" behavior, unaffected by this fix.
+    process.env.COUNCIL_MODELS = 'ollama:llama3,codx:sonnet';
+    const cfgPartialCouncil = loadConfig();
+    check('COUNCIL_MODELS partially valid: no warning (existing drop-invalid-entries behavior preserved)',
+      cfgPartialCouncil.warnings.length === 0, JSON.stringify(cfgPartialCouncil.warnings));
+    check('COUNCIL_MODELS partially valid: the valid entry is kept', cfgPartialCouncil.council.members.length === 1);
   } finally {
     process.env = saved;
   }

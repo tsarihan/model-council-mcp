@@ -23,6 +23,16 @@ export interface AppConfig {
   runtime: RuntimeConfig;
   /** Resolved subscription tiers (state > env > default). */
   tiers: SubscriptionTiers;
+  /**
+   * Boot-time config problems worth surfacing (e.g. to stderr) but not worth
+   * crashing the whole server over — unlike a bad configure_council call
+   * (which can reject with a clear error back to that one caller), a bad env
+   * var discovered here has no request/response cycle to attach an error to,
+   * and throwing would mean the entire server fails to start over what's
+   * often a single typo. Silently falling back is still better than a crash,
+   * but silently AND without any signal is what this exists to avoid.
+   */
+  warnings: string[];
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -111,7 +121,7 @@ function buildServer(
  *   openai:gpt-4o
  *   vllm/vllm-gpu1:meta-llama/Llama-3-8B
  */
-const KNOWN_PROVIDERS: ReadonlySet<string> = new Set<ProviderType>([
+export const KNOWN_PROVIDERS: ReadonlySet<string> = new Set<ProviderType>([
   'ollama', 'openai', 'anthropic', 'xai', 'vllm', 'trtllm', 'sglang', 'claude-cli', 'codex-cli', 'grok-cli',
 ]);
 
@@ -343,14 +353,27 @@ export function loadConfig(): AppConfig {
   }
 
   // ── Council members ───────────────────────────────────────────────────────
-  const members: CouncilMember[] = (envClean('COUNCIL_MODELS') ?? '')
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean)
-    .flatMap(s => {
-      const id = parseModelId(s);
-      return id ? [{ modelId: id }] : [];
-    });
+  const warnings: string[] = [];
+  const councilModelsRaw = envClean('COUNCIL_MODELS');
+  const councilModelEntries = (councilModelsRaw ?? '').split(',').map(s => s.trim()).filter(Boolean);
+  const members: CouncilMember[] = councilModelEntries.flatMap(s => {
+    const id = parseModelId(s);
+    return id ? [{ modelId: id }] : [];
+  });
+  // Unlike configure_council (which can reject an all-unparseable `models`
+  // list back to the caller with a clear error — see index.ts), a typo'd
+  // COUNCIL_MODELS env var has no request/response cycle to attach an error
+  // to, and throwing here would fail the WHOLE server to start over what's
+  // often a single typo. Silently falling through to auto-population instead
+  // (the pre-existing behavior) is the safer default, but doing so with NO
+  // signal at all means the user has no idea their explicit setting was
+  // ignored — surface it as a boot warning instead.
+  if (councilModelEntries.length > 0 && members.length === 0) {
+    warnings.push(
+      `COUNCIL_MODELS was set but none of its entries parsed (expected "provider:model", ` +
+        `e.g. "ollama:llama3"): ${councilModelEntries.join(', ')} — falling back to auto-population.`,
+    );
+  }
 
   // ── Judge model ───────────────────────────────────────────────────────────
   const judgeStr = envClean('JUDGE_MODEL');
@@ -429,5 +452,6 @@ export function loadConfig(): AppConfig {
     },
     runtime,
     tiers,
+    warnings,
   };
 }

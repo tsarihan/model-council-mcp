@@ -1725,6 +1725,28 @@ async function main() {
       JSON.stringify(settingsOnlyAfter.council?.members));
     await settingsOnlyClient.close();
     rmSync(settingsOnlyDir, { recursive: true, force: true });
+
+    // Persisted-judge validation regression (round 8): a hand-edited/legacy
+    // state.json with a garbage `judgeModelId.provider` must be rejected by
+    // persistedConfigOverrides(), same as parseModelId rejects it for the
+    // tool-input path — otherwise it's accepted here, then fails
+    // registry.resolve() at ask time with no clear signal, silently
+    // degrading every categorized/deconflicted/pooled/dialectic call to
+    // individual mode.
+    const badJudgeDir = mkdtempSync(join(tmpdir(), 'mc-e2e-badjudge-'));
+    const badJudgeStateFile = join(badJudgeDir, 'state.json');
+    writeFileSync(badJudgeStateFile, JSON.stringify({ version: 1, judgeModelId: { provider: 'not-a-real-provider', model: 'x' } }));
+    const badJudgeTransport = new StdioClientTransport({
+      command: 'node', args: [serverEntry],
+      env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: badJudgeStateFile },
+    });
+    const badJudgeClient = new Client({ name: 'badjudge-e2e', version: '1.0.0' }, { capabilities: {} });
+    await badJudgeClient.connect(badJudgeTransport);
+    const badJudgeCfg = parseToolResult(await badJudgeClient.callTool({ name: 'get_council_config', arguments: {} }));
+    check('persisted judge with an unknown provider is rejected, not silently accepted',
+      /auto/i.test(badJudgeCfg.council?.judgeModel ?? ''), JSON.stringify(badJudgeCfg.council));
+    await badJudgeClient.close();
+    rmSync(badJudgeDir, { recursive: true, force: true });
   } finally {
     try { await detectClient.close(); } catch { /* already closed */ }
     try { if (rebootClient) await rebootClient.close(); } catch { /* noop */ }

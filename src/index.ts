@@ -30,7 +30,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 
-import { loadConfig, modelIdLabel, parseModelId } from './config.js';
+import { KNOWN_PROVIDERS, loadConfig, modelIdLabel, parseModelId } from './config.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { CouncilOrchestrator } from './council/orchestrator.js';
 import { ProgressReporter } from './council/query.js';
@@ -62,6 +62,9 @@ try {
   process.exit(1);
 }
 const { appConfig, registry, orchestrator } = booted;
+for (const w of appConfig.warnings) {
+  process.stderr.write(`[model-council] warning: ${w}\n`);
+}
 const jobs = new JobStore();
 
 // Set the instant EITHER configure_council or setup_council completes, even
@@ -199,7 +202,15 @@ function persistedConfigOverrides(persisted: CouncilState): Partial<CouncilConfi
     update.maxDeconflictRounds = rounds;
   }
   const judge = persisted.judgeModelId;
-  if (judge && typeof judge.provider === 'string' && typeof judge.model === 'string') {
+  // Also check `provider` is a KNOWN provider type, matching parseModelId's
+  // own validation for the tool-input path — a hand-edited or legacy
+  // state.json with a garbage/renamed provider string would otherwise pass
+  // this check, then fail registry.resolve() at ask time with no clear
+  // signal, silently degrading every categorized/deconflicted/pooled/
+  // dialectic request to individual mode (round 3's degrade-safely fix means
+  // this never crashes, but the persisted judge was held to a weaker
+  // validation standard than one supplied directly through configure_council).
+  if (judge && typeof judge.provider === 'string' && KNOWN_PROVIDERS.has(judge.provider) && typeof judge.model === 'string') {
     update.judgeModelId = judge;
   }
   if (typeof persisted.autoCouncil === 'boolean') {
@@ -681,7 +692,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.46',
+    version: '0.2.47',
   },
   {
     capabilities: { tools: {} },

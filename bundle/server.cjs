@@ -35703,7 +35703,7 @@ async function checkVisionPooled(members, runtime, onProgress) {
     else buckets.set(key, [task]);
   });
   await Promise.all(
-    [...buckets.entries()].map(([key, tasks]) => pooled(tasks, limitForPool(key, runtime)))
+    [...buckets.entries()].map(([key, tasks]) => pooled(key, tasks, limitForPool(key, runtime)))
   );
   return results;
 }
@@ -35714,17 +35714,48 @@ var EmptyCompletionError = class extends Error {
   }
 };
 var sleep3 = (ms) => new Promise((resolve5) => setTimeout(resolve5, ms));
-async function pooled(tasks, limit2) {
-  if (tasks.length === 0) return;
-  const width = limit2 && limit2 > 0 ? Math.min(limit2, tasks.length) : tasks.length;
-  let next = 0;
-  const workers = Array.from({ length: width }, async () => {
-    while (next < tasks.length) {
-      const i2 = next++;
-      await tasks[i2]();
+var Semaphore = class {
+  inFlight = 0;
+  waiters = [];
+  async acquire(limit2) {
+    if (!(limit2 > 0)) {
+      this.inFlight++;
+      return;
     }
-  });
-  await Promise.all(workers);
+    while (this.inFlight >= limit2) {
+      await new Promise((resolve5) => this.waiters.push(resolve5));
+    }
+    this.inFlight++;
+  }
+  /** Must be called exactly once per successful acquire(), even on failure — see callers' try/finally. */
+  release() {
+    this.inFlight--;
+    const next = this.waiters.shift();
+    if (next) next();
+  }
+};
+var semaphores = /* @__PURE__ */ new Map();
+function semaphoreFor(key) {
+  let s2 = semaphores.get(key);
+  if (!s2) {
+    s2 = new Semaphore();
+    semaphores.set(key, s2);
+  }
+  return s2;
+}
+async function pooled(key, tasks, limit2) {
+  if (tasks.length === 0) return;
+  const sem = semaphoreFor(key);
+  await Promise.all(
+    tasks.map(async (task) => {
+      await sem.acquire(limit2);
+      try {
+        await task();
+      } finally {
+        sem.release();
+      }
+    })
+  );
 }
 async function completeWithRetry(provider, model, messages, opts, retries) {
   const attempts = Math.max(1, retries);
@@ -35791,7 +35822,7 @@ async function queryMembersVarying(promptFor, members, runtime, opts = {}, image
     else buckets.set(key, [task]);
   });
   await Promise.all(
-    [...buckets.entries()].map(([key, tasks]) => pooled(tasks, limitForPool(key, runtime)))
+    [...buckets.entries()].map(([key, tasks]) => pooled(key, tasks, limitForPool(key, runtime)))
   );
   return results;
 }
@@ -37632,7 +37663,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.31"
+    version: "0.2.32"
   },
   {
     capabilities: { tools: {} },

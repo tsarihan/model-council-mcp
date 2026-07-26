@@ -103,7 +103,7 @@ export async function checkVisionPooled(
   });
 
   await Promise.all(
-    [...buckets.entries()].map(([key, tasks]) => pooled(tasks, limitForPool(key, runtime))),
+    [...buckets.entries()].map(([key, tasks]) => pooled(key, tasks, limitForPool(key, runtime))),
   );
 
   return results;
@@ -120,18 +120,73 @@ export class EmptyCompletionError extends Error {
 const sleep = (ms: number): Promise<void> =>
   new Promise(resolve => setTimeout(resolve, ms));
 
-/** Run thunks with at most `limit` in flight (limit <= 0 → unlimited). */
-async function pooled(tasks: Array<() => Promise<void>>, limit: number): Promise<void> {
-  if (tasks.length === 0) return;
-  const width = limit && limit > 0 ? Math.min(limit, tasks.length) : tasks.length;
-  let next = 0;
-  const workers = Array.from({ length: width }, async () => {
-    while (next < tasks.length) {
-      const i = next++;
-      await tasks[i]();
+/**
+ * A counting semaphore, one per pool key, held at MODULE scope (see
+ * `semaphores` below) so the concurrency ceiling is enforced across the whole
+ * process — not just within one `queryMembersVarying`/`checkVisionPooled`
+ * call. Two concurrent `ask_council` calls that both touch e.g. the `claude`
+ * pool must never together exceed that pool's limit; a per-call-only pool
+ * (the previous design) couldn't see the other call's in-flight requests.
+ *
+ * `acquire`'s limit is passed per call (not fixed at construction) since it's
+ * derived from `RuntimeConfig`, which a caller could in principle vary
+ * between calls (e.g. a tier change mid-session) — each waiter re-checks
+ * against whatever limit it was given when woken.
+ */
+export class Semaphore {
+  private inFlight = 0;
+  private readonly waiters: Array<() => void> = [];
+
+  async acquire(limit: number): Promise<void> {
+    if (!(limit > 0)) {
+      // Unlimited (limit <= 0 or NaN) — never blocks.
+      this.inFlight++;
+      return;
     }
-  });
-  await Promise.all(workers);
+    while (this.inFlight >= limit) {
+      await new Promise<void>(resolve => this.waiters.push(resolve));
+    }
+    this.inFlight++;
+  }
+
+  /** Must be called exactly once per successful acquire(), even on failure — see callers' try/finally. */
+  release(): void {
+    this.inFlight--;
+    const next = this.waiters.shift();
+    if (next) next();
+  }
+}
+
+const semaphores = new Map<PoolKey, Semaphore>();
+
+function semaphoreFor(key: PoolKey): Semaphore {
+  let s = semaphores.get(key);
+  if (!s) {
+    s = new Semaphore();
+    semaphores.set(key, s);
+  }
+  return s;
+}
+
+/**
+ * Run every task, admitting at most `limit` concurrently into pool `key` —
+ * gated by that pool's process-wide semaphore, not a fresh per-call worker
+ * pool, so the ceiling holds across concurrently in-flight `ask_council`
+ * calls sharing the same provider. `limit <= 0` means unlimited.
+ */
+export async function pooled(key: PoolKey, tasks: Array<() => Promise<void>>, limit: number): Promise<void> {
+  if (tasks.length === 0) return;
+  const sem = semaphoreFor(key);
+  await Promise.all(
+    tasks.map(async task => {
+      await sem.acquire(limit);
+      try {
+        await task();
+      } finally {
+        sem.release();
+      }
+    }),
+  );
 }
 
 /**
@@ -230,7 +285,7 @@ export async function queryMembersVarying(
   });
 
   await Promise.all(
-    [...buckets.entries()].map(([key, tasks]) => pooled(tasks, limitForPool(key, runtime))),
+    [...buckets.entries()].map(([key, tasks]) => pooled(key, tasks, limitForPool(key, runtime))),
   );
 
   return results;

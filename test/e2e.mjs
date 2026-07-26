@@ -409,6 +409,31 @@ async function main() {
     // ollama-cloud pool (limit 2) + local pool (limit 1) drain concurrently → global max 3
     check('per-pool: cloud(2)+local(1) run concurrently → max 3', dbgMix.maxConcurrent === 3, `maxConcurrent=${dbgMix.maxConcurrent}`);
 
+    // ── Test: the per-provider concurrency ceiling is PROCESS-WIDE, not just
+    // per-call — two separate ask_council calls sharing the ollama-cloud pool
+    // (limit 2) must never together exceed 2 in flight. A per-call-only pool
+    // (each call building its own independent worker pool) would let two
+    // concurrent calls each admit up to 2, for a combined 4 — this is exactly
+    // the gap a global semaphore closes.
+    console.log('\n▶ concurrency ceiling holds across TWO concurrent ask_council calls');
+    await resetMock();
+    await client.callTool({
+      name: 'configure_council',
+      arguments: { models: ['ollama:conc1:cloud', 'ollama:conc2:cloud'], response_mode: 'individual' },
+    });
+    const [crossA, crossB] = await Promise.all([
+      client.callTool({ name: 'ask_council', arguments: { question: 'cross-call A', mode: 'individual' } }),
+      client.callTool({ name: 'ask_council', arguments: { question: 'cross-call B', mode: 'individual' } }),
+    ]);
+    const crossARes = parseToolResult(crossA);
+    const crossBRes = parseToolResult(crossB);
+    check('cross-call: both calls completed all their members',
+      crossARes.responses?.length === 2 && crossBRes.responses?.length === 2,
+      `A=${crossARes.responses?.length} B=${crossBRes.responses?.length}`);
+    const dbgCross = await (await fetch(`${MOCK_URL}/debug`)).json();
+    check('cross-call: combined in-flight across both calls never exceeded the pool limit (2)',
+      dbgCross.maxConcurrent === 2, `maxConcurrent=${dbgCross.maxConcurrent} (4 would mean the cap is only per-call)`);
+
     // ── Test: deconflicted verbose ────────────────────────────────────────────
     console.log('\n▶ deconflicted verbose');
     await resetMock();

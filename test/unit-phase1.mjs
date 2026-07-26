@@ -626,6 +626,89 @@ console.log('▶ CappedBuffer (bounds CLI subprocess stdout/stderr accumulation)
   check('default cap allows normal-sized accumulation', unbounded.toString().length === 20000);
 }
 
+console.log('▶ Semaphore / pooled (process-wide per-provider concurrency ceiling)');
+{
+  const { Semaphore, pooled } = await import('../dist/council/query.js');
+
+  // Direct Semaphore test: a slot leaked between acquire and a THROWING task
+  // would starve that pool for the rest of the process — release must be
+  // unconditional, exactly once, even when the guarded work throws.
+  {
+    const sem = new Semaphore();
+    await sem.acquire(1);
+    let secondAcquireResolved = false;
+    const secondAcquire = sem.acquire(1).then(() => { secondAcquireResolved = true; });
+    await new Promise(r => setTimeout(r, 20));
+    check('Semaphore: a second acquire at the cap blocks', !secondAcquireResolved);
+    sem.release();
+    await secondAcquire;
+    check('Semaphore: releasing the first slot unblocks the waiter', secondAcquireResolved);
+    sem.release();
+  }
+
+  // pooled(): the combined in-flight count across TWO separate pooled() calls
+  // sharing the same pool key must never exceed the limit — this is the
+  // process-wide guarantee the per-call-only design (a fresh worker pool per
+  // queryMembersVarying call) could not provide, since two concurrent
+  // ask_council calls each built their own independent pool.
+  {
+    let inFlight = 0, maxInFlight = 0;
+    const task = (ms) => async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise(r => setTimeout(r, ms));
+      inFlight--;
+    };
+    const tasksA = Array.from({ length: 3 }, () => task(15));
+    const tasksB = Array.from({ length: 3 }, () => task(15));
+    await Promise.all([
+      pooled('claude', tasksA, 2),
+      pooled('claude', tasksB, 2),
+    ]);
+    check('pooled: two concurrent calls sharing a pool key never exceed the combined limit',
+      maxInFlight <= 2, `maxInFlight=${maxInFlight}`);
+  }
+
+  // A task that throws must still release its slot — proven by running a batch
+  // of tasks (some throwing) through a limit-1 pool and confirming they still
+  // ran effectively serially (max 1 in flight) with no deadlock/hang.
+  {
+    let inFlight = 0, maxInFlight = 0;
+    const okTask = () => async () => {
+      inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise(r => setTimeout(r, 5));
+      inFlight--;
+    };
+    const throwingTask = () => async () => {
+      inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise(r => setTimeout(r, 5));
+      inFlight--;
+      throw new Error('deliberate task failure');
+    };
+    const tasks = [okTask(), throwingTask(), okTask(), throwingTask(), okTask()];
+    // pooled() itself doesn't catch task errors (queryMembersVarying's tasks
+    // never throw — they catch internally); Promise.all here just needs every
+    // task's rejection surfaced without a slot leak, so wrap each in a
+    // catch-and-record wrapper the way a real caller with throwing tasks would.
+    const results = await Promise.allSettled(
+      tasks.map(t => pooled('claude', [t], 1)),
+    );
+    check('pooled: a throwing task still releases its slot (no leaked-slot hang)', maxInFlight <= 1, `maxInFlight=${maxInFlight}`);
+    check('pooled: throwing tasks reject rather than being swallowed', results.filter(r => r.status === 'rejected').length === 2);
+
+    // Prove the pool actually recovered (no permanently-leaked slot): a fresh
+    // batch on the SAME 'claude' key/limit must still be able to admit 2 at once.
+    let inFlight2 = 0, maxInFlight2 = 0;
+    const recoveryTask = () => async () => {
+      inFlight2++; maxInFlight2 = Math.max(maxInFlight2, inFlight2);
+      await new Promise(r => setTimeout(r, 10));
+      inFlight2--;
+    };
+    await pooled('claude', [recoveryTask(), recoveryTask()], 2);
+    check('pooled: pool recovers full capacity after prior throws (no permanent leak)', maxInFlight2 === 2, `maxInFlight2=${maxInFlight2}`);
+  }
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
 console.log('ALL PASSED ✅');

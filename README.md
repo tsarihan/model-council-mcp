@@ -228,7 +228,7 @@ Full URLs also work: `gpu3:http://10.0.0.5:9000`
 | `COMPLETION_RETRIES` | Attempts per completion before giving up on an empty/failed response | `3` |
 | `DECONFLICT_VERBOSE` | `true` → deconflicted results include per-round detail by default | `false` |
 
-The council queries members in parallel but respects these concurrency limits — cloud members share one pool and local members another, so a large council never exceeds your Ollama cloud plan's concurrent-request cap, and local models can be run sequentially to avoid GPU contention.
+The council queries members in parallel but respects these concurrency limits — cloud members share one pool and local members another, so a large council never exceeds your Ollama cloud plan's concurrent-request cap, and local models can be run sequentially to avoid GPU contention. Each pool's limit is enforced **process-wide**, not per-call: two `ask_council`/`ask_council_async` requests in flight at once (e.g. via the 20-slot async job queue) that both touch the same provider still share that provider's single ceiling rather than each getting their own — a concurrent request can end up waiting on a slot another request is holding, which is expected serialization, not a hang.
 
 ### Model ID format
 

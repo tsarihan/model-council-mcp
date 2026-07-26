@@ -51,8 +51,15 @@ export function statePath(): string {
 
 export function loadState(): CouncilState {
   try {
-    const parsed = JSON.parse(readFileSync(statePath(), 'utf8')) as CouncilState;
-    if (parsed && typeof parsed === 'object') return parsed;
+    const parsed: unknown = JSON.parse(readFileSync(statePath(), 'utf8'));
+    // typeof [] === 'object' too — without the Array.isArray check, a
+    // corrupted/hand-edited state file containing a bare JSON array would
+    // pass this guard and later get spread in saveState() ({...current,
+    // ...patch}), turning into {'0': ..., '1': ..., ...} and silently
+    // corrupting every persisted field (tiers, members, visionCapability).
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as CouncilState;
+    }
   } catch {
     /* no state file yet */
   }

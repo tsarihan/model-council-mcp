@@ -230,10 +230,15 @@ export class ClaudeCliProvider implements Provider {
         '--system-prompt', systemText, // replace the default coding-agent persona
       ];
 
-      // CLI reasoning agents are legitimately slow; keep DEFAULT_TIMEOUT_MS as a
-      // floor so the (shorter) generic request timeout can't cut off a valid answer,
-      // while a higher REQUEST_TIMEOUT_MS can still raise it. Still bounded (no hang).
-      const timeoutMs = Math.max(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
+      // Respect an explicit opts.timeoutMs verbatim (matches every other
+      // provider's plain `?? DEFAULT` pattern) — a Math.max floor here used to
+      // silently override a DELIBERATELY short explicit timeout (e.g.
+      // supportsVision()'s 60s probe budget always became 300s), defeating
+      // the caller's own choice. A caller that wants the DEFAULT_TIMEOUT_MS
+      // floor for a slow CLI reasoning agent still gets it by omitting
+      // timeoutMs; a caller with a genuinely low REQUEST_TIMEOUT_MS now
+      // correctly has that honoured here too, consistent with API providers.
+      const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       // Without an explicit cwd, the child inherits the SERVER's own working
       // directory — verified live that claude-cli's Read tool can access
       // files there with NO --add-dir at all. That's an undocumented extra

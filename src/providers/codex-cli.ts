@@ -212,10 +212,15 @@ export class CodexCliProvider implements Provider {
     });
 
     try {
-      // Codex is a slow reasoning agent; keep DEFAULT_TIMEOUT_MS as a floor so the
-      // generic (shorter) request timeout can't cut off a valid answer, while a
-      // higher REQUEST_TIMEOUT_MS can still raise it. Still bounded (no hang).
-      const timeoutMs = Math.max(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
+      // Respect an explicit opts.timeoutMs verbatim (matches every other
+      // provider's plain `?? DEFAULT` pattern) — a Math.max floor here used to
+      // silently override a DELIBERATELY short explicit timeout (e.g.
+      // supportsVision()'s 60s probe budget always became 300s), defeating
+      // the caller's own choice. A caller that wants the DEFAULT_TIMEOUT_MS
+      // floor for a slow reasoning agent still gets it by omitting timeoutMs;
+      // a caller with a genuinely low REQUEST_TIMEOUT_MS now correctly has
+      // that honoured here too, consistent with API providers.
+      const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       const { code, stderr } = await this.run(args, prompt, timeoutMs);
       if (code !== 0) {
         throw new Error(

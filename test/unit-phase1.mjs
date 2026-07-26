@@ -342,6 +342,17 @@ try {
   saveState(current => ({ visionCapability: { ...(current.visionCapability ?? {}), 'ollama:c': true } }));
   const afterMutatorForm = loadState().visionCapability;
   check('mutator-form patch preserves prior entries (reads fresh at write time)', afterMutatorForm['ollama:a'] === true && afterMutatorForm['ollama:b'] === false && afterMutatorForm['ollama:c'] === true, JSON.stringify(afterMutatorForm));
+
+  // Regression: a bare JSON array is `typeof === 'object'` too. Without an
+  // explicit Array.isArray reject, loadState() would return it as-is, and
+  // saveState()'s {...current, ...patch} spread would turn it into
+  // {'0': ..., '1': ..., ...}, silently corrupting every persisted field.
+  const { writeFileSync } = await import('node:fs');
+  writeFileSync(statePath(), JSON.stringify([1, 2, 3]));
+  const afterArray = loadState();
+  check('a corrupted state file containing a bare JSON array falls back to the default, not the array',
+    afterArray.version === reloaded.version && !Array.isArray(afterArray) && afterArray[0] === undefined,
+    JSON.stringify(afterArray));
 } finally {
   rmSync(dir, { recursive: true, force: true });
   delete process.env.MODEL_COUNCIL_STATE;
@@ -729,6 +740,39 @@ console.log('▶ AnthropicProvider: per-request timeout + SDK retries disabled')
   check('complete(): per-request timeout passed through to the SDK call', capturedOpts?.timeout === 42_000, `got ${JSON.stringify(capturedOpts)}`);
   await provider.complete('claude-opus-4-8', [{ role: 'user', content: 'hi' }], {});
   check('complete(): falls back to DEFAULT_COMPLETION_TIMEOUT_MS when unset', capturedOpts?.timeout === 120_000, `got ${JSON.stringify(capturedOpts)}`);
+}
+
+console.log('▶ CLI providers: an explicit (shorter) timeoutMs is respected, not floored to DEFAULT_TIMEOUT_MS');
+{
+  // A prior Math.max(opts.timeoutMs ?? DEFAULT, DEFAULT) always floored to
+  // 300s even when a caller (e.g. supportsVision()'s 60s probe budget)
+  // explicitly asked for less — defeating the caller's own choice and
+  // silently multiplying the vision-detection stall window. Monkey-patch
+  // each CLI provider's private run() (TS `private` is erased at runtime) to
+  // capture the timeoutMs it's actually invoked with.
+  const cliProviders = [
+    { mod: '../dist/providers/claude-cli.js', cls: 'ClaudeCliProvider', type: 'claude-cli', okStdout: JSON.stringify({ result: 'ok', is_error: false }) },
+    // codex-cli reads its response from a temp outFile, not run()'s stdout — that
+    // file won't exist under this monkey-patch, so complete() throws AFTER
+    // run() (and the timeout capture) has already happened; caught below.
+    { mod: '../dist/providers/codex-cli.js', cls: 'CodexCliProvider', type: 'codex-cli', okStdout: '' },
+    { mod: '../dist/providers/grok-cli.js', cls: 'GrokCliProvider', type: 'grok-cli', okStdout: JSON.stringify({ text: 'ok', stopReason: 'EndTurn' }) },
+  ];
+  for (const { mod, cls, type, okStdout } of cliProviders) {
+    const { [cls]: Provider } = await import(mod);
+    const provider = new Provider({ id: type, type, baseUrl: '', label: type });
+    let capturedTimeout;
+    provider.run = async (_args, _input, timeoutMs) => {
+      capturedTimeout = timeoutMs;
+      return { code: 0, stdout: okStdout, stderr: '' };
+    };
+    // Only the SIDE EFFECT (the timeout run() was invoked with) matters here —
+    // whether complete() itself resolves or throws afterward is irrelevant.
+    try { await provider.complete('m', [{ role: 'user', content: 'hi' }], { timeoutMs: 5_000 }); } catch { /* see comment above */ }
+    check(`${cls}: explicit shorter timeoutMs (5s) is respected, not floored to DEFAULT`, capturedTimeout === 5_000, `got ${capturedTimeout}`);
+    try { await provider.complete('m', [{ role: 'user', content: 'hi' }], {}); } catch { /* see comment above */ }
+    check(`${cls}: falls back to DEFAULT_TIMEOUT_MS (300s) when unset`, capturedTimeout === 300_000, `got ${capturedTimeout}`);
+  }
 }
 
 console.log('▶ withTimeoutOrThrow (detectOllama reachable-on-timeout fix)');

@@ -24576,7 +24576,9 @@ function statePath() {
 function loadState() {
   try {
     const parsed = JSON.parse((0, import_node_fs2.readFileSync)(statePath(), "utf8"));
-    if (parsed && typeof parsed === "object") return parsed;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed;
+    }
   } catch {
   }
   return { version: STATE_VERSION };
@@ -35154,7 +35156,7 @@ var ClaudeCliProvider = class {
         systemText
         // replace the default coding-agent persona
       ];
-      const timeoutMs = Math.max(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
+      const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       const { code, stdout, stderr } = await this.run(args, prompt, timeoutMs, addDirs[addDirs.length - 1]);
       if (code !== 0) {
         throw new Error(
@@ -35359,7 +35361,7 @@ var CodexCliProvider = class {
       args.push("-i", path);
     });
     try {
-      const timeoutMs = Math.max(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS2, DEFAULT_TIMEOUT_MS2);
+      const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS2;
       const { code, stderr } = await this.run(args, prompt, timeoutMs);
       if (code !== 0) {
         throw new Error(
@@ -35540,7 +35542,7 @@ var GrokCliProvider = class {
       "--system-prompt-override",
       systemText
     ];
-    const timeoutMs = Math.max(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS3, DEFAULT_TIMEOUT_MS3);
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS3;
     const { code, stdout, stderr } = await this.run(args, void 0, timeoutMs);
     if (code !== 0) {
       throw new Error(
@@ -37756,7 +37758,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.36"
+    version: "0.2.37"
   },
   {
     capabilities: { tools: {} },

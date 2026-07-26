@@ -1234,6 +1234,13 @@ async function main() {
     const persisted = JSON.parse(readFileSync(stateFile, 'utf8'));
     check('setup: council persisted to state file', Array.isArray(persisted.members) && persisted.members.length === labelsWithGrok.length);
     check('setup: tier persisted to state file', persisted.tiers?.ollama === 'max');
+    // Regression: only the tier keys the caller ACTUALLY supplied across
+    // these two setup_council calls (ollama, grok) should be in state.tiers —
+    // chatgpt/claude were never touched by either call. Persisting them too
+    // (the old bug) would pin them to whatever was effective at call time,
+    // permanently shadowing any later env var change for those providers.
+    check('setup: untouched tier keys (chatgpt/claude) are NOT persisted — no accidental pinning',
+      !('chatgpt' in (persisted.tiers ?? {})) && !('claude' in (persisted.tiers ?? {})), JSON.stringify(persisted.tiers));
 
     // Delete a member via configure_council → the reduced set persists.
     const reduced = labels.filter(l => l !== 'ollama:small-a');

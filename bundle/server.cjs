@@ -37779,7 +37779,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.38"
+    version: "0.2.39"
   },
   {
     capabilities: { tools: {} },
@@ -38115,7 +38115,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         applyTier("claude", input.claude);
         applyTier("grok", input.grok);
         applyTier("ollama", input.ollama);
-        saveState({ tiers });
+        if (Object.keys(applied).length > 0) {
+          saveState((current) => ({ tiers: { ...current.tiers ?? {}, ...applied } }));
+        }
         const report = await detectEnvironment(registry2, tiers, subs);
         const labels = autoPopulatedMembers(report, tiers, subs);
         orchestrator.updateConfig({ members: labelsToMembers(labels) });

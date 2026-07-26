@@ -623,7 +623,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.38',
+    version: '0.2.39',
   },
   {
     capabilities: { tools: {} },
@@ -1065,7 +1065,18 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         applyTier('claude', input.claude);
         applyTier('grok', input.grok);
         applyTier('ollama', input.ollama);
-        saveState({ tiers });
+        // Persist ONLY the keys the caller actually supplied (`applied`), not
+        // the full `tiers` object — `tiers` also carries providers the caller
+        // never touched (their currently-effective value, itself derived
+        // from state ?? env ?? default). Writing all four would pin the
+        // untouched ones to that snapshot in state.json, where they'd then
+        // permanently shadow any later env var change for that provider
+        // (resolveTier/effectiveTiers always prefer a persisted state.tiers
+        // entry over the env var) — the caller never asked for that provider
+        // to become "sticky."
+        if (Object.keys(applied).length > 0) {
+          saveState(current => ({ tiers: { ...(current.tiers ?? {}), ...applied } }));
+        }
 
         // Re-detect + re-populate from currently-registered providers.
         const report = await detectEnvironment(registry, tiers, subs);

@@ -33,7 +33,7 @@ import {
   queryMembersVarying,
 } from './query.js';
 import { poolResponses } from './pool.js';
-import { UNTRUSTED_CONTENT_NOTICE } from './prompt-safety.js';
+import { UNTRUSTED_CONTENT_NOTICE, UNTRUSTED_PEER_CONTENT_NOTICE } from './prompt-safety.js';
 
 // ─── Step 2 prompt: defend your pick, critique the rest ──────────────────────
 
@@ -41,7 +41,7 @@ function renderOptions(digest: PooledDigest): string {
   return digest.options.map(o => `- ${o.answer}: ${o.rationale}`).join('\n');
 }
 
-function buildDefensePrompt(
+export function buildDefensePrompt(
   question: string,
   optionsBlock: string,
   ownAnswer: string,
@@ -51,6 +51,8 @@ function buildDefensePrompt(
 """
 ${question}
 """
+
+${UNTRUSTED_PEER_CONTENT_NOTICE}
 
 The council proposed these options (each with the reasoning offered for it):
 ${optionsBlock || '(no options were extracted)'}
@@ -243,7 +245,7 @@ async function buildProsCons(
 
 // ─── Step 4 prompt: choose top 3 from the dialectic ──────────────────────────
 
-function buildSelectionPrompt(question: string, prosCons: DialecticOption[]): string {
+export function buildSelectionPrompt(question: string, prosCons: DialecticOption[]): string {
   if (prosCons.length === 0) return question;
 
   const block = prosCons
@@ -258,6 +260,8 @@ function buildSelectionPrompt(question: string, prosCons: DialecticOption[]): st
 """
 ${question}
 """
+
+${UNTRUSTED_PEER_CONTENT_NOTICE}
 
 Here is a balanced pros/cons analysis of each option, compiled from the council's
 arguments for and against:

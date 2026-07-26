@@ -81,6 +81,49 @@ check('ollama -cloud → ollama-cloud', poolKey(member('ollama', 'qwen3-coder:48
 check('ollama local → local', poolKey(member('ollama', 'gemma4:31b-mlx')) === 'local');
 check('vllm (self-hosted) → local', poolKey(member('vllm', 'meta-llama/Llama-3')) === 'local');
 
+console.log('▶ selectJudge: multi-server lookup matches on serverId too (not just model+provider)');
+{
+  const { selectJudge } = await import('../dist/council/orchestrator.js');
+  // Two servers both exposing a model literally named "llama3" — a real
+  // multi-server vllm/sglang/trtllm setup. gpu1 genuinely hosts the 70B
+  // build, gpu2 the 7B build. allModels lists gpu1 (the true largest)
+  // SECOND, so a lookup that ignores serverId (the old bug) would resolve
+  // BOTH candidates to whichever entry .find() hits first (gpu2/7B) and
+  // pick candidates[0] arbitrarily — a wrong, non-largest judge.
+  const candidates = [
+    { provider: 'vllm', serverId: 'gpu2', model: 'llama3' },
+    { provider: 'vllm', serverId: 'gpu1', model: 'llama3' },
+  ];
+  const allModels = [
+    { provider: 'vllm', serverId: 'gpu2', model: 'llama3', label: 'gpu2', paramSize: '7B' },
+    { provider: 'vllm', serverId: 'gpu1', model: 'llama3', label: 'gpu1', paramSize: '70B' },
+  ];
+  const judge = selectJudge(undefined, candidates, allModels);
+  check('selectJudge picks the ACTUAL largest (gpu1, 70B), not candidates[0] via a serverId-blind lookup',
+    judge?.serverId === 'gpu1', JSON.stringify(judge));
+}
+
+console.log('▶ ProviderRegistry.resolve: bare-serverId fallback cannot resolve to an unrelated provider type');
+{
+  const { ProviderRegistry } = await import('../dist/providers/registry.js');
+  // codex-cli's own registered server id is literally "codex-cli" in this
+  // codebase (config.ts). "ollama/codex-cli:llama3" (provider "ollama",
+  // serverId "codex-cli") is a plausible typo/misconfiguration — without the
+  // type check, the bare-serverId fallback (providers.get("codex-cli"))
+  // would silently resolve it to the codex-cli provider instead of failing
+  // or resolving to ollama, spending ChatGPT subscription quota on a call
+  // the caller believed was going to a local Ollama model.
+  const registry = new ProviderRegistry([
+    { id: 'ollama', type: 'ollama', baseUrl: 'http://127.0.0.1:11434', label: 'Ollama' },
+    { id: 'codex-cli', type: 'codex-cli', baseUrl: '', label: 'Codex CLI' },
+  ]);
+  const resolved = registry.resolve({ provider: 'ollama', serverId: 'codex-cli', model: 'llama3' });
+  check('a provider-mismatched bare-serverId lookup resolves to null, not the wrong provider', resolved === null, resolved?.config?.type);
+  // Sanity: the SAME serverId correctly resolves when the provider matches.
+  const resolvedCorrect = registry.resolve({ provider: 'codex-cli', serverId: 'codex-cli', model: 'default' });
+  check('a correctly-typed bare-serverId lookup still resolves normally', resolvedCorrect?.config?.type === 'codex-cli');
+}
+
 console.log('▶ per-provider pools drain independently at their own limits');
 {
   const { queryMembersVarying } = await import('../dist/council/query.js');
@@ -586,6 +629,32 @@ console.log('▶ context.ts rejects image extensions in "files" (guards the othe
   }
 }
 
+console.log('▶ context.ts rejects binary (non-image-extension) files via a NUL-byte sniff (was silently sent as mojibake)');
+{
+  const { buildAugmentedQuestion } = await import('../dist/context.js');
+  const { writeFileSync } = await import('node:fs');
+  const dir = mkdtempSync(join(tmpdir(), 'mc-binguard-'));
+  try {
+    // A .wasm/.pdf/.zip/.sqlite-shaped binary — no image extension, so the
+    // earlier IMAGE_EXTENSIONS guard doesn't catch it. readFile(path,'utf8')
+    // never throws on invalid UTF-8 (substitutes U+FFFD), so without the NUL
+    // sniff this would silently decode to mojibake and get sent to every member.
+    const binPath = join(dir, 'app.wasm');
+    writeFileSync(binPath, Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0xff, 0xfe]));
+    let threw = false, msg = '';
+    try { await buildAugmentedQuestion('q', { files: [binPath] }); } catch (e) { threw = true; msg = e.message; }
+    check('files=[...wasm with a NUL byte] → rejected as binary', threw && /binary file/i.test(msg), msg);
+
+    // A genuine text file (no NUL bytes) must still pass through untouched.
+    const txtPath = join(dir, 'notes.txt');
+    writeFileSync(txtPath, 'plain text content, no NUL bytes here');
+    const out = await buildAugmentedQuestion('q', { files: [txtPath] });
+    check('a genuine text file is NOT rejected by the binary guard', out.includes('plain text content'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 console.log('▶ context.ts: "question" and "context" are size-capped (were previously unbounded)');
 {
   const { buildAugmentedQuestion, MAX_QUESTION_BYTES, MAX_CONTEXT_BYTES } = await import('../dist/context.js');
@@ -654,6 +723,74 @@ console.log('▶ judge prompts carry the untrusted-content notice (prompt-inject
   // text gets no benefit from it.
   const catPrompt = buildCategorizationPrompt('q', resp);
   check('notice precedes member response content', catPrompt.indexOf(UNTRUSTED_CONTENT_NOTICE) < catPrompt.indexOf('### ollama:a'));
+}
+
+console.log('▶ member-facing prompts carry the untrusted-PEER-content notice (round 1 only covered judge-facing prompts)');
+{
+  const { UNTRUSTED_PEER_CONTENT_NOTICE } = await import('../dist/council/prompt-safety.js');
+  const { buildConflictRoundPrompt } = await import('../dist/council/deconflict.js');
+  const { buildRepollPrompt } = await import('../dist/council/pool.js');
+  const { buildDefensePrompt, buildSelectionPrompt } = await import('../dist/council/dialectic.js');
+
+  const conflict = { id: 'conflict-1', topic: 'retry strategy', positions: [{ models: ['ollama:a'], position: 'backoff' }] };
+  const roundPrompt = buildConflictRoundPrompt('q', [conflict], 1);
+  check('deconfliction round prompt includes the peer-content notice', roundPrompt.includes(UNTRUSTED_PEER_CONTENT_NOTICE));
+
+  const digest = { options: [{ answer: 'A', rationale: 'r', models: ['ollama:a'] }] };
+  const repoll = buildRepollPrompt('q', digest);
+  check('pooled repoll prompt includes the peer-content notice', repoll.includes(UNTRUSTED_PEER_CONTENT_NOTICE));
+
+  const defense = buildDefensePrompt('q', '- A: r', 'my answer');
+  check('dialectic defense prompt includes the peer-content notice', defense.includes(UNTRUSTED_PEER_CONTENT_NOTICE));
+
+  const selection = buildSelectionPrompt('q', [{ answer: 'A', pros: ['p'], cons: ['c'], championedBy: ['ollama:a'] }]);
+  check('dialectic selection prompt includes the peer-content notice', selection.includes(UNTRUSTED_PEER_CONTENT_NOTICE));
+}
+
+console.log('▶ vision accept-probe: transient failures (429/401/403/408/409/no-status) are never cached as a permanent rejection');
+{
+  const cases = [
+    { label: '429 rate limit', err: { status: 429 } },
+    { label: '401 unauthorized', err: { status: 401 } },
+    { label: '403 forbidden', err: { status: 403 } },
+    { label: '408 request timeout', err: { status: 408 } },
+    { label: '409 conflict', err: { status: 409 } },
+    { label: 'no status at all (ECONNRESET-shaped)', err: new Error('socket hang up') },
+  ];
+
+  // OpenAICompatibleProvider
+  {
+    const { OpenAICompatibleProvider } = await import('../dist/providers/openai-compatible.js');
+    for (const { label, err } of cases) {
+      const provider = new OpenAICompatibleProvider({ id: 'test', type: 'openai', baseUrl: 'http://127.0.0.1:1', label: 'test', apiKey: 'x' });
+      provider.client.chat.completions.create = async () => { throw err; };
+      const result = await provider.probeAcceptsImage('model-a');
+      check(`OpenAICompatibleProvider: ${label} → returns false`, result === false);
+      check(`OpenAICompatibleProvider: ${label} → NOT cached (still undefined)`, provider.acceptCache.get('model-a') === undefined, `cache=${provider.acceptCache.get('model-a')}`);
+    }
+    // Contrast: a genuine 400 (the server validated and rejected the image
+    // part) IS a definitive answer and must still be cached as false.
+    const provider400 = new OpenAICompatibleProvider({ id: 'test', type: 'openai', baseUrl: 'http://127.0.0.1:1', label: 'test', apiKey: 'x' });
+    provider400.client.chat.completions.create = async () => { throw { status: 400 }; };
+    await provider400.probeAcceptsImage('model-b');
+    check('OpenAICompatibleProvider: 400 (genuine rejection) IS cached as false', provider400.acceptCache.get('model-b') === false);
+  }
+
+  // AnthropicProvider
+  {
+    const { AnthropicProvider } = await import('../dist/providers/anthropic.js');
+    for (const { label, err } of cases) {
+      const provider = new AnthropicProvider({ id: 'test', type: 'anthropic', baseUrl: '', label: 'test', apiKey: 'x' });
+      provider.client.messages.create = async () => { throw err; };
+      const result = await provider.probeAcceptsImage('model-a');
+      check(`AnthropicProvider: ${label} → returns false`, result === false);
+      check(`AnthropicProvider: ${label} → NOT cached (still undefined)`, provider.acceptCache.get('model-a') === undefined, `cache=${provider.acceptCache.get('model-a')}`);
+    }
+    const provider400 = new AnthropicProvider({ id: 'test', type: 'anthropic', baseUrl: '', label: 'test', apiKey: 'x' });
+    provider400.client.messages.create = async () => { throw { status: 400 }; };
+    await provider400.probeAcceptsImage('model-b');
+    check('AnthropicProvider: 400 (genuine rejection) IS cached as false', provider400.acceptCache.get('model-b') === false);
+  }
 }
 
 console.log('▶ vision-challenge.ts (OCR-challenge behavioral vision verification)');

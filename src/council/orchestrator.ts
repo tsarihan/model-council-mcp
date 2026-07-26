@@ -36,7 +36,7 @@ export function isEmbeddingModel(m: ModelInfo): boolean {
 
 // ─── Judge selection ──────────────────────────────────────────────────────────
 
-function selectJudge(
+export function selectJudge(
   judgeModelId: ModelId | undefined,
   memberIds: ModelId[],
   allModels: ModelInfo[],
@@ -64,8 +64,13 @@ function selectJudge(
   let bestB = -1;
 
   for (const id of candidates) {
+    // Also match serverId — without it, a multi-server setup (e.g.
+    // "vllm/gpu1:llama3:70b" alongside "vllm/gpu2:llama3:7b") can look up the
+    // WRONG server's entry (or none, since allModels may not even list every
+    // server's models together), silently defaulting bestB to 0 for every
+    // candidate and picking candidates[0] instead of the actual largest.
     const info = allModels.find(
-      m => m.model === id.model && m.provider === id.provider,
+      m => m.model === id.model && m.provider === id.provider && m.serverId === id.serverId,
     );
     const b = extractBillions(info?.paramSize);
     if (b > bestB) {

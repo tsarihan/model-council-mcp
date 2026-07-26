@@ -109,23 +109,36 @@ export async function buildAugmentedQuestion(
           `${Math.round(MAX_FILE_BYTES / 1024)} KB limit). Trim it or pass an excerpt via "context".`,
       );
     }
-    let body: string;
+    let buf: Buffer;
     try {
-      body = await readFile(path, 'utf8');
+      buf = await readFile(path); // no encoding — raw bytes, so a binary sniff can run before decoding
     } catch {
-      throw new Error(`Could not read attached file as UTF-8 text: ${raw}`);
+      throw new Error(`Could not read attached file: ${raw}`);
     }
     // Re-check against the ACTUAL bytes read, not just the earlier stat() —
     // stat-then-read is a TOCTOU window (e.g. a symlink retargeted between the
     // two calls) that could otherwise smuggle a larger file past the size cap.
-    const actualBytes = Buffer.byteLength(body, 'utf8');
-    if (actualBytes > MAX_FILE_BYTES) {
+    if (buf.byteLength > MAX_FILE_BYTES) {
       throw new Error(
-        `Attached file too large: ${raw} (${Math.round(actualBytes / 1024)} KB > ` +
+        `Attached file too large: ${raw} (${Math.round(buf.byteLength / 1024)} KB > ` +
           `${Math.round(MAX_FILE_BYTES / 1024)} KB limit). Trim it or pass an excerpt via "context".`,
       );
     }
-    total += actualBytes;
+    // Binary sniff: a NUL byte essentially never appears in genuine text, but
+    // is common in binary formats (wasm/pdf/zip/sqlite/etc.) that don't carry
+    // an image extension. readFile(path, 'utf8') never throws on invalid
+    // UTF-8 — it silently substitutes replacement characters — so without
+    // this check a binary file would decode to mojibake and get fenced and
+    // sent to every member as if it were real content. Same heuristic git
+    // itself uses to classify a file as binary.
+    if (buf.subarray(0, 8000).includes(0)) {
+      throw new Error(
+        `${raw} looks like a binary file (contains a NUL byte) — "files" reads text and would send ` +
+          `garbled data. If this is meant to be an image, use the "images" parameter instead.`,
+      );
+    }
+    const body = buf.toString('utf8');
+    total += buf.byteLength;
     if (total > MAX_TOTAL_BYTES) {
       throw new Error(
         `Attached files exceed the combined ${Math.round(MAX_TOTAL_BYTES / 1024)} KB limit. ` +

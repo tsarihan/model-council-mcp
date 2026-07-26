@@ -22,10 +22,11 @@ import { ChatImage, Provider } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
 import { categorize, buildSynthesisPrompt } from './categorizer.js';
 import { Member, pooledComplete, queryMembers } from './query.js';
+import { UNTRUSTED_PEER_CONTENT_NOTICE } from './prompt-safety.js';
 
 // ─── Round-query prompt ───────────────────────────────────────────────────────
 
-function buildConflictRoundPrompt(
+export function buildConflictRoundPrompt(
   originalQuestion: string,
   conflicts: ConflictItem[],
   round: number,
@@ -45,6 +46,8 @@ Original question:
 """
 ${originalQuestion}
 """
+
+${UNTRUSTED_PEER_CONTENT_NOTICE}
 
 The following conflicts remain among council members:
 ${conflictLines}

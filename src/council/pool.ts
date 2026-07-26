@@ -20,7 +20,7 @@ import { ChatImage, Provider } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
 import { CompleteConfig } from './categorizer.js';
 import { EmptyCompletionError, Member, pooledComplete, queryMembers } from './query.js';
-import { UNTRUSTED_CONTENT_NOTICE } from './prompt-safety.js';
+import { UNTRUSTED_CONTENT_NOTICE, UNTRUSTED_PEER_CONTENT_NOTICE } from './prompt-safety.js';
 
 // ─── Judge prompt: build the neutral pooled digest ───────────────────────────
 
@@ -163,6 +163,8 @@ export function buildRepollPrompt(question: string, digest: PooledDigest): strin
 """
 ${question}
 """
+
+${UNTRUSTED_PEER_CONTENT_NOTICE}
 
 Below, in no particular order, are the distinct answers other council members proposed, each with the combined reasoning offered for it. They are NOT ranked, and nothing indicates how many members chose each option or who chose it:
 

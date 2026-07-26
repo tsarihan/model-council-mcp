@@ -100,9 +100,12 @@ export class OpenAICompatibleProvider implements Provider {
    * negligible (max_tokens: 1, a 32×32 test image).
    *
    * Only a DEFINITIVE answer is cached: a clean 200 (true) or a 4xx that
-   * rejects the request (false — the server validated and refused the image
-   * part). A timeout/connection error is transient — it returns false for
-   * this call only, without poisoning the cache.
+   * genuinely rejects the request (false — the server validated and refused
+   * the image part). A timeout/connection error, a rate limit (429), an
+   * auth/permission failure (401/403), a request-conflict code (408/409), or
+   * any error with no status at all is transient/uninformative about vision
+   * support — each returns false for this call only, without poisoning the
+   * cache.
    *
    * A "true" here only proves the endpoint accepts an image, not that the
    * model meaningfully attends to it — some servers accept and silently
@@ -134,8 +137,17 @@ export class OpenAICompatibleProvider implements Provider {
     } catch (err) {
       if (isTimeoutError(err)) return false; // transient — don't cache
       const status = (err as { status?: number }).status;
-      if (typeof status === 'number' && status >= 500) return false; // server error — don't cache
-      this.acceptCache.set(model, false); // 4xx (or unrecognized shape) → definitive rejection
+      // Rate limiting, auth/permission failures, and request-conflict codes
+      // say nothing about whether the MODEL accepts an image part — caching
+      // any of these as a permanent rejection would silently exclude a
+      // genuinely vision-capable model from every future image question for
+      // the life of the process over a transient condition unrelated to
+      // vision support. A response with NO status at all (ECONNRESET, DNS
+      // failure, a malformed SDK error/shape) is equally uninformative.
+      const transientStatus = status === 429 || status === 401 || status === 403 || status === 408 || status === 409;
+      if (transientStatus || typeof status !== 'number') return false; // transient — don't cache
+      if (status >= 500) return false; // server error — don't cache
+      this.acceptCache.set(model, false); // remaining 4xx → the server validated and refused the image part
       return false;
     }
   }

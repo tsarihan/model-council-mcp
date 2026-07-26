@@ -53,6 +53,14 @@ export class ProviderRegistry {
       const explicit =
         this.providers.get(`${modelId.provider}-${modelId.serverId}`) ??
         this.providers.get(modelId.serverId);
+      // The bare-serverId fallback can collide with an UNRELATED provider's
+      // own registered id — e.g. "ollama/codex-cli:llama3" (provider
+      // "ollama", serverId "codex-cli") falls through to
+      // providers.get("codex-cli"), which is the ACTUAL codex-cli provider's
+      // own id in this codebase. Without this check that mistyped/ambiguous
+      // model id would silently resolve to (and spend quota on) codex-cli
+      // instead of failing clearly or resolving to ollama.
+      if (explicit && explicit.config.type !== modelId.provider) return null;
       return explicit ?? null;
     }
     // Default: find the first provider of the matching type

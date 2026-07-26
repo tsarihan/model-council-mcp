@@ -84,8 +84,12 @@ export class AnthropicProvider implements Provider {
   /**
    * Stage 1 (the Anthropic API has no capability-listing endpoint): send a
    * 1-token request with an image block and see whether it's accepted. Only a
-   * definitive answer (200 or a 4xx rejection) is cached; a transient failure
-   * (timeout/5xx) returns false for this call only.
+   * definitive answer is cached: 200 (true), or a 4xx that genuinely rejects
+   * the request (false — the API validated and refused the image part). A
+   * timeout, a 5xx, a rate limit (429), an auth/permission failure (401/403),
+   * a request-conflict code (408/409), or any error with no status at all is
+   * transient/uninformative about vision support and returns false for this
+   * call only, without poisoning the cache.
    */
   private async probeAcceptsImage(model: string): Promise<boolean> {
     const cached = this.acceptCache.get(model);
@@ -112,8 +116,10 @@ export class AnthropicProvider implements Provider {
     } catch (err) {
       if (isTimeoutError(err)) return false; // transient — don't cache
       const status = (err as { status?: number }).status;
-      if (typeof status === 'number' && status >= 500) return false; // server error — don't cache
-      this.acceptCache.set(model, false); // 4xx → definitive rejection
+      const transientStatus = status === 429 || status === 401 || status === 403 || status === 408 || status === 409;
+      if (transientStatus || typeof status !== 'number') return false; // transient — don't cache
+      if (status >= 500) return false; // server error — don't cache
+      this.acceptCache.set(model, false); // remaining 4xx → the API validated and refused the image part
       return false;
     }
   }

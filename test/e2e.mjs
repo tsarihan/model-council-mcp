@@ -1027,7 +1027,7 @@ async function main() {
   });
   const detectClient = new Client({ name: 'detect-e2e', version: '1.0.0' }, { capabilities: {} });
   await detectClient.connect(detectTransport);
-  let rebootClient, loggedOutClient, loDir;
+  let rebootClient, loggedOutClient, loDir, claudeFreeClient, cfDir;
   try {
     const st = parseToolResult(await detectClient.callTool({ name: 'council_status', arguments: {} }));
     check('status: ollama reachable', st.detected?.ollama?.reachable === true);
@@ -1141,12 +1141,32 @@ async function main() {
     const loSetup = parseToolResult(await loggedOutClient.callTool({ name: 'setup_council', arguments: {} }));
     check('logged-out: codex members excluded from auto-council', !(loSetup.council?.members ?? []).some(l => l.startsWith('codex-cli:')), (loSetup.council?.members ?? []).join(','));
     await loggedOutClient.close(); loggedOutClient = undefined;
+
+    // Claude at 'free' tier → detectClaude() must NOT spend a real (quota-metered)
+    // completion probe, mirroring detectGrok's existing gate. Without the gate,
+    // the mock would happily answer READY and usable would come back true even
+    // at a tier that explicitly opted out of claude-cli members.
+    cfDir = mkdtempSync(join(tmpdir(), 'mc-e2e-cf-'));
+    const cfTransport = new StdioClientTransport({
+      command: 'node', args: [serverEntry],
+      env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, CLAUDE_TIER: 'free', MODEL_COUNCIL_STATE: join(cfDir, 'state.json') },
+    });
+    claudeFreeClient = new Client({ name: 'cf-e2e', version: '1.0.0' }, { capabilities: {} });
+    await claudeFreeClient.connect(cfTransport);
+    const cf = parseToolResult(await claudeFreeClient.callTool({ name: 'council_status', arguments: {} }));
+    check('claude free tier: installed detected (cheap --version check still runs)', cf.detected?.claude?.installed === true, JSON.stringify(cf.detected?.claude));
+    check('claude free tier: usable stays false (real probe gated, not spent)', cf.detected?.claude?.usable === false, JSON.stringify(cf.detected?.claude));
+    const cfSetup = parseToolResult(await claudeFreeClient.callTool({ name: 'setup_council', arguments: {} }));
+    check('claude free tier: claude-cli members excluded from auto-council', !(cfSetup.council?.members ?? []).some(l => l.startsWith('claude-cli:')), (cfSetup.council?.members ?? []).join(','));
+    await claudeFreeClient.close(); claudeFreeClient = undefined;
   } finally {
     try { await detectClient.close(); } catch { /* already closed */ }
     try { if (rebootClient) await rebootClient.close(); } catch { /* noop */ }
     try { if (loggedOutClient) await loggedOutClient.close(); } catch { /* noop */ }
+    try { if (claudeFreeClient) await claudeFreeClient.close(); } catch { /* noop */ }
     rmSync(stateDir, { recursive: true, force: true });
     if (loDir) rmSync(loDir, { recursive: true, force: true });
+    if (cfDir) rmSync(cfDir, { recursive: true, force: true });
   }
 
   mock.kill();

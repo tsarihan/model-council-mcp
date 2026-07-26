@@ -472,6 +472,24 @@ console.log('▶ AnthropicProvider: per-request timeout + SDK retries disabled')
   check('complete(): falls back to DEFAULT_COMPLETION_TIMEOUT_MS when unset', capturedOpts?.timeout === 120_000, `got ${JSON.stringify(capturedOpts)}`);
 }
 
+console.log('▶ withTimeoutOrThrow (detectOllama reachable-on-timeout fix)');
+{
+  const { withTimeoutOrThrow } = await import('../dist/detect.js');
+  const fast = await withTimeoutOrThrow(Promise.resolve('real result'), 50);
+  check('resolves normally when the promise wins', fast === 'real result');
+  let threw = false;
+  try {
+    // Never resolves within the window — must REJECT, not silently resolve
+    // with a fallback (the bug: a hung Ollama host's listModels() timing out
+    // was indistinguishable from a genuine empty model list, so
+    // report.reachable was set true either way).
+    await withTimeoutOrThrow(new Promise(() => {}), 50);
+  } catch {
+    threw = true;
+  }
+  check('rejects on timeout instead of resolving with a fallback', threw);
+}
+
 console.log('▶ CappedBuffer (bounds CLI subprocess stdout/stderr accumulation)');
 {
   const { CappedBuffer } = await import('../dist/providers/base.js');

@@ -36864,6 +36864,17 @@ async function withTimeout(p2, ms, fallback) {
     clearTimeout(timer);
   }
 }
+async function withTimeoutOrThrow(p2, ms) {
+  let timer;
+  const t2 = new Promise((_2, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
+  });
+  try {
+    return await Promise.race([p2, t2]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 function cliPath(envVar, fallback) {
   const v2 = (process.env[envVar] || "").trim();
   return v2 && !v2.includes("${") ? v2 : fallback;
@@ -36873,7 +36884,7 @@ async function detectOllama(registry3, tiers, subs) {
   const report = { reachable: false, localModels: [], cloud: "skipped" };
   if (!ollama) return report;
   try {
-    const models = await withTimeout(ollama.listModels(), 6e3, []);
+    const models = await withTimeoutOrThrow(ollama.listModels(), 6e3);
     report.reachable = true;
     report.localModels = models.filter((m2) => !isCloudModel(m2.model) && !isEmbeddingModel(m2)).map((m2) => m2.model);
   } catch {
@@ -36890,10 +36901,13 @@ async function detectOllama(registry3, tiers, subs) {
   }
   return report;
 }
-async function detectClaude() {
+async function detectClaude(tiers, subs) {
   const cmd = cliPath("CLAUDE_CLI_PATH", "claude");
   const installed = (await runCli(cmd, ["--version"], { timeoutMs: 8e3 })).code === 0;
   if (!installed) return { installed: false, usable: false };
+  if (!tierAllowsCloud("claude", tiers.claude, subs)) {
+    return { installed: true, usable: false };
+  }
   const probe = await runCli(
     cmd,
     [
@@ -36954,7 +36968,7 @@ async function detectGrok(tiers, subs) {
 async function detectEnvironment(registry3, tiers, subs) {
   const [ollama, claude, codex, grok] = await Promise.all([
     detectOllama(registry3, tiers, subs),
-    detectClaude(),
+    detectClaude(tiers, subs),
     detectCodex(),
     detectGrok(tiers, subs)
   ]);
@@ -37561,7 +37575,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.24"
+    version: "0.2.25"
   },
   {
     capabilities: { tools: {} },

@@ -86,6 +86,21 @@ async function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T
   finally { clearTimeout(timer!); }
 }
 
+/**
+ * Like withTimeout, but a timeout REJECTS instead of resolving with a
+ * fallback — for callers where a timed-out result would otherwise be
+ * indistinguishable from a genuine successful-but-empty result (e.g. a hung
+ * Ollama host resolving `listModels()` to `[]` on timeout looks identical to
+ * "reachable, zero models installed" unless the timeout case is a distinct
+ * outcome the caller's try/catch can tell apart).
+ */
+export async function withTimeoutOrThrow<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const t = new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms); });
+  try { return await Promise.race([p, t]); }
+  finally { clearTimeout(timer!); }
+}
+
 /** Resolve a CLI path from an env var, treating unsubstituted placeholders as unset. */
 function cliPath(envVar: string, fallback: string): string {
   const v = (process.env[envVar] || '').trim();
@@ -101,7 +116,7 @@ async function detectOllama(
   const report: EnvReport['ollama'] = { reachable: false, localModels: [], cloud: 'skipped' };
   if (!ollama) return report;
   try {
-    const models = await withTimeout(ollama.listModels(), 6000, []);
+    const models = await withTimeoutOrThrow(ollama.listModels(), 6000);
     report.reachable = true;
     report.localModels = models
       .filter(m => !isCloudModel(m.model) && !isEmbeddingModel(m))
@@ -124,10 +139,20 @@ async function detectOllama(
   return report;
 }
 
-async function detectClaude(): Promise<EnvReport['claude']> {
+async function detectClaude(tiers: SubscriptionTiers, subs: Subscriptions): Promise<EnvReport['claude']> {
   const cmd = cliPath('CLAUDE_CLI_PATH', 'claude');
   const installed = (await runCli(cmd, ['--version'], { timeoutMs: 8000 })).code === 0;
   if (!installed) return { installed: false, usable: false };
+  // The probe below is a REAL completion call — same class of real, billable
+  // usage as grok's probe (see detectGrok's comment). Unlike grok, Claude
+  // defaults to a paid tier, so in the common case this gate is a no-op —
+  // but a user who's explicitly set CLAUDE_TIER=free (opting OUT of claude-cli
+  // members) would otherwise still pay for a probe every council_status/boot,
+  // for a result that gets thrown away anyway (autoPopulatedMembers already
+  // requires tierAllowsCloud before including any claude-cli member).
+  if (!tierAllowsCloud('claude', tiers.claude, subs)) {
+    return { installed: true, usable: false };
+  }
   // Lock the probe down exactly like the completion path: no tools, strict MCP
   // config (so it does NOT load — and recurse into — this very plugin), and no
   // session persistence. Without --strict-mcp-config this would boot a nested
@@ -202,7 +227,7 @@ export async function detectEnvironment(
 ): Promise<EnvReport> {
   const [ollama, claude, codex, grok] = await Promise.all([
     detectOllama(registry, tiers, subs),
-    detectClaude(),
+    detectClaude(tiers, subs),
     detectCodex(),
     detectGrok(tiers, subs),
   ]);

@@ -139,6 +139,20 @@ check('ollama -cloud → ollama-cloud', poolKey(member('ollama', 'qwen3-coder:48
 check('ollama local → local', poolKey(member('ollama', 'gemma4:31b-mlx')) === 'local');
 check('vllm (self-hosted) → local', poolKey(member('vllm', 'meta-llama/Llama-3')) === 'local');
 
+// An Ollama-harness claude-cli server (config.anthropicBaseUrl set) must NOT
+// share the real Claude subscription's pool — it drives Ollama, and should
+// respect Ollama's own concurrency ceiling instead.
+const ollamaHarnessMember = (model) => ({
+  modelId: { provider: 'claude-cli', model },
+  provider: { config: { type: 'claude-cli', anthropicBaseUrl: 'http://localhost:11434' } },
+});
+check('claude-cli w/ anthropicBaseUrl + :cloud model → ollama-cloud (not claude)',
+  poolKey(ollamaHarnessMember('glm-5.2:cloud')) === 'ollama-cloud');
+check('claude-cli w/ anthropicBaseUrl + local model → local (not claude)',
+  poolKey(ollamaHarnessMember('llama3')) === 'local');
+check('claude-cli w/o anthropicBaseUrl still → claude (real subscription unaffected)',
+  poolKey(member('claude-cli', 'opus')) === 'claude');
+
 console.log('▶ selectJudge: multi-server lookup matches on serverId too (not just model+provider)');
 {
   const { selectJudge } = await import('../dist/council/orchestrator.js');
@@ -1161,6 +1175,45 @@ console.log('▶ CLI providers: an explicit (shorter) timeoutMs is respected, no
   }
 }
 
+console.log('▶ buildChildEnv: subscription vs Ollama-harness mode never cross-contaminate');
+{
+  const { buildChildEnv } = await import('../dist/providers/claude-cli.js');
+
+  // Subscription mode (no override): credentials stripped, and any AMBIENT
+  // ANTHROPIC_BASE_URL the server process happens to have exported must be
+  // cleared too — otherwise a stray export could silently redirect real
+  // subscription traffic to another backend.
+  const ambientEnv = {
+    PATH: '/usr/bin',
+    ANTHROPIC_API_KEY: 'sk-real-key',
+    ANTHROPIC_AUTH_TOKEN: 'real-token',
+    ANTHROPIC_BASE_URL: 'https://attacker-controlled.example.com',
+  };
+  const subEnv = buildChildEnv(ambientEnv, undefined);
+  check('subscription mode: ANTHROPIC_API_KEY stripped', subEnv.ANTHROPIC_API_KEY === undefined);
+  check('subscription mode: ANTHROPIC_AUTH_TOKEN stripped', subEnv.ANTHROPIC_AUTH_TOKEN === undefined);
+  check('subscription mode: ambient ANTHROPIC_BASE_URL cleared (not leaked into subscription traffic)',
+    subEnv.ANTHROPIC_BASE_URL === undefined, `got ${subEnv.ANTHROPIC_BASE_URL}`);
+  check('subscription mode: unrelated env vars pass through', subEnv.PATH === '/usr/bin');
+
+  // Ollama-harness mode (override set): BASE_URL points at the override, a
+  // non-empty placeholder key is set (Ollama ignores its value but the CLI
+  // refuses to run non-interactively with none at all), and no real
+  // credential ever reaches this backend.
+  const harnessEnv = buildChildEnv(ambientEnv, 'http://localhost:11434');
+  check('harness mode: ANTHROPIC_BASE_URL set to the configured override',
+    harnessEnv.ANTHROPIC_BASE_URL === 'http://localhost:11434');
+  check('harness mode: ANTHROPIC_API_KEY set to a non-empty placeholder (not the real key)',
+    typeof harnessEnv.ANTHROPIC_API_KEY === 'string' && harnessEnv.ANTHROPIC_API_KEY.length > 0 && harnessEnv.ANTHROPIC_API_KEY !== 'sk-real-key');
+  check('harness mode: ANTHROPIC_AUTH_TOKEN stripped', harnessEnv.ANTHROPIC_AUTH_TOKEN === undefined);
+  check('harness mode: unrelated env vars pass through', harnessEnv.PATH === '/usr/bin');
+
+  // No ambient ANTHROPIC_BASE_URL at all — subscription mode must not invent one.
+  const cleanEnv = buildChildEnv({ PATH: '/usr/bin' }, undefined);
+  check('subscription mode with no ambient override: ANTHROPIC_BASE_URL still unset',
+    cleanEnv.ANTHROPIC_BASE_URL === undefined);
+}
+
 console.log('▶ withTimeoutOrThrow (detectOllama reachable-on-timeout fix)');
 {
   const { withTimeoutOrThrow } = await import('../dist/detect.js');
@@ -1379,6 +1432,43 @@ console.log('▶ loadConfig: strictParseInt rejects a numeric PREFIX with traili
     check('COUNCIL_MODELS partially valid: no warning (existing drop-invalid-entries behavior preserved)',
       cfgPartialCouncil.warnings.length === 0, JSON.stringify(cfgPartialCouncil.warnings));
     check('COUNCIL_MODELS partially valid: the valid entry is kept', cfgPartialCouncil.council.members.length === 1);
+  } finally {
+    process.env = saved;
+  }
+}
+
+console.log('▶ loadConfig: CLAUDE_CLI_OLLAMA_MODELS registers a distinct, opt-in Ollama-harness claude-cli server');
+{
+  const { loadConfig } = await import('../dist/config.js');
+  const saved = { ...process.env };
+  try {
+    delete process.env.COUNCIL_MODELS;
+    delete process.env.CLAUDE_CLI_OLLAMA_MODELS;
+    delete process.env.CLAUDE_CLI_OLLAMA_ADDRESS;
+    const cfgOff = loadConfig();
+    check('unset by default: no claude-cli-ollama server registered (opt-in only)',
+      !cfgOff.servers.some(s => s.id === 'claude-cli-ollama'));
+
+    process.env.CLAUDE_CLI_OLLAMA_MODELS = 'glm-5.2:cloud, kimi-k2.7-code:cloud ,';
+    const cfgOn = loadConfig();
+    const harness = cfgOn.servers.find(s => s.id === 'claude-cli-ollama');
+    check('registers under a DISTINCT id from the real subscription server',
+      !!harness && harness.id !== 'claude-cli', JSON.stringify(harness));
+    check('registers with type claude-cli (reuses the harness provider)',
+      harness?.type === 'claude-cli');
+    check('model list parsed, trimmed, empty entries dropped',
+      JSON.stringify(harness?.models) === JSON.stringify(['glm-5.2:cloud', 'kimi-k2.7-code:cloud']),
+      JSON.stringify(harness?.models));
+    check('anthropicBaseUrl defaults to the local Ollama address when CLAUDE_CLI_OLLAMA_ADDRESS is unset',
+      harness?.anthropicBaseUrl === 'http://localhost:11434', harness?.anthropicBaseUrl);
+    check('the real subscription claude-cli server is unaffected (no anthropicBaseUrl)',
+      !cfgOn.servers.find(s => s.id === 'claude-cli')?.anthropicBaseUrl);
+
+    process.env.CLAUDE_CLI_OLLAMA_ADDRESS = 'remote-ollama.example.com:11434';
+    const cfgAddr = loadConfig();
+    check('CLAUDE_CLI_OLLAMA_ADDRESS overrides the default, normalized to a full URL',
+      cfgAddr.servers.find(s => s.id === 'claude-cli-ollama')?.anthropicBaseUrl === 'http://remote-ollama.example.com:11434',
+      cfgAddr.servers.find(s => s.id === 'claude-cli-ollama')?.anthropicBaseUrl);
   } finally {
     process.env = saved;
   }

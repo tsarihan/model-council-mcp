@@ -307,6 +307,36 @@ export function loadConfig(): AppConfig {
     });
   }
 
+  // ── Open-weight models via the claude CLI's own harness (opt-in) ──────────
+  // A SEPARATE registration from the real subscription CLI above (distinct
+  // server id) that points the `claude` CLI's ANTHROPIC_BASE_URL at Ollama's
+  // native Anthropic-Messages-API-compatible endpoint instead of the real
+  // Anthropic API — see claude-cli.ts's file header for why this is the only
+  // way an Ollama-hosted model gets genuine full_repo_access (Read/Grep/Glob
+  // tool use), rather than the flattened, no-tool-use single completion every
+  // other Ollama/OpenAI-compatible/API provider gets. These are NOT Claude —
+  // ClaudeCliProvider.listModels() labels them distinctly. Opt-in only (no
+  // tier gates it, and it never joins auto-population): it costs nothing to
+  // leave unset, and unlike the real subscription CLI/Ollama's own local
+  // models, this combination (repo contents sent to whichever Ollama backend
+  // is configured — local or `:cloud`) is a deliberate choice, not a default.
+  const claudeCliOllamaModels = (envClean('CLAUDE_CLI_OLLAMA_MODELS') ?? '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  if (claudeCliOllamaModels.length) {
+    const harnessAddr = envClean('CLAUDE_CLI_OLLAMA_ADDRESS') ?? ollamaAddr;
+    servers.push({
+      id: 'claude-cli-ollama',
+      type: 'claude-cli',
+      baseUrl: '(Ollama via claude CLI harness)',
+      label: 'Ollama (via claude CLI harness)',
+      command: envClean('CLAUDE_CLI_PATH') ?? 'claude',
+      models: claudeCliOllamaModels,
+      anthropicBaseUrl: normalizeUrl(harnessAddr ?? 'http://localhost:11434'),
+    });
+  }
+
   // ── ChatGPT subscription via the first-party Codex CLI ────────────────────
   // Registered when the ChatGPT tier grants cloud (default) or the legacy
   // CODEX_CLI boolean is set. Codex is a coding agent; members answer with a

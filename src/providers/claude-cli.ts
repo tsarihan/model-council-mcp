@@ -45,6 +45,28 @@
  * always one of the already-granted directories (repoRoot when present, else
  * the vision image dir), so the process's own directory never adds scope
  * beyond what `--add-dir` explicitly grants.
+ *
+ * Ollama-harness mode (config.anthropicBaseUrl): this same provider also
+ * drives OPEN-WEIGHT models through the identical harness, by pointing the
+ * `claude` CLI's own ANTHROPIC_BASE_URL at an Anthropic-Messages-API-
+ * compatible endpoint other than the real Anthropic API — Ollama serves one
+ * natively (confirmed live: `POST /v1/messages` returns authentically
+ * Anthropic-shaped JSON). This is how an Ollama model gets GENUINE
+ * full_repo_access: every other non-CLI provider (ollama's own OpenAI-style
+ * path, openai/anthropic-API/xai) only ever gets a flattened text completion
+ * with no tool-use loop, because they have no harness to grant tools within.
+ * Reusing this provider means the SAME `complete()` args construction, tool
+ * allowlist, and permission enforcement apply unchanged — verified live that
+ * the narrow `--tools Read,Grep,Glob --add-dir <repo>` allowlist alone (no
+ * `--dangerously-skip-permissions`) already produces `permission_denials: []`
+ * and correct repo reads against an Ollama backend. Only `run()`'s
+ * environment setup differs between the two modes (see `buildChildEnv`):
+ * subscription mode strips credentials to force CLI subscription auth;
+ * harness mode instead points ANTHROPIC_BASE_URL at the override with a
+ * dummy key, and both modes explicitly settle ANTHROPIC_BASE_URL one way or
+ * the other so an ambient export in the server's own environment can never
+ * leak into the wrong mode. These members are NOT Claude — `listModels()`
+ * labels them accordingly.
  */
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -70,6 +92,41 @@ interface RunResult {
   stderr: string;
 }
 
+/**
+ * Builds the child process's environment for either mode (see file header).
+ * Exported (pure, no I/O) so both modes can be unit-tested directly without a
+ * real subprocess or a real Ollama instance.
+ *
+ * The two branches are mutually exclusive and each explicitly settles
+ * ANTHROPIC_BASE_URL one way or the other — never left to fall through from
+ * `process.env` — so a stray export in the server's own ambient environment
+ * can never silently redirect one mode's traffic into the other's backend.
+ */
+export function buildChildEnv(
+  baseEnv: NodeJS.ProcessEnv,
+  anthropicBaseUrl: string | undefined,
+): NodeJS.ProcessEnv {
+  const env = { ...baseEnv };
+  if (anthropicBaseUrl) {
+    // Ollama-harness mode: route this subprocess's Anthropic-Messages-API
+    // traffic at the configured override instead of the real Anthropic API.
+    // The key's value is never checked by Ollama, but the CLI still refuses
+    // to run non-interactively with no key at all, so a placeholder is
+    // required, not optional.
+    env.ANTHROPIC_BASE_URL = anthropicBaseUrl;
+    env.ANTHROPIC_API_KEY = 'ollama-harness-placeholder-key';
+    delete env.ANTHROPIC_AUTH_TOKEN;
+  } else {
+    // Subscription mode: force subscription auth by stripping credentials the
+    // CLI would prefer over it, and clear any ambient ANTHROPIC_BASE_URL so a
+    // stray export can never redirect subscription traffic elsewhere.
+    delete env.ANTHROPIC_API_KEY;
+    delete env.ANTHROPIC_AUTH_TOKEN;
+    delete env.ANTHROPIC_BASE_URL;
+  }
+  return env;
+}
+
 /** SIGKILL the child's whole process group (detached), falling back to the child alone. */
 function killTree(child: { pid?: number; kill: (sig: NodeJS.Signals) => boolean }): void {
   try {
@@ -89,6 +146,8 @@ export class ClaudeCliProvider implements Provider {
   readonly config: ServerConfig;
   private readonly command: string;
   private readonly models: string[];
+  /** Set only in Ollama-harness mode (see file header); undefined for real subscription CLI use. */
+  private readonly anthropicBaseUrl?: string;
   /** Per-model OCR-challenge-verified vision result; only set once definitive. */
   private visionVerifiedCache = new Map<string, boolean>();
 
@@ -98,6 +157,7 @@ export class ClaudeCliProvider implements Provider {
     this.command = config.command?.trim() || 'claude';
     this.models =
       config.models && config.models.length ? config.models : DEFAULT_MODELS;
+    this.anthropicBaseUrl = config.anthropicBaseUrl?.trim() || undefined;
   }
 
   async ping(): Promise<boolean> {
@@ -110,10 +170,15 @@ export class ClaudeCliProvider implements Provider {
   }
 
   async listModels(): Promise<ModelInfo[]> {
+    // Ollama-harness members are NOT Claude — label distinctly so list_models /
+    // get_council_config never mislead the caller into thinking they're
+    // talking to the real Claude subscription.
     return this.models.map(m => ({
       provider: 'claude-cli' as ProviderType,
       model: m,
-      label: `Claude ${m} (subscription)`,
+      label: this.anthropicBaseUrl
+        ? `${m} (via claude CLI harness, ${this.anthropicBaseUrl})`
+        : `Claude ${m} (subscription)`,
     }));
   }
 
@@ -247,7 +312,12 @@ export class ClaudeCliProvider implements Provider {
       // git_repo points elsewhere). Pin cwd to one of the already-granted
       // directories so the process's own directory never adds scope beyond
       // what --add-dir explicitly lists.
-      const { code, stdout, stderr } = await this.run(args, prompt, timeoutMs, addDirs[addDirs.length - 1]);
+      const { code, stdout, stderr } = await this.run(
+        args,
+        prompt,
+        timeoutMs,
+        addDirs[addDirs.length - 1],
+      );
       if (code !== 0) {
         throw new Error(
           `claude CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || '(no stderr)'}`,
@@ -288,10 +358,7 @@ export class ClaudeCliProvider implements Provider {
     cwd?: string,
   ): Promise<RunResult> {
     return new Promise((resolve, reject) => {
-      // Force subscription auth: strip credentials the CLI would prefer over it.
-      const env = { ...process.env };
-      delete env.ANTHROPIC_API_KEY;
-      delete env.ANTHROPIC_AUTH_TOKEN;
+      const env = buildChildEnv(process.env, this.anthropicBaseUrl);
 
       const child = spawn(this.command, args, {
         env,

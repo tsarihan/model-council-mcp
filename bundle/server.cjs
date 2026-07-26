@@ -24768,6 +24768,19 @@ function loadConfig() {
       models: cliModels.length ? cliModels : ["opus", "sonnet"]
     });
   }
+  const claudeCliOllamaModels = (envClean("CLAUDE_CLI_OLLAMA_MODELS") ?? "").split(",").map((s2) => s2.trim()).filter(Boolean);
+  if (claudeCliOllamaModels.length) {
+    const harnessAddr = envClean("CLAUDE_CLI_OLLAMA_ADDRESS") ?? ollamaAddr;
+    servers.push({
+      id: "claude-cli-ollama",
+      type: "claude-cli",
+      baseUrl: "(Ollama via claude CLI harness)",
+      label: "Ollama (via claude CLI harness)",
+      command: envClean("CLAUDE_CLI_PATH") ?? "claude",
+      models: claudeCliOllamaModels,
+      anthropicBaseUrl: normalizeUrl(harnessAddr ?? "http://localhost:11434")
+    });
+  }
   if (tierAllowsCloud("chatgpt", tiers.chatgpt, subs) || envBool("CODEX_CLI", false)) {
     const defModels = (Array.isArray(subs.providers.chatgpt.models) ? subs.providers.chatgpt.models.join(",") : "") || "default";
     const codexModels = (envClean("CODEX_CLI_MODELS") ?? defModels).split(",").map((s2) => s2.trim()).filter(Boolean);
@@ -35078,6 +35091,19 @@ var MIME_EXT = {
   "image/gif": "gif",
   "image/webp": "webp"
 };
+function buildChildEnv(baseEnv, anthropicBaseUrl) {
+  const env = { ...baseEnv };
+  if (anthropicBaseUrl) {
+    env.ANTHROPIC_BASE_URL = anthropicBaseUrl;
+    env.ANTHROPIC_API_KEY = "ollama-harness-placeholder-key";
+    delete env.ANTHROPIC_AUTH_TOKEN;
+  } else {
+    delete env.ANTHROPIC_API_KEY;
+    delete env.ANTHROPIC_AUTH_TOKEN;
+    delete env.ANTHROPIC_BASE_URL;
+  }
+  return env;
+}
 function killTree(child) {
   try {
     if (child.pid) process.kill(-child.pid, "SIGKILL");
@@ -35094,6 +35120,8 @@ var ClaudeCliProvider = class {
   config;
   command;
   models;
+  /** Set only in Ollama-harness mode (see file header); undefined for real subscription CLI use. */
+  anthropicBaseUrl;
   /** Per-model OCR-challenge-verified vision result; only set once definitive. */
   visionVerifiedCache = /* @__PURE__ */ new Map();
   constructor(config2) {
@@ -35101,6 +35129,7 @@ var ClaudeCliProvider = class {
     this.serverId = config2.id;
     this.command = config2.command?.trim() || "claude";
     this.models = config2.models && config2.models.length ? config2.models : DEFAULT_MODELS;
+    this.anthropicBaseUrl = config2.anthropicBaseUrl?.trim() || void 0;
   }
   async ping() {
     try {
@@ -35114,7 +35143,7 @@ var ClaudeCliProvider = class {
     return this.models.map((m2) => ({
       provider: "claude-cli",
       model: m2,
-      label: `Claude ${m2} (subscription)`
+      label: this.anthropicBaseUrl ? `${m2} (via claude CLI harness, ${this.anthropicBaseUrl})` : `Claude ${m2} (subscription)`
     }));
   }
   /**
@@ -35200,7 +35229,12 @@ var ClaudeCliProvider = class {
         // replace the default coding-agent persona
       ];
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-      const { code, stdout, stderr } = await this.run(args, prompt, timeoutMs, addDirs[addDirs.length - 1]);
+      const { code, stdout, stderr } = await this.run(
+        args,
+        prompt,
+        timeoutMs,
+        addDirs[addDirs.length - 1]
+      );
       if (code !== 0) {
         throw new Error(
           `claude CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || "(no stderr)"}`
@@ -35232,9 +35266,7 @@ var ClaudeCliProvider = class {
   }
   run(args, input, timeoutMs, cwd) {
     return new Promise((resolve4, reject) => {
-      const env = { ...process.env };
-      delete env.ANTHROPIC_API_KEY;
-      delete env.ANTHROPIC_AUTH_TOKEN;
+      const env = buildChildEnv(process.env, this.anthropicBaseUrl);
       const child = (0, import_node_child_process.spawn)(this.command, args, {
         env,
         stdio: ["pipe", "pipe", "pipe"],
@@ -35735,8 +35767,13 @@ function poolKey(m2) {
   switch (type) {
     case "codex-cli":
       return "chatgpt";
-    case "claude-cli":
+    case "claude-cli": {
+      if (m2.provider.config.anthropicBaseUrl) {
+        const model = m2.modelId.model;
+        return model.endsWith(":cloud") || model.endsWith("-cloud") ? "ollama-cloud" : "local";
+      }
       return "claude";
+    }
     case "grok-cli":
       return "grok";
     case "openai":

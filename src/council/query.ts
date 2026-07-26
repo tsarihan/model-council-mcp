@@ -33,7 +33,17 @@ export function poolKey(m: Member): PoolKey {
   const type = m.provider.config.type;
   switch (type) {
     case 'codex-cli': return 'chatgpt';
-    case 'claude-cli': return 'claude';
+    case 'claude-cli': {
+      // An Ollama-harness claude-cli server (config.anthropicBaseUrl set —
+      // see claude-cli.ts's file header) is driving Ollama, not the real
+      // Claude subscription: it must respect OLLAMA's concurrency ceiling,
+      // not the unrelated Claude subscription tier's limit.
+      if (m.provider.config.anthropicBaseUrl) {
+        const model = m.modelId.model;
+        return model.endsWith(':cloud') || model.endsWith('-cloud') ? 'ollama-cloud' : 'local';
+      }
+      return 'claude';
+    }
     case 'grok-cli': return 'grok';
     case 'openai': return 'openai';
     case 'anthropic': return 'anthropic';

@@ -345,4 +345,15 @@ export interface ServerConfig {
   command?: string;
   /** CLI-backed providers (claude-cli): model aliases to expose. */
   models?: string[];
+  /**
+   * claude-cli only: when set, this server drives the `claude` CLI's own
+   * agentic harness (Read/Grep/Glob, full_repo_access's --add-dir) against
+   * an Anthropic-Messages-API-compatible backend OTHER than the real
+   * Anthropic API — e.g. a local Ollama server's native `/v1/messages`
+   * endpoint — so an open-weight model gets genuine repo access by reusing
+   * this harness, rather than the no-tool-use single-completion path every
+   * other provider (Ollama, OpenAI-compatible, Anthropic API) has. These
+   * members are NOT Claude and must never be labelled as such.
+   */
+  anthropicBaseUrl?: string;
 }

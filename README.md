@@ -439,6 +439,12 @@ was assessing — `deconflictionScore` is still a real number computed from whic
 succeed, but treat it as a pessimistic **lower bound**: conflicts left "unresolved" may only look
 that way because the judge never got to re-assess them, not because the council truly disagreed.
 
+Round-to-round resolution matching is **exact** (case/whitespace-normalized), not fuzzy: each
+round's categorization prompt is told the currently open conflict topics and instructed to reuse
+them verbatim if a response still reflects the same disagreement, which is what makes exact
+matching reliable — a judge that quietly rewords a still-open topic reads as that conflict having
+resolved and a new one appearing, rather than the topic silently vanishing into a false match.
+
 #### Pooled result (Delphi)
 
 ```json

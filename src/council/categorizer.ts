@@ -30,11 +30,28 @@ export interface CompleteConfig {
 export function buildCategorizationPrompt(
   question: string,
   responses: RawResponse[],
+  openTopics: string[] = [],
 ): string {
   const responseBlock = responses
     .filter(r => !r.error)
     .map(r => `### ${r.label}\n${r.response}`)
     .join('\n\n');
+
+  // Only present in a deconfliction ROUND call (deconflict.ts), never the
+  // initial categorization — see detectResolutions() in deconflict.ts, which
+  // depends on the judge reusing these EXACT strings to tell "still the same
+  // open conflict, reworded" apart from "genuinely resolved." Without this,
+  // the judge free-invents a topic string each round purely from the round's
+  // raw text, and innocuous rephrasing ("retry strategy" → "backoff
+  // approach") reads as the conflict having vanished — fabricating
+  // convergence that never actually happened.
+  const openTopicsBlock = openTopics.length
+    ? `\nThese conflict topics are still OPEN from the previous round — if a response ` +
+      `below still reflects genuine disagreement on one of them, reuse its EXACT topic ` +
+      `string verbatim (do not rephrase, expand, or abbreviate it) in your "topic" field. ` +
+      `Only write a new topic string for a genuinely different conflict not in this list:\n` +
+      openTopics.map(t => `- "${t}"`).join('\n') + '\n'
+    : '';
 
   return `You are a neutral analyst comparing responses from multiple AI models.
 
@@ -47,7 +64,7 @@ ${UNTRUSTED_CONTENT_NOTICE}
 
 Model responses:
 ${responseBlock}
-
+${openTopicsBlock}
 Categorize these responses. Return ONLY valid JSON with this exact schema (no markdown):
 {
   "commonAgreement": "<summary of what all/most models agree on, or null if none>",
@@ -100,8 +117,9 @@ export async function categorize(
   judgeProvider: Provider,
   cc: CompleteConfig,
   existingConflictIds: string[] = [],
+  openTopics: string[] = [],
 ): Promise<Omit<CategorizedResult, 'mode' | 'rawResponses'>> {
-  const prompt = buildCategorizationPrompt(question, responses);
+  const prompt = buildCategorizationPrompt(question, responses, openTopics);
 
   let rawJson: string;
   try {

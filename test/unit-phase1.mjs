@@ -200,6 +200,57 @@ console.log('▶ categorize: judgeDegraded flags a judge failure, distinct from 
   check('genuine zero-conflict result → judgeDegraded NOT set', genuine.judgeDegraded === undefined);
 }
 
+console.log('▶ deconfliction round: open-topic prompt + exact-match resolution detection (rephrase-drift fix)');
+{
+  const { buildCategorizationPrompt } = await import('../dist/council/categorizer.js');
+  const { detectResolutions } = await import('../dist/council/deconflict.js');
+
+  // The round prompt must list open topics verbatim and instruct exact reuse
+  // — this is what makes exact-string matching viable downstream.
+  const withTopics = buildCategorizationPrompt('q', [], ['retry strategy', 'caching approach']);
+  check('round prompt: lists each open topic verbatim', withTopics.includes('"retry strategy"') && withTopics.includes('"caching approach"'));
+  check('round prompt: instructs exact reuse, not rephrasing', /reuse its EXACT topic/i.test(withTopics));
+  const withoutTopics = buildCategorizationPrompt('q', []);
+  check('initial categorization prompt (no open topics): no open-topics section', !withoutTopics.includes('still OPEN from the previous round'));
+
+  const conflictItem = (topic) => ({ id: 'conflict-1', topic, positions: [{ models: ['a'], position: 'x' }] });
+
+  // Same topic string, verbatim reuse → correctly still open, not resolved.
+  const same = detectResolutions(
+    [conflictItem('retry strategy')],
+    { conflicting: [{ topic: 'retry strategy', positions: [] }], commonAgreement: null },
+  );
+  check('exact-match: verbatim-reused topic stays in remaining', same.remaining.length === 1 && same.resolved.length === 0);
+
+  // Trivial case/whitespace difference (not real rewording) must still match —
+  // normalization guards against the judge's formatting jitter, not genuine rephrasing.
+  const normalized = detectResolutions(
+    [conflictItem('Retry Strategy')],
+    { conflicting: [{ topic: '  retry   strategy  ', positions: [] }], commonAgreement: null },
+  );
+  check('exact-match: case/whitespace-normalized topic still matches', normalized.remaining.length === 1 && normalized.resolved.length === 0);
+
+  // Genuinely absent topic → correctly resolved.
+  const gone = detectResolutions(
+    [conflictItem('retry strategy')],
+    { conflicting: [], commonAgreement: 'Converged.' },
+  );
+  check('exact-match: topic absent from new round → resolved', gone.resolved.length === 1 && gone.remaining.length === 0);
+
+  // Regression proof for the actual bug this batch fixes: two DIFFERENT topics
+  // that happen to share their first 15 characters must NOT be conflated —
+  // the old fuzzy-prefix matcher would have wrongly treated these as the same
+  // conflict (both start with "caching approach"). Exact matching keeps them
+  // correctly distinct: the old topic is genuinely gone (resolved), the new
+  // one is a different conflict the round-loop just doesn't yet track.
+  const distinctPrefixCollision = detectResolutions(
+    [conflictItem('caching approach: write-through vs write-back')],
+    { conflicting: [{ topic: 'caching approach: what TTL to use', positions: [] }], commonAgreement: null },
+  );
+  check('exact-match: topics sharing a 15-char prefix are NOT conflated (old fuzzy-match bug)',
+    distinctPrefixCollision.resolved.length === 1 && distinctPrefixCollision.remaining.length === 0);
+}
+
 console.log('▶ persistent state round-trip');
 const dir = mkdtempSync(join(tmpdir(), 'mc-state-'));
 process.env.MODEL_COUNCIL_STATE = join(dir, 'state.json');

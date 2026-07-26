@@ -60,38 +60,43 @@ Be concise and direct.`;
 // ─── Convergence check ────────────────────────────────────────────────────────
 
 /**
- * A conflict is considered resolved when all updated positions collapse to a
- * single unique stance (allowing minor wording differences — the judge model
- * decides, returning an empty conflicting array for that topic).
+ * A conflict is considered resolved when the judge no longer lists a conflict
+ * matching its topic.
+ *
+ * Matching is EXACT (case/whitespace-normalized), not fuzzy. The previous
+ * fuzzy 15-char-prefix substring match was a real correctness bug in the
+ * flagship convergence metric: two DIFFERENT topics that happened to share a
+ * short prefix could wrongly collapse together, and — far more commonly — the
+ * SAME still-open conflict reworded by the judge between rounds ("retry
+ * strategy" → "backoff approach for retries") would fail to overlap at all
+ * and get silently marked RESOLVED, fabricating consensus that never
+ * happened. buildCategorizationPrompt() (categorizer.ts) now feeds the round
+ * call the current open topics and instructs the judge to reuse them
+ * verbatim for a persisting conflict, which is what makes exact matching
+ * viable — a judge that ignores the instruction and rewords anyway will
+ * (correctly, if pessimistically) read as the old topic having resolved and
+ * a new one appearing, rather than silently misattributing wording drift as
+ * consensus.
  */
-function detectResolutions(
+export function detectResolutions(
   previous: ConflictItem[],
   newCateg: Awaited<ReturnType<typeof categorize>>,
 ): { resolved: ConflictItem[]; remaining: ConflictItem[] } {
-  // Coerce every topic to a lowercase string (a judge can emit a non-string
-  // topic) and only match on non-empty prefixes — an empty topic prefix would
-  // otherwise substring-match every conflict and corrupt resolution detection.
-  const norm = (s: unknown): string => String(s ?? '').toLowerCase();
-  const prefix = (s: string): string => s.slice(0, 15);
-  const overlaps = (a: string, b: string): boolean => {
-    const pa = prefix(a);
-    const pb = prefix(b);
-    return (!!pb && a.includes(pb)) || (!!pa && b.includes(pa));
-  };
-  const newTopics = newCateg.conflicting.map(c => norm(c.topic));
+  // Coerce every topic to a string (a judge can emit a non-string topic) and
+  // normalize case/whitespace so trivial formatting differences (not actual
+  // rewording) don't cause a false non-match.
+  const norm = (s: unknown): string => String(s ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
 
   const resolved: ConflictItem[] = [];
   const remaining: ConflictItem[] = [];
 
   for (const prev of previous) {
     const prevTopic = norm(prev.topic);
-    // A conflict is resolved if the judge no longer lists a conflict on this topic
-    const stillConflicted = newTopics.some(t => overlaps(prevTopic, t));
+    // A conflict is resolved if the judge no longer lists a conflict on this topic.
+    const updated = newCateg.conflicting.find(c => norm(c.topic) === prevTopic);
 
-    if (stillConflicted) {
-      // Update with the judge's refreshed positions
-      const updated = newCateg.conflicting.find(c => overlaps(prevTopic, norm(c.topic)));
-      remaining.push(updated ?? prev);
+    if (updated) {
+      remaining.push(updated);
     } else {
       resolved.push({
         ...prev,
@@ -254,6 +259,7 @@ export async function deconflict(
         judgeProvider,
         cc,
         openConflicts.map(c => c.id),
+        openConflicts.map(c => c.topic),
       );
     } catch {
       // Judge failed — stop here

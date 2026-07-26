@@ -386,11 +386,25 @@ export async function deconflict(
     runtime,
   );
 
-  const resolvedCount = allResolved.length;
+  // `allResolved` can include the eventual resolution of a conflict that was
+  // only discovered mid-loop (detectResolutions()'s carry-forward above
+  // deliberately keeps a reworded/new topic in play rather than dropping it),
+  // which was never part of `totalConflicts` — that denominator is fixed at
+  // the first round and does not grow for mid-loop discoveries. Precisely
+  // attributing which original conflict a later resolution corresponds to
+  // would need an ID-keyed judge protocol (out of scope here). Rather than
+  // patch the attribution, keep the reported numbers honest by construction:
+  // `resolved` can never exceed `totalConflicts`, and the score is 100 iff
+  // nothing is left open — never 100 (or above) while `unresolvedConflicts`
+  // is non-empty.
+  const resolvedCount =
+    totalConflicts > 0 ? Math.min(allResolved.length, totalConflicts) : allResolved.length;
   const score =
-    totalConflicts > 0
-      ? Math.round((resolvedCount / totalConflicts) * 100)
-      : 100;
+    totalConflicts <= 0
+      ? 100
+      : openConflicts.length > 0
+        ? Math.min(99, Math.round((resolvedCount / totalConflicts) * 100))
+        : 100;
 
   return {
     mode: 'deconflicted',

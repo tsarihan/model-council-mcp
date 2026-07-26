@@ -140,19 +140,31 @@ const dedup = (xs: string[]): string[] => [...new Set(xs)];
 const keyFor = (a: string): string => a.trim().toLowerCase();
 
 /** Match a (possibly rephrased) judge answer back to a canonical digest option. */
-function matchOption(
+export function matchOption(
   answer: string,
   byAnswer: Map<string, DialecticOption>,
 ): DialecticOption | undefined {
   const k = keyFor(answer);
   const exact = byAnswer.get(k);
   if (exact) return exact;
-  // Fuzzy: one string contains the other (e.g. "Rust" ↔ "Rust (systems)").
+  // Fuzzy: one string contains the other (e.g. "Rust" ↔ "Rust (systems)"). When
+  // more than one option matches — one option's text can be a substring of
+  // another's, e.g. "Java" is a substring of "JavaScript" — prefer the LONGEST
+  // matching key (the more specific option) instead of the first hit in Map
+  // insertion order, which could otherwise merge a rephrased answer onto the
+  // wrong canonical option (e.g. "JavaScript (Node)" wrongly matching "Java"
+  // just because it was inserted first).
+  let best: DialecticOption | undefined;
+  let bestLen = -1;
   for (const opt of byAnswer.values()) {
     const ok = keyFor(opt.answer);
-    if ((k.includes(ok) && ok.length >= 4) || (ok.includes(k) && k.length >= 4)) return opt;
+    const matches = (k.includes(ok) && ok.length >= 4) || (ok.includes(k) && k.length >= 4);
+    if (matches && ok.length > bestLen) {
+      best = opt;
+      bestLen = ok.length;
+    }
   }
-  return undefined;
+  return best;
 }
 
 interface ProsConsResult {

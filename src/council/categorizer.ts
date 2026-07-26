@@ -249,6 +249,8 @@ export function buildSynthesisPrompt(
     question,
     `"""`,
     ``,
+    UNTRUSTED_CONTENT_NOTICE,
+    ``,
     `Council findings:`,
   ];
 

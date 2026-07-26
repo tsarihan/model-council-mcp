@@ -1225,6 +1225,14 @@ async function main() {
       labels.join(','));
     check('setup: grok excluded by default (free tier, opt-in)', !labels.some(l => l.startsWith('grok-cli:')), labels.join(','));
 
+    // Regression: a mistyped/invalid tier value must be surfaced as `invalid`,
+    // not silently dropped with no trace (round-3 finding) — and must NOT
+    // clobber the currently-effective tier for that provider.
+    const badTier = parseToolResult(await detectClient.callTool({ name: 'setup_council', arguments: { claude: 'premium' } }));
+    check('setup: an invalid tier value is surfaced in `invalid`, not silently dropped',
+      badTier.invalid?.claude === 'premium', JSON.stringify(badTier.invalid));
+    check('setup: an invalid tier value is NOT applied', badTier.applied?.claude === undefined, JSON.stringify(badTier.applied));
+
     // Opting into a paid Grok tier pulls grok-cli members into the auto-council.
     const grokSetup = parseToolResult(await detectClient.callTool({ name: 'setup_council', arguments: { grok: 'supergrok' } }));
     check('setup: grok tier supergrok applied', grokSetup.tiers?.grok === 'supergrok' && grokSetup.applied?.grok === 'supergrok');

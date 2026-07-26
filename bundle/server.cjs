@@ -2984,7 +2984,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve5.call(this, root, ref);
+      let _sch = resolve4.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a3 = root.localRefs) === null || _a3 === void 0 ? void 0 : _a3[ref];
         const { schemaId } = this.opts;
@@ -3011,7 +3011,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve5(root, ref) {
+    function resolve4(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3642,7 +3642,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve5(baseURI, relativeURI, options) {
+    function resolve4(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const resolved = resolveComponent(parse3(baseURI, schemelessOptions), parse3(relativeURI, schemelessOptions), schemelessOptions, true);
       schemelessOptions.skipEscape = true;
@@ -3900,7 +3900,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize,
-      resolve: resolve5,
+      resolve: resolve4,
       resolveComponent,
       equal,
       serialize,
@@ -8948,7 +8948,7 @@ var require_lib2 = __commonJS({
       let accum = [];
       let accumBytes = 0;
       let abort = false;
-      return new Body.Promise(function(resolve5, reject) {
+      return new Body.Promise(function(resolve4, reject) {
         let resTimeout;
         if (_this4.timeout) {
           resTimeout = setTimeout(function() {
@@ -8982,7 +8982,7 @@ var require_lib2 = __commonJS({
           }
           clearTimeout(resTimeout);
           try {
-            resolve5(Buffer.concat(accum, accumBytes));
+            resolve4(Buffer.concat(accum, accumBytes));
           } catch (err) {
             reject(new FetchError(`Could not create Buffer from response body for ${_this4.url}: ${err.message}`, "system", err));
           }
@@ -9657,7 +9657,7 @@ var require_lib2 = __commonJS({
         throw new Error("native promise missing, set fetch.Promise to your favorite alternative");
       }
       Body.Promise = fetch4.Promise;
-      return new fetch4.Promise(function(resolve5, reject) {
+      return new fetch4.Promise(function(resolve4, reject) {
         const request = new Request5(url, opts);
         const options = getNodeRequestOptions(request);
         const send = (options.protocol === "https:" ? https : http).request;
@@ -9790,7 +9790,7 @@ var require_lib2 = __commonJS({
                   requestOpts.body = void 0;
                   requestOpts.headers.delete("content-length");
                 }
-                resolve5(fetch4(new Request5(locationURL, requestOpts)));
+                resolve4(fetch4(new Request5(locationURL, requestOpts)));
                 finalize();
                 return;
             }
@@ -9811,7 +9811,7 @@ var require_lib2 = __commonJS({
           const codings = headers.get("Content-Encoding");
           if (!request.compress || request.method === "HEAD" || codings === null || res.statusCode === 204 || res.statusCode === 304) {
             response = new Response5(body, response_options);
-            resolve5(response);
+            resolve4(response);
             return;
           }
           const zlibOptions = {
@@ -9821,7 +9821,7 @@ var require_lib2 = __commonJS({
           if (codings == "gzip" || codings == "x-gzip") {
             body = body.pipe(zlib.createGunzip(zlibOptions));
             response = new Response5(body, response_options);
-            resolve5(response);
+            resolve4(response);
             return;
           }
           if (codings == "deflate" || codings == "x-deflate") {
@@ -9833,12 +9833,12 @@ var require_lib2 = __commonJS({
                 body = body.pipe(zlib.createInflateRaw());
               }
               response = new Response5(body, response_options);
-              resolve5(response);
+              resolve4(response);
             });
             raw.on("end", function() {
               if (!response) {
                 response = new Response5(body, response_options);
-                resolve5(response);
+                resolve4(response);
               }
             });
             return;
@@ -9846,11 +9846,11 @@ var require_lib2 = __commonJS({
           if (codings == "br" && typeof zlib.createBrotliDecompress === "function") {
             body = body.pipe(zlib.createBrotliDecompress());
             response = new Response5(body, response_options);
-            resolve5(response);
+            resolve4(response);
             return;
           }
           response = new Response5(body, response_options);
-          resolve5(response);
+          resolve4(response);
         });
         writeToStream(req, request);
       });
@@ -13288,9 +13288,6 @@ var init_fileFromPath = __esm({
     };
   }
 });
-
-// src/index.ts
-var import_node_path9 = require("node:path");
 
 // node_modules/zod/v3/external.js
 var external_exports = {};
@@ -23179,7 +23176,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve5) => setTimeout(resolve5, pollInterval));
+        await new Promise((resolve4) => setTimeout(resolve4, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -23196,7 +23193,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve4, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -23274,7 +23271,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve5(parseResult.data);
+            resolve4(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -23535,12 +23532,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve4, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve5, interval);
+      const timeoutId = setTimeout(resolve4, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -24410,12 +24407,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve5) => {
+    return new Promise((resolve4) => {
       const json = serializeMessage(message);
       if (this._stdout.write(json)) {
-        resolve5();
+        resolve4();
       } else {
-        this._stdout.once("drain", resolve5);
+        this._stdout.once("drain", resolve4);
       }
     });
   }
@@ -24506,9 +24503,16 @@ function candidatePaths() {
 }
 function isValid2(s2) {
   const o2 = s2;
+  const tierOk = (t2) => {
+    const ti = t2;
+    if (!ti || typeof ti.cloud !== "boolean") return false;
+    if (ti.concurrency !== void 0 && !Number.isFinite(ti.concurrency)) return false;
+    return true;
+  };
   const provOk = (p2) => {
     const pi = p2;
     if (!pi || typeof pi.tiers !== "object" || pi.tiers === null) return false;
+    if (!Object.values(pi.tiers).every(tierOk)) return false;
     if (pi.models !== void 0 && !(Array.isArray(pi.models) && pi.models.every((m2) => typeof m2 === "string"))) return false;
     return true;
   };
@@ -24795,7 +24799,7 @@ function loadConfig() {
   const autoCouncil = !["false", "0", "no", "off"].includes(autoRaw);
   const cloudOverrideRaw = envClean("CLOUD_CONCURRENCY");
   const localOverrideRaw = envClean("LOCAL_CONCURRENCY");
-  const cloudOverride = cloudOverrideRaw !== void 0 ? Math.max(1, parseInt(cloudOverrideRaw, 10) || subs.defaults.cloudConcurrency) : void 0;
+  const cloudOverride = cloudOverrideRaw !== void 0 ? Number.isFinite(parseInt(cloudOverrideRaw, 10)) ? parseInt(cloudOverrideRaw, 10) : subs.defaults.cloudConcurrency : void 0;
   const localOverride = localOverrideRaw !== void 0 ? Number.isFinite(parseInt(localOverrideRaw, 10)) ? parseInt(localOverrideRaw, 10) : subs.defaults.localConcurrency : void 0;
   const poolLimits = resolvePoolLimits(tiers, { cloud: cloudOverride, local: localOverride }, subs);
   const runtime = {
@@ -24866,11 +24870,21 @@ function estimatePromptTokens(messages) {
   const chars = messages.reduce((n2, m2) => n2 + (m2.content?.length ?? 0), 0);
   return Math.ceil(chars / 3) + 4 * messages.length;
 }
+var PromptTooLargeError = class extends Error {
+  constructor(message = "prompt exceeds the model's context window") {
+    super(message);
+    this.name = "PromptTooLargeError";
+  }
+};
 function clampMaxTokens(requested, maxModelLen, messages) {
   if (!maxModelLen || maxModelLen <= 0) return requested;
   const MIN_OUTPUT = 16;
   const budget = maxModelLen - estimatePromptTokens(messages) - 64;
-  if (budget < MIN_OUTPUT) return MIN_OUTPUT;
+  if (budget < MIN_OUTPUT) {
+    throw new PromptTooLargeError(
+      `prompt (~${estimatePromptTokens(messages)} tokens) leaves no room for a response within the model's ${maxModelLen}-token context window`
+    );
+  }
   return Math.min(requested, budget);
 }
 
@@ -26603,8 +26617,8 @@ function _addRequestID(value, response) {
 }
 var APIPromise = class _APIPromise extends Promise {
   constructor(responsePromise, parseResponse2 = defaultParseResponse) {
-    super((resolve5) => {
-      resolve5(null);
+    super((resolve4) => {
+      resolve4(null);
     });
     this.responsePromise = responsePromise;
     this.parseResponse = parseResponse2;
@@ -27179,7 +27193,7 @@ var startsWithSchemeRegexp = /^[a-z][a-z0-9+.-]*:/i;
 var isAbsoluteURL = (url) => {
   return startsWithSchemeRegexp.test(url);
 };
-var sleep = (ms) => new Promise((resolve5) => setTimeout(resolve5, ms));
+var sleep = (ms) => new Promise((resolve4) => setTimeout(resolve4, ms));
 var validatePositiveInteger = (name, n2) => {
   if (typeof n2 !== "number" || !Number.isInteger(n2)) {
     throw new OpenAIError(`${name} must be an integer`);
@@ -27612,12 +27626,12 @@ var EventStream = class {
     _EventStream_errored.set(this, false);
     _EventStream_aborted.set(this, false);
     _EventStream_catchingPromiseCreated.set(this, false);
-    __classPrivateFieldSet7(this, _EventStream_connectedPromise, new Promise((resolve5, reject) => {
-      __classPrivateFieldSet7(this, _EventStream_resolveConnectedPromise, resolve5, "f");
+    __classPrivateFieldSet7(this, _EventStream_connectedPromise, new Promise((resolve4, reject) => {
+      __classPrivateFieldSet7(this, _EventStream_resolveConnectedPromise, resolve4, "f");
       __classPrivateFieldSet7(this, _EventStream_rejectConnectedPromise, reject, "f");
     }), "f");
-    __classPrivateFieldSet7(this, _EventStream_endPromise, new Promise((resolve5, reject) => {
-      __classPrivateFieldSet7(this, _EventStream_resolveEndPromise, resolve5, "f");
+    __classPrivateFieldSet7(this, _EventStream_endPromise, new Promise((resolve4, reject) => {
+      __classPrivateFieldSet7(this, _EventStream_resolveEndPromise, resolve4, "f");
       __classPrivateFieldSet7(this, _EventStream_rejectEndPromise, reject, "f");
     }), "f");
     __classPrivateFieldGet8(this, _EventStream_connectedPromise, "f").catch(() => {
@@ -27701,11 +27715,11 @@ var EventStream = class {
    *   const message = await stream.emitted('message') // rejects if the stream errors
    */
   emitted(event) {
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve4, reject) => {
       __classPrivateFieldSet7(this, _EventStream_catchingPromiseCreated, true, "f");
       if (event !== "error")
         this.once("error", reject);
-      this.once(event, resolve5);
+      this.once(event, resolve4);
     });
   }
   async done() {
@@ -27858,7 +27872,7 @@ var AssistantStream = class _AssistantStream extends EventStream {
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve5, reject) => readQueue.push({ resolve: resolve5, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve4, reject) => readQueue.push({ resolve: resolve4, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
         }
         const chunk = pushQueue.shift();
         return { value: chunk, done: false };
@@ -29476,7 +29490,7 @@ var ChatCompletionStream = class _ChatCompletionStream extends AbstractChatCompl
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve5, reject) => readQueue.push({ resolve: resolve5, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve4, reject) => readQueue.push({ resolve: resolve4, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
         }
         const chunk = pushQueue.shift();
         return { value: chunk, done: false };
@@ -31127,7 +31141,7 @@ var ResponseStream = class _ResponseStream extends EventStream {
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve5, reject) => readQueue.push({ resolve: resolve5, reject })).then((event2) => event2 ? { value: event2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve4, reject) => readQueue.push({ resolve: resolve4, reject })).then((event2) => event2 ? { value: event2, done: false } : { value: void 0, done: true });
         }
         const event = pushQueue.shift();
         return { value: event, done: false };
@@ -32554,8 +32568,8 @@ async function defaultParseResponse2(props) {
 }
 var APIPromise2 = class _APIPromise extends Promise {
   constructor(responsePromise, parseResponse2 = defaultParseResponse2) {
-    super((resolve5) => {
-      resolve5(null);
+    super((resolve4) => {
+      resolve4(null);
     });
     this.responsePromise = responsePromise;
     this.parseResponse = parseResponse2;
@@ -33116,7 +33130,7 @@ var startsWithSchemeRegexp2 = new RegExp("^(?:[a-z]+:)?//", "i");
 var isAbsoluteURL2 = (url) => {
   return startsWithSchemeRegexp2.test(url);
 };
-var sleep2 = (ms) => new Promise((resolve5) => setTimeout(resolve5, ms));
+var sleep2 = (ms) => new Promise((resolve4) => setTimeout(resolve4, ms));
 var validatePositiveInteger2 = (name, n2) => {
   if (typeof n2 !== "number" || !Number.isInteger(n2)) {
     throw new AnthropicError(`${name} must be an integer`);
@@ -33827,12 +33841,12 @@ var PromptCachingBetaMessageStream = class _PromptCachingBetaMessageStream {
       }
       return this._emit("error", new AnthropicError(String(error2)));
     });
-    __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_connectedPromise, new Promise((resolve5, reject) => {
-      __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_resolveConnectedPromise, resolve5, "f");
+    __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_connectedPromise, new Promise((resolve4, reject) => {
+      __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_resolveConnectedPromise, resolve4, "f");
       __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_rejectConnectedPromise, reject, "f");
     }), "f");
-    __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_endPromise, new Promise((resolve5, reject) => {
-      __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_resolveEndPromise, resolve5, "f");
+    __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_endPromise, new Promise((resolve4, reject) => {
+      __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_resolveEndPromise, resolve4, "f");
       __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_rejectEndPromise, reject, "f");
     }), "f");
     __classPrivateFieldGet14(this, _PromptCachingBetaMessageStream_connectedPromise, "f").catch(() => {
@@ -33961,11 +33975,11 @@ var PromptCachingBetaMessageStream = class _PromptCachingBetaMessageStream {
    *   const message = await stream.emitted('message') // rejects if the stream errors
    */
   emitted(event) {
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve4, reject) => {
       __classPrivateFieldSet12(this, _PromptCachingBetaMessageStream_catchingPromiseCreated, true, "f");
       if (event !== "error")
         this.once("error", reject);
-      this.once(event, resolve5);
+      this.once(event, resolve4);
     });
   }
   async done() {
@@ -34192,7 +34206,7 @@ var PromptCachingBetaMessageStream = class _PromptCachingBetaMessageStream {
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve5, reject) => readQueue.push({ resolve: resolve5, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve4, reject) => readQueue.push({ resolve: resolve4, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
         }
         const chunk = pushQueue.shift();
         return { value: chunk, done: false };
@@ -34346,12 +34360,12 @@ var MessageStream = class _MessageStream {
       }
       return this._emit("error", new AnthropicError(String(error2)));
     });
-    __classPrivateFieldSet13(this, _MessageStream_connectedPromise, new Promise((resolve5, reject) => {
-      __classPrivateFieldSet13(this, _MessageStream_resolveConnectedPromise, resolve5, "f");
+    __classPrivateFieldSet13(this, _MessageStream_connectedPromise, new Promise((resolve4, reject) => {
+      __classPrivateFieldSet13(this, _MessageStream_resolveConnectedPromise, resolve4, "f");
       __classPrivateFieldSet13(this, _MessageStream_rejectConnectedPromise, reject, "f");
     }), "f");
-    __classPrivateFieldSet13(this, _MessageStream_endPromise, new Promise((resolve5, reject) => {
-      __classPrivateFieldSet13(this, _MessageStream_resolveEndPromise, resolve5, "f");
+    __classPrivateFieldSet13(this, _MessageStream_endPromise, new Promise((resolve4, reject) => {
+      __classPrivateFieldSet13(this, _MessageStream_resolveEndPromise, resolve4, "f");
       __classPrivateFieldSet13(this, _MessageStream_rejectEndPromise, reject, "f");
     }), "f");
     __classPrivateFieldGet15(this, _MessageStream_connectedPromise, "f").catch(() => {
@@ -34480,11 +34494,11 @@ var MessageStream = class _MessageStream {
    *   const message = await stream.emitted('message') // rejects if the stream errors
    */
   emitted(event) {
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve4, reject) => {
       __classPrivateFieldSet13(this, _MessageStream_catchingPromiseCreated, true, "f");
       if (event !== "error")
         this.once("error", reject);
-      this.once(event, resolve5);
+      this.once(event, resolve4);
     });
   }
   async done() {
@@ -34711,7 +34725,7 @@ var MessageStream = class _MessageStream {
           if (done) {
             return { value: void 0, done: true };
           }
-          return new Promise((resolve5, reject) => readQueue.push({ resolve: resolve5, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
+          return new Promise((resolve4, reject) => readQueue.push({ resolve: resolve4, reject })).then((chunk2) => chunk2 ? { value: chunk2, done: false } : { value: void 0, done: true });
         }
         const chunk = pushQueue.shift();
         return { value: chunk, done: false };
@@ -35199,7 +35213,7 @@ var ClaudeCliProvider = class {
     }
   }
   run(args, input, timeoutMs, cwd) {
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve4, reject) => {
       const env = { ...process.env };
       delete env.ANTHROPIC_API_KEY;
       delete env.ANTHROPIC_AUTH_TOKEN;
@@ -35237,7 +35251,7 @@ var ClaudeCliProvider = class {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve5({ code: code ?? 1, stdout: stdout.toString(), stderr: stderr.toString() });
+        resolve4({ code: code ?? 1, stdout: stdout.toString(), stderr: stderr.toString() });
       });
       if (input !== void 0) child.stdin.write(input);
       child.stdin.end();
@@ -35401,7 +35415,7 @@ var CodexCliProvider = class {
     }
   }
   run(args, input, timeoutMs) {
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve4, reject) => {
       const env = { ...process.env };
       delete env.OPENAI_API_KEY;
       delete env.CODEX_API_KEY;
@@ -35436,7 +35450,7 @@ var CodexCliProvider = class {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve5({ code: code ?? 1, stdout: stdout.toString(), stderr: stderr.toString() });
+        resolve4({ code: code ?? 1, stdout: stdout.toString(), stderr: stderr.toString() });
       });
       if (input !== void 0) child.stdin.write(input);
       child.stdin.end();
@@ -35599,7 +35613,7 @@ var GrokCliProvider = class {
     }
   }
   run(args, input, timeoutMs) {
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve4, reject) => {
       const env = { ...process.env };
       delete env.XAI_API_KEY;
       const child = (0, import_node_child_process3.spawn)(this.command, args, {
@@ -35632,7 +35646,7 @@ var GrokCliProvider = class {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve5({ code: code ?? 1, stdout: stdout.toString(), stderr: stderr.toString() });
+        resolve4({ code: code ?? 1, stdout: stdout.toString(), stderr: stderr.toString() });
       });
       if (input !== void 0) child.stdin.write(input);
       child.stdin.end();
@@ -35756,7 +35770,7 @@ var EmptyCompletionError = class extends Error {
     this.name = "EmptyCompletionError";
   }
 };
-var sleep3 = (ms) => new Promise((resolve5) => setTimeout(resolve5, ms));
+var sleep3 = (ms) => new Promise((resolve4) => setTimeout(resolve4, ms));
 var Semaphore = class {
   inFlight = 0;
   waiters = [];
@@ -35766,7 +35780,7 @@ var Semaphore = class {
       return;
     }
     while (this.inFlight >= limit2) {
-      await new Promise((resolve5) => this.waiters.push(resolve5));
+      await new Promise((resolve4) => this.waiters.push(resolve4));
     }
     this.inFlight++;
   }
@@ -35810,7 +35824,7 @@ async function completeWithRetry(provider, model, messages, opts, retries) {
       lastErr = new EmptyCompletionError();
     } catch (err) {
       lastErr = err;
-      if (isTimeoutError(err)) break;
+      if (isTimeoutError(err) || err instanceof PromptTooLargeError) break;
     }
     if (attempt < attempts) await sleep3(400 * attempt);
   }
@@ -36028,6 +36042,8 @@ function buildSynthesisPrompt(question, commonAgreement, complementary, resolved
     `"""`,
     question,
     `"""`,
+    ``,
+    UNTRUSTED_CONTENT_NOTICE,
     ``,
     `Council findings:`
   ];
@@ -36284,8 +36300,8 @@ async function deconflict(input) {
     ),
     runtime
   );
-  const resolvedCount = allResolved.length;
-  const score = totalConflicts > 0 ? Math.round(resolvedCount / totalConflicts * 100) : 100;
+  const resolvedCount = totalConflicts > 0 ? Math.min(allResolved.length, totalConflicts) : allResolved.length;
+  const score = totalConflicts <= 0 ? 100 : openConflicts.length > 0 ? Math.min(99, Math.round(resolvedCount / totalConflicts * 100)) : 100;
   return {
     mode: "deconflicted",
     question,
@@ -36527,11 +36543,17 @@ function matchOption(answer, byAnswer) {
   const k2 = keyFor(answer);
   const exact = byAnswer.get(k2);
   if (exact) return exact;
+  let best;
+  let bestLen = -1;
   for (const opt of byAnswer.values()) {
     const ok = keyFor(opt.answer);
-    if (k2.includes(ok) && ok.length >= 4 || ok.includes(k2) && k2.length >= 4) return opt;
+    const matches = k2.includes(ok) && ok.length >= 4 || ok.includes(k2) && k2.length >= 4;
+    if (matches && ok.length > bestLen) {
+      best = opt;
+      bestLen = ok.length;
+    }
   }
-  return void 0;
+  return best;
 }
 async function buildProsCons(question, digest, initial, defenses, judgeModelId, judgeProvider, cc, runtime) {
   const byAnswer = /* @__PURE__ */ new Map();
@@ -36858,18 +36880,18 @@ var CouncilOrchestrator = class {
     if (!judgeModelId) {
       throw new Error("No judge model available. Add models to council first.");
     }
-    const judgeProvider = this.registry.resolve(judgeModelId);
-    if (!judgeProvider) {
-      throw new Error(
-        `Judge model provider not found for ${modelIdLabel(judgeModelId)}`
-      );
-    }
     const cc = {
       maxTokens: this.runtime.maxTokens,
       retries: this.runtime.retries,
       timeoutMs: this.runtime.requestTimeoutMs
     };
     try {
+      const judgeProvider = this.registry.resolve(judgeModelId);
+      if (!judgeProvider) {
+        throw new Error(
+          `Judge model provider not found for ${modelIdLabel(judgeModelId)}`
+        );
+      }
       if (mode === "pooled") {
         const pooled2 = await runPooled({
           question,
@@ -36951,7 +36973,7 @@ var CouncilOrchestrator = class {
 var import_node_child_process4 = require("node:child_process");
 var isCloudModel = (m2) => m2.endsWith(":cloud") || m2.endsWith("-cloud");
 function runCli(command, args, opts = { timeoutMs: 8e3 }) {
-  return new Promise((resolve5) => {
+  return new Promise((resolve4) => {
     const env = { ...process.env };
     if (opts.stripKeys === "anthropic") {
       delete env.ANTHROPIC_API_KEY;
@@ -36968,7 +36990,7 @@ function runCli(command, args, opts = { timeoutMs: 8e3 }) {
     try {
       child = (0, import_node_child_process4.spawn)(command, args, { env, stdio: ["pipe", "pipe", "pipe"], detached: true });
     } catch {
-      resolve5({ code: 127, stdout: "", stderr: "spawn failed" });
+      resolve4({ code: 127, stdout: "", stderr: "spawn failed" });
       return;
     }
     const stdout = new CappedBuffer();
@@ -36978,7 +37000,7 @@ function runCli(command, args, opts = { timeoutMs: 8e3 }) {
       if (!settled) {
         settled = true;
         clearTimeout(timer);
-        resolve5(r2);
+        resolve4(r2);
       }
     };
     const killTree4 = () => {
@@ -37010,8 +37032,8 @@ function runCli(command, args, opts = { timeoutMs: 8e3 }) {
 }
 async function withTimeout(p2, ms, fallback) {
   let timer;
-  const t2 = new Promise((resolve5) => {
-    timer = setTimeout(() => resolve5(fallback), ms);
+  const t2 = new Promise((resolve4) => {
+    timer = setTimeout(() => resolve4(fallback), ms);
   });
   try {
     return await Promise.race([p2, t2]);
@@ -37197,7 +37219,8 @@ function samePath(a2, b2) {
 }
 async function assertGitRepo(repoPath) {
   const resolved = (0, import_node_path6.resolve)(repoPath);
-  if (samePath(tryRealpath(resolved), tryRealpath((0, import_node_path6.resolve)((0, import_node_os5.homedir)())))) {
+  const canonical = tryRealpath(resolved);
+  if (samePath(canonical, tryRealpath((0, import_node_path6.resolve)((0, import_node_os5.homedir)())))) {
     throw new Error(
       `"${repoPath}" resolves to your home directory \u2014 refusing to grant it as a repo root even though it is a valid git work tree. Point at a narrower project directory instead.`
     );
@@ -37207,7 +37230,7 @@ async function assertGitRepo(repoPath) {
     ({ stdout } = await execFileAsync(
       "git",
       ["rev-parse", "--is-inside-work-tree"],
-      { cwd: resolved, timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL" }
+      { cwd: canonical, timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL" }
     ));
   } catch {
     throw new Error(`"${repoPath}" is not inside a git repository (or git is not installed).`);
@@ -37215,6 +37238,7 @@ async function assertGitRepo(repoPath) {
   if (stdout.trim() !== "true") {
     throw new Error(`"${repoPath}" is not inside a git work tree (it may be inside a .git directory).`);
   }
+  return canonical;
 }
 async function buildGitDiff(input) {
   const ref = input.ref?.trim();
@@ -37503,8 +37527,7 @@ async function runCouncil(input, onProgress) {
   const images = await loadImages(input.images);
   let fullRepoAccessRepo;
   if (input.full_repo_access) {
-    fullRepoAccessRepo = (0, import_node_path9.resolve)(input.git_repo?.trim() || process.cwd());
-    await assertGitRepo(fullRepoAccessRepo);
+    fullRepoAccessRepo = await assertGitRepo(input.git_repo?.trim() || process.cwd());
   }
   return orchestrator.ask(
     question,
@@ -37805,7 +37828,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.40"
+    version: "0.2.41"
   },
   {
     capabilities: { tools: {} },
@@ -38131,10 +38154,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         const subs = loadSubscriptions();
         const tiers = effectiveTiers(subs);
         const applied = {};
+        const invalid = {};
         const applyTier = (provider, value) => {
-          if (value !== void 0 && validTiers(provider, subs).includes(value)) {
+          if (value === void 0) return;
+          if (validTiers(provider, subs).includes(value)) {
             tiers[provider] = value;
             applied[provider] = value;
+          } else {
+            invalid[provider] = value;
           }
         };
         applyTier("chatgpt", input.chatgpt);
@@ -38147,7 +38174,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         const report = await detectEnvironment(registry2, tiers, subs);
         const labels = autoPopulatedMembers(report, tiers, subs);
         orchestrator.updateConfig({ members: labelsToMembers(labels) });
-        saveState({ members: labels });
+        if (labels.length > 0) {
+          saveState({ members: labels });
+        }
         return {
           content: [
             {
@@ -38157,9 +38186,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                   status: "updated",
                   tiers,
                   applied,
+                  ...Object.keys(invalid).length > 0 ? { invalid } : {},
                   council: { members: labels, count: labels.length },
                   quotaWarning: quotaWarning(report, tiers, subs),
-                  note: "Tiers saved. Concurrency changes and newly-enabled subscription providers take full effect after `/reload-plugins` (or restarting the server)."
+                  note: "Tiers saved. Concurrency changes and newly-enabled subscription providers take full effect after `/reload-plugins` (or restarting the server)." + (Object.keys(invalid).length > 0 ? ` Ignored invalid tier value(s): ${JSON.stringify(invalid)} \u2014 see \`invalid\` above for valid options.` : "")
                 },
                 null,
                 2

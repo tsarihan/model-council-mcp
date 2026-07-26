@@ -2,7 +2,7 @@
  * Shared member-query machinery: bounded-concurrency fan-out and
  * retry-on-empty completion.
  */
-import { ChatImage, ChatMessage, CompletionOptions, Provider, isTimeoutError } from '../providers/base.js';
+import { ChatImage, ChatMessage, CompletionOptions, Provider, isTimeoutError, PromptTooLargeError } from '../providers/base.js';
 import { ModelId, PoolKey, RawResponse, RuntimeConfig } from '../types.js';
 import { modelIdLabel } from '../config.js';
 
@@ -211,7 +211,8 @@ export async function completeWithRetry(
       lastErr = err;
       // A timeout means the server/subprocess is unresponsive; retrying just
       // multiplies the wall-clock wait (and rarely succeeds), so give up now.
-      if (isTimeoutError(err)) break;
+      // A too-large prompt is likewise not going to change between attempts.
+      if (isTimeoutError(err) || err instanceof PromptTooLargeError) break;
     }
     if (attempt < attempts) await sleep(400 * attempt);
   }

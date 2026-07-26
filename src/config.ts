@@ -355,8 +355,15 @@ export function loadConfig(): AppConfig {
   // for back-compat and power users.
   const cloudOverrideRaw = envClean('CLOUD_CONCURRENCY');
   const localOverrideRaw = envClean('LOCAL_CONCURRENCY');
+  // `0` is a legitimate, documented "unlimited" sentinel (matches the
+  // Semaphore's own `limit <= 0` convention — see LOCAL_CONCURRENCY's own
+  // README entry). The previous `parseInt(...) || default` here treated 0 as
+  // falsy and silently substituted the default, and `Math.max(1, ...)`
+  // floored anything below 1 regardless — CLOUD_CONCURRENCY=0 could never
+  // actually mean unlimited, unlike LOCAL_CONCURRENCY=0 one line below (which
+  // already used the correct Number.isFinite-based pattern). Match it.
   const cloudOverride =
-    cloudOverrideRaw !== undefined ? Math.max(1, parseInt(cloudOverrideRaw, 10) || subs.defaults.cloudConcurrency) : undefined;
+    cloudOverrideRaw !== undefined ? (Number.isFinite(parseInt(cloudOverrideRaw, 10)) ? parseInt(cloudOverrideRaw, 10) : subs.defaults.cloudConcurrency) : undefined;
   const localOverride =
     localOverrideRaw !== undefined ? (Number.isFinite(parseInt(localOverrideRaw, 10)) ? parseInt(localOverrideRaw, 10) : subs.defaults.localConcurrency) : undefined;
   const poolLimits = resolvePoolLimits(tiers, { cloud: cloudOverride, local: localOverride }, subs);

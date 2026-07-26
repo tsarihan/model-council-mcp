@@ -20,7 +20,6 @@
  * `images` (local image paths) which are routed only to council members
  * auto-detected as vision-capable (see src/images.ts, providers/*.supportsVision).
  */
-import { resolve } from 'node:path';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -113,8 +112,12 @@ async function runCouncil(
   // and granted to claude-cli/codex-cli (a real permission-review finding).
   let fullRepoAccessRepo: string | undefined;
   if (input.full_repo_access) {
-    fullRepoAccessRepo = resolve(input.git_repo?.trim() || process.cwd());
-    await assertGitRepo(fullRepoAccessRepo);
+    // Use assertGitRepo's returned REALPATH, not our own resolve() of the
+    // input, as the value granted onward to claude-cli/codex-cli's
+    // --add-dir. Passing the pre-realpath path would leave a TOCTOU window: a
+    // symlink in the path could be retargeted after validation but before the
+    // CLI invocation, granting access to a directory that was never checked.
+    fullRepoAccessRepo = await assertGitRepo(input.git_repo?.trim() || process.cwd());
   }
   return orchestrator.ask(
     question,
@@ -623,7 +626,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.40',
+    version: '0.2.41',
   },
   {
     capabilities: { tools: {} },
@@ -1055,10 +1058,19 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         const subs = loadSubscriptions();
         const tiers = effectiveTiers(subs); // re-validated base (drops tiers a pulled config removed)
         const applied: Record<string, string> = {};
+        // A mistyped/invalid tier (e.g. "premium" instead of "plus") must be
+        // surfaced, not silently dropped with no trace — matching
+        // configure_council's established pattern of reporting rejected input
+        // alongside whatever DID apply, rather than pretending the call fully
+        // succeeded when part of it was ignored.
+        const invalid: Record<string, string> = {};
         const applyTier = (provider: SubProvider, value: string | undefined): void => {
-          if (value !== undefined && validTiers(provider, subs).includes(value)) {
+          if (value === undefined) return;
+          if (validTiers(provider, subs).includes(value)) {
             tiers[provider] = value;
             applied[provider] = value;
+          } else {
+            invalid[provider] = value;
           }
         };
         applyTier('chatgpt', input.chatgpt);
@@ -1082,7 +1094,18 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         const report = await detectEnvironment(registry, tiers, subs);
         const labels = autoPopulatedMembers(report, tiers, subs);
         orchestrator.updateConfig({ members: labelsToMembers(labels) });
-        saveState({ members: labels });
+        // Only PERSIST a non-empty result — matching initCouncil()'s own
+        // `if (labels.length)` guard. A transient detection hiccup (Ollama
+        // momentarily unreachable, a CLI probe timing out) can make a genuine
+        // council look empty for one call; persisting that empty array would
+        // permanently lock boot auto-population out (initCouncil() treats any
+        // *present* `members` array, even `[]`, as "already configured, don't
+        // auto-populate" and returns early) — surviving only until the next
+        // manual setup_council/configure_council call. The live session still
+        // reflects whatever was actually just detected via updateConfig above.
+        if (labels.length > 0) {
+          saveState({ members: labels });
+        }
 
         return {
           content: [
@@ -1093,11 +1116,15 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                   status: 'updated',
                   tiers,
                   applied,
+                  ...(Object.keys(invalid).length > 0 ? { invalid } : {}),
                   council: { members: labels, count: labels.length },
                   quotaWarning: quotaWarning(report, tiers, subs),
                   note:
                     'Tiers saved. Concurrency changes and newly-enabled subscription ' +
-                    'providers take full effect after `/reload-plugins` (or restarting the server).',
+                    'providers take full effect after `/reload-plugins` (or restarting the server).' +
+                    (Object.keys(invalid).length > 0
+                      ? ` Ignored invalid tier value(s): ${JSON.stringify(invalid)} — see \`invalid\` above for valid options.`
+                      : ''),
                 },
                 null,
                 2,

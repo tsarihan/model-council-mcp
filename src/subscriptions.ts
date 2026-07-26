@@ -118,9 +118,20 @@ export function isValid(s: unknown): s is Subscriptions {
   // Validating `models` here is what stops a structurally-valid but wrong-typed
   // file (e.g. "models": "opus") from reaching config.ts's `.join()` and crashing
   // boot — instead it falls through to the EMBEDDED copy below.
+  // Each tier entry must have a real boolean `cloud` and (if present) a finite
+  // `concurrency` — otherwise a malformed file (e.g. `"cloud": "false"`, a
+  // truthy string) would pass this check and then get read by tierAllowsCloud()
+  // at face value, silently granting cloud access instead of denying it.
+  const tierOk = (t: unknown): boolean => {
+    const ti = t as TierInfo | null;
+    if (!ti || typeof ti.cloud !== 'boolean') return false;
+    if (ti.concurrency !== undefined && !Number.isFinite(ti.concurrency)) return false;
+    return true;
+  };
   const provOk = (p: unknown): boolean => {
     const pi = p as ProviderInfo | null;
     if (!pi || typeof pi.tiers !== 'object' || pi.tiers === null) return false;
+    if (!Object.values(pi.tiers).every(tierOk)) return false;
     if (pi.models !== undefined &&
         !(Array.isArray(pi.models) && pi.models.every(m => typeof m === 'string'))) return false;
     return true;

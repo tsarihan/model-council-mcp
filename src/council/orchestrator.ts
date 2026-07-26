@@ -310,12 +310,6 @@ export class CouncilOrchestrator {
     if (!judgeModelId) {
       throw new Error('No judge model available. Add models to council first.');
     }
-    const judgeProvider = this.registry.resolve(judgeModelId);
-    if (!judgeProvider) {
-      throw new Error(
-        `Judge model provider not found for ${modelIdLabel(judgeModelId)}`,
-      );
-    }
 
     const cc = {
       maxTokens: this.runtime.maxTokens,
@@ -324,9 +318,21 @@ export class CouncilOrchestrator {
     };
 
     // The judge is itself a council member; a genuine judge failure (unreachable,
-    // rate-limited, quota-exhausted) should NOT discard every member's already-
-    // collected answer. Degrade to individual mode with a note instead of aborting.
+    // rate-limited, quota-exhausted, or — moved inside this block precisely so
+    // it's covered too — simply unresolvable, e.g. a configured judge_model
+    // whose provider has no API key) should NOT discard every member's
+    // already-collected answer. Degrade to individual mode with a note
+    // instead of aborting. Resolving judgeProvider used to happen BEFORE this
+    // try block, so that specific failure threw away the entire member
+    // fan-out's responses (and the real compute/quota already spent
+    // collecting them) instead of degrading like every other judge failure.
     try {
+      const judgeProvider = this.registry.resolve(judgeModelId);
+      if (!judgeProvider) {
+        throw new Error(
+          `Judge model provider not found for ${modelIdLabel(judgeModelId)}`,
+        );
+      }
       // ── Pooled (Delphi) ──────────────────────────────────────────────────
       // Neutral, attribution-free reconsideration. Skips categorization entirely.
       if (mode === 'pooled') {

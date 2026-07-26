@@ -105,13 +105,26 @@ function samePath(a: string, b: string): boolean {
   return caseInsensitive ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
-export async function assertGitRepo(repoPath: string): Promise<void> {
+/**
+ * Validates `repoPath` is a legitimate git work tree and returns its REALPATH
+ * (symlinks fully resolved) — callers granting broader access on the strength
+ * of this check (e.g. full_repo_access's `--add-dir`) must use the returned
+ * canonical path, not their own `path.resolve()` of the original input. Using
+ * the original path would leave a TOCTOU window: if the input traverses a
+ * symlink, a local attacker could retarget it between this check and the
+ * later CLI invocation, granting access to a different directory than the one
+ * actually validated here. The canonical path has no such window — the
+ * symlink was already dereferenced once and for all before being handed back.
+ */
+export async function assertGitRepo(repoPath: string): Promise<string> {
   const resolved = resolve(repoPath);
   // realpath (not just path.resolve) so a SYMLINKED home directory — or a
   // symlink pointing INTO the home directory — can't produce a different
   // string than the real $HOME and slip past this check while pointing at
-  // the exact same location on disk.
-  if (samePath(tryRealpath(resolved), tryRealpath(resolve(homedir())))) {
+  // the exact same location on disk. Also doubles as the canonicalization
+  // this function returns to callers (see doc comment above).
+  const canonical = tryRealpath(resolved);
+  if (samePath(canonical, tryRealpath(resolve(homedir())))) {
     throw new Error(
       `"${repoPath}" resolves to your home directory — refusing to grant it as a repo root even ` +
         `though it is a valid git work tree. Point at a narrower project directory instead.`,
@@ -122,7 +135,7 @@ export async function assertGitRepo(repoPath: string): Promise<void> {
     ({ stdout } = await execFileAsync(
       'git',
       ['rev-parse', '--is-inside-work-tree'],
-      { cwd: resolved, timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL' },
+      { cwd: canonical, timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL' },
     ));
   } catch {
     throw new Error(`"${repoPath}" is not inside a git repository (or git is not installed).`);
@@ -130,6 +143,7 @@ export async function assertGitRepo(repoPath: string): Promise<void> {
   if (stdout.trim() !== 'true') {
     throw new Error(`"${repoPath}" is not inside a git work tree (it may be inside a .git directory).`);
   }
+  return canonical;
 }
 
 /**

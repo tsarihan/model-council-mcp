@@ -143,6 +143,14 @@ export function estimatePromptTokens(messages: ChatMessage[]): number {
  * max_model_len; this keeps every request valid. When the server advertises no
  * context length (maxModelLen undefined), the request is returned unchanged.
  */
+/** Thrown by clampMaxTokens when a prompt already exceeds a model's context window. */
+export class PromptTooLargeError extends Error {
+  constructor(message = 'prompt exceeds the model\'s context window') {
+    super(message);
+    this.name = 'PromptTooLargeError';
+  }
+}
+
 export function clampMaxTokens(
   requested: number,
   maxModelLen: number | undefined,
@@ -151,7 +159,17 @@ export function clampMaxTokens(
   if (!maxModelLen || maxModelLen <= 0) return requested;
   const MIN_OUTPUT = 16;
   const budget = maxModelLen - estimatePromptTokens(messages) - 64; // reserve prompt + headroom
-  if (budget < MIN_OUTPUT) return MIN_OUTPUT;
+  // A budget below a usable output floor means the prompt itself already
+  // doesn't fit — silently sending the request anyway with a token-starved
+  // MIN_OUTPUT max_tokens produces a response so truncated it's unusable,
+  // contradicting this function's job of keeping requests valid. Reject
+  // clearly instead so the caller surfaces "prompt too large" rather than a
+  // mysteriously truncated/garbled answer.
+  if (budget < MIN_OUTPUT) {
+    throw new PromptTooLargeError(
+      `prompt (~${estimatePromptTokens(messages)} tokens) leaves no room for a response within the model's ${maxModelLen}-token context window`,
+    );
+  }
   return Math.min(requested, budget);
 }
 

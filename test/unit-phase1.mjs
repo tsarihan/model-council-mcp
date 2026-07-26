@@ -39,6 +39,29 @@ console.log('▶ subscriptions isValid: defaults must be finite numbers (0/negat
   check('a negative default ("unlimited") is still accepted, not treated as invalid', isValid(withNegative));
 }
 
+console.log('▶ subscriptions isValid: per-tier shape (cloud must be boolean, concurrency finite if present)');
+{
+  // A truthy STRING "false" for `cloud` must be rejected here — otherwise it
+  // would pass isValid() and later be read at face value by tierAllowsCloud(),
+  // silently granting cloud access from a value that reads as "false" to a
+  // human editing the file by hand.
+  const stringCloud = {
+    ...subs,
+    providers: { ...subs.providers, claude: { ...subs.providers.claude, tiers: { ...subs.providers.claude.tiers, free: { cloud: 'false' } } } },
+  };
+  check('tier.cloud as a truthy string → rejected', !isValid(stringCloud));
+  const nanConcurrency = {
+    ...subs,
+    providers: { ...subs.providers, claude: { ...subs.providers.claude, tiers: { ...subs.providers.claude.tiers, pro: { cloud: true, concurrency: NaN } } } },
+  };
+  check('tier.concurrency NaN → rejected', !isValid(nanConcurrency));
+  const missingCloud = {
+    ...subs,
+    providers: { ...subs.providers, claude: { ...subs.providers.claude, tiers: { ...subs.providers.claude.tiers, pro: { concurrency: 2 } } } },
+  };
+  check('tier missing cloud entirely → rejected', !isValid(missingCloud));
+}
+
 console.log('▶ tier → cloud + concurrency');
 check('chatgpt/plus cloud on, conc 6', tierAllowsCloud('chatgpt', 'plus') && tierConcurrency('chatgpt', 'plus') === 6);
 check('claude/max20x conc 8', tierConcurrency('claude', 'max20x') === 8);
@@ -181,7 +204,7 @@ console.log('▶ stripThinkBlocks (reasoning-model <think> leakage)');
 
 console.log('▶ clampMaxTokens (fit output to server context / max_model_len)');
 {
-  const { clampMaxTokens, estimatePromptTokens } = await import('../dist/providers/base.js');
+  const { clampMaxTokens, estimatePromptTokens, PromptTooLargeError } = await import('../dist/providers/base.js');
   const short = [{ role: 'user', content: 'hi' }];
   check('no advertised context → unchanged', clampMaxTokens(16000, undefined, short) === 16000);
   check('zero/invalid context → unchanged', clampMaxTokens(16000, 0, short) === 16000);
@@ -191,9 +214,13 @@ console.log('▶ clampMaxTokens (fit output to server context / max_model_len)')
   check('context 4096 → clamped under 4096', clampMaxTokens(16000, 4096, short) < 4096);
   check('requested < context → unchanged', clampMaxTokens(2000, 32768, short) === 2000);
   check('reserves room for the prompt', clampMaxTokens(16000, 8192, short) <= 8192 - estimatePromptTokens(short));
-  // Prompt nearly fills context → floor to a small positive output, never negative.
+  // Prompt already fills context → reject clearly rather than silently
+  // sending a request bound to produce an unusably truncated response.
   const huge = [{ role: 'user', content: 'x'.repeat(30000) }];
-  check('prompt ~ context → floored to positive min', clampMaxTokens(16000, 4096, huge) === 16);
+  check('prompt ~ context → throws PromptTooLargeError', (() => {
+    try { clampMaxTokens(16000, 4096, huge); return false; }
+    catch (e) { return e instanceof PromptTooLargeError; }
+  })());
   check('estimatePromptTokens grows with length', estimatePromptTokens(huge) > estimatePromptTokens(short));
 }
 
@@ -352,6 +379,91 @@ console.log('▶ deconfliction round: open-topic prompt + exact-match resolution
   );
   check('id stability: a matched conflict keeps its ORIGINAL id, not the round\'s fresh one',
     idStable.remaining.length === 1 && idStable.remaining[0].id === 'conflict-1');
+}
+
+console.log('▶ deconflict(): score invariants hold across the carry-forward double-count trace (round-3 finding, 5-way confirmed)');
+{
+  const { deconflict } = await import('../dist/council/deconflict.js');
+  const runtime = { localConcurrency: 0, cloudConcurrency: 0, maxTokens: 100, retries: 1, requestTimeoutMs: 5000, verbose: false };
+  const judgeModelId = { provider: 'ollama', model: 'j' };
+  const fakeMember = { modelId: { provider: 'ollama', model: 'a' }, provider: { config: { type: 'ollama' }, serverId: 'ollama', complete: async () => 'a member response', listModels: async () => [], ping: async () => true } };
+  const conflictItem = (topic) => ({ id: 'conflict-1', topic, positions: [{ models: ['a'], position: 'x' }] });
+
+  // Exact trace all 5 round-3 reviewers converged on: 1 initial conflict, the
+  // judge rewords it (mismatch → old marked resolved, reworded carried
+  // forward per the carry-forward fix), loop ends at maxRounds=1 with the
+  // carried topic still open. Old code: resolved=1, total=1, score=100 while
+  // unresolvedConflicts is non-empty — self-contradictory. New invariant:
+  // score must be STRICTLY below 100 whenever a conflict remains open.
+  {
+    let call = 0;
+    const rewordingJudge = {
+      config: { type: 'ollama' }, serverId: 'ollama', listModels: async () => [], ping: async () => true,
+      complete: async () => {
+        call++;
+        if (call === 1) return '{"commonAgreement":null,"complementary":[],"conflicting":[{"topic":"backoff approach for retries","positions":[{"models":["a"],"position":"x"}]}]}';
+        return 'final synthesis text'; // the post-loop synthesize() call
+      },
+    };
+    const result = await deconflict({
+      question: 'q', initialResponses: [], initialConflicts: [conflictItem('retry strategy')],
+      commonAgreement: null, complementary: [], maxRounds: 1, members: [fakeMember],
+      judgeModelId, judgeProvider: rewordingJudge, runtime, verbose: false,
+    });
+    check('reworded-and-carried, still open at loop end: unresolvedConflicts non-empty', result.unresolvedConflicts.length === 1, JSON.stringify(result));
+    check('reworded-and-carried: score < 100 while a conflict remains open (was 100 pre-fix)', result.deconflictionScore < 100, result.deconflictionScore);
+    check('reworded-and-carried: resolved never exceeds totalConflicts', result.resolved <= result.totalConflicts, JSON.stringify(result));
+  }
+
+  // The concrete >100% trigger: the SAME carried-forward conflict later
+  // resolves in round 2. Old code: allResolved accrues BOTH the round-1
+  // "resolution" of the original wording AND the round-2 resolution of the
+  // reworded carry-forward → resolved=2, total=1, score=200. New invariant:
+  // resolved is clamped to totalConflicts, and score is exactly 100 once
+  // nothing remains open — never above.
+  {
+    let call = 0;
+    const doubleResolveJudge = {
+      config: { type: 'ollama' }, serverId: 'ollama', listModels: async () => [], ping: async () => true,
+      complete: async () => {
+        call++;
+        if (call === 1) return '{"commonAgreement":null,"complementary":[],"conflicting":[{"topic":"backoff approach for retries","positions":[{"models":["a"],"position":"x"}]}]}';
+        if (call === 2) return '{"commonAgreement":"Converged.","complementary":[],"conflicting":[]}';
+        return 'final synthesis text';
+      },
+    };
+    const result = await deconflict({
+      question: 'q', initialResponses: [], initialConflicts: [conflictItem('retry strategy')],
+      commonAgreement: null, complementary: [], maxRounds: 2, members: [fakeMember],
+      judgeModelId, judgeProvider: doubleResolveJudge, runtime, verbose: false,
+    });
+    check('double-resolve trace: no conflicts remain open', result.unresolvedConflicts.length === 0, JSON.stringify(result));
+    check('double-resolve trace: score is exactly 100, never above (was 200 pre-fix)', result.deconflictionScore === 100, result.deconflictionScore);
+    check('double-resolve trace: resolved clamped to totalConflicts, not double-counted', result.resolved === result.totalConflicts, JSON.stringify(result));
+  }
+
+  // Baseline sanity: a single conflict that resolves cleanly in round 1 with
+  // no carry-forward at all must still score a clean 100/1/1 — the fix must
+  // not regress the ordinary, non-pathological case.
+  {
+    const cleanJudge = {
+      config: { type: 'ollama' }, serverId: 'ollama', listModels: async () => [], ping: async () => true,
+      complete: async () => 'call', // overwritten below per-call
+    };
+    let call = 0;
+    cleanJudge.complete = async () => {
+      call++;
+      if (call === 1) return '{"commonAgreement":"Converged.","complementary":[],"conflicting":[]}';
+      return 'final synthesis text';
+    };
+    const result = await deconflict({
+      question: 'q', initialResponses: [], initialConflicts: [conflictItem('retry strategy')],
+      commonAgreement: null, complementary: [], maxRounds: 1, members: [fakeMember],
+      judgeModelId, judgeProvider: cleanJudge, runtime, verbose: false,
+    });
+    check('clean resolution (no carry-forward): score 100, resolved === totalConflicts === 1',
+      result.deconflictionScore === 100 && result.resolved === 1 && result.totalConflicts === 1, JSON.stringify(result));
+  }
 }
 
 console.log('▶ persistent state round-trip');
@@ -611,6 +723,22 @@ console.log('▶ assertGitRepo: stdout check (rejects .git dir) + $HOME defense-
   rmSync(realHomeDir, { recursive: true, force: true });
   check('a symlinked $HOME cannot be bypassed by passing the real (non-symlink) path',
     threwSymlinkHome && /home directory/i.test(symlinkHomeMsg), symlinkHomeMsg);
+
+  // TOCTOU closure: assertGitRepo must return the REALPATH (symlinks fully
+  // resolved), not the caller's un-dereferenced input — callers granting
+  // broader access (full_repo_access's --add-dir) on the strength of this
+  // check use the return value precisely so a symlink retargeted AFTER
+  // validation can't redirect that later access to an unvalidated directory.
+  const realTarget = mkdtempSync(join(tmpdir(), 'mc-agr-target-'));
+  execFileSync('git', ['init', '-q'], { cwd: realTarget });
+  const expectedRealTarget = realpathSync(realTarget);
+  const symlinkRepo = join(tmpdir(), `mc-agr-symlinkrepo-${process.pid}`);
+  symlinkSync(realTarget, symlinkRepo);
+  const returned = await assertGitRepo(symlinkRepo);
+  rmSync(symlinkRepo, { force: true });
+  rmSync(realTarget, { recursive: true, force: true });
+  check('assertGitRepo returns the realpath, not the symlink path',
+    returned === expectedRealTarget && returned !== symlinkRepo, returned);
 }
 
 console.log('▶ context.ts rejects image extensions in "files" (guards the other route to garbled data)');
@@ -745,6 +873,43 @@ console.log('▶ member-facing prompts carry the untrusted-PEER-content notice (
 
   const selection = buildSelectionPrompt('q', [{ answer: 'A', pros: ['p'], cons: ['c'], championedBy: ['ollama:a'] }]);
   check('dialectic selection prompt includes the peer-content notice', selection.includes(UNTRUSTED_PEER_CONTENT_NOTICE));
+}
+
+console.log('▶ matchOption: fuzzy substring match prefers the LONGEST match, not first-hit-in-insertion-order (round 3 finding)');
+{
+  const { matchOption } = await import('../dist/council/dialectic.js');
+  const opt = (answer) => ({ answer, pros: [], cons: [], championedBy: [] });
+
+  // Regression proof for the exact bug: "Java" inserted before "JavaScript" —
+  // the old first-hit matcher would wrongly merge "JavaScript (Node)" onto
+  // "Java" just because "java".includes-checks came first in Map iteration
+  // order. The fix must pick "JavaScript" (the longer, more specific match).
+  const byAnswer = new Map([
+    ['java', opt('Java')],
+    ['javascript', opt('JavaScript')],
+  ]);
+  const matched = matchOption('JavaScript (Node)', byAnswer);
+  check('longest-match wins: "JavaScript (Node)" matches "JavaScript", not "Java"',
+    matched?.answer === 'JavaScript', matched?.answer);
+
+  // Same bug, reversed insertion order — must still pick the right one (proves
+  // it's genuinely longest-match, not accidentally "last insertion wins").
+  const byAnswerReversed = new Map([
+    ['javascript', opt('JavaScript')],
+    ['java', opt('Java')],
+  ]);
+  const matchedReversed = matchOption('JavaScript (Node)', byAnswerReversed);
+  check('longest-match wins regardless of insertion order',
+    matchedReversed?.answer === 'JavaScript', matchedReversed?.answer);
+
+  // A genuinely short/plain answer with no longer overlapping option still
+  // matches correctly (ordinary fuzzy case, not a regression).
+  const byAnswerPlain = new Map([['rust (systems)', opt('Rust (systems)')]]);
+  check('ordinary fuzzy match unaffected: "Rust" still matches "Rust (systems)"',
+    matchOption('Rust', byAnswerPlain)?.answer === 'Rust (systems)');
+
+  // No match at all (nothing overlaps) → undefined, not a wrong pick.
+  check('no overlapping option → undefined', matchOption('Python', byAnswerPlain) === undefined);
 }
 
 console.log('▶ vision accept-probe: transient failures (429/401/403/408/409/no-status) are never cached as a permanent rejection');

@@ -7,6 +7,7 @@
 import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
+import { ModelId, ResponseMode } from './types.js';
 
 export interface CouncilState {
   version: number;
@@ -14,6 +15,16 @@ export interface CouncilState {
   tiers?: { chatgpt?: string; claude?: string; grok?: string; ollama?: string };
   /** Materialised council members (model-id labels) — makes deletions stick. */
   members?: string[];
+  /**
+   * configure_council settings persisted the same way `members` already is —
+   * only present when a caller has explicitly set it at least once, and only
+   * that field is ever rewritten (see configure_council's handler). Applied
+   * at boot ahead of the env-derived JUDGE_MODEL/RESPONSE_MODE/
+   * MAX_DECONFLICT_ROUNDS defaults, same precedence `tiers` already has.
+   */
+  judgeModelId?: ModelId;
+  responseMode?: ResponseMode;
+  maxDeconflictRounds?: number;
   /** Reference-data version the user was last welcomed for. */
   welcomedVersion?: string;
   /**
@@ -27,12 +38,26 @@ export interface CouncilState {
    * Only ever holds DEFINITIVE results (never a transient/inconclusive one —
    * those are deliberately never cached at all, in-memory or on disk). Lets a
    * restart skip re-running the OCR-challenge detection round trip for a
-   * model already proven capable in a prior session — on a slow machine that
-   * round trip can take many seconds per model, which adds up across a
+   * model already proven (in)capable in a prior session — on a slow machine
+   * that round trip can take many seconds per model, which adds up across a
    * multi-member council and would otherwise repeat on every reload.
+   *
+   * Each entry carries `checkedAt` so it can expire (see VISION_CACHE_TTL_MS)
+   * — without a TTL a definitive "not vision-capable" result would be sticky
+   * forever, surviving even a later Ollama pull or provider fix that actually
+   * makes the model capable, until someone manually edited this file.
    */
-  visionCapability?: Record<string, boolean>;
+  visionCapability?: Record<string, VisionCacheEntry>;
 }
+
+export interface VisionCacheEntry {
+  value: boolean;
+  /** epoch ms this result was actually verified, not merely written. */
+  checkedAt: number;
+}
+
+/** How long a cached vision-capability result is trusted before being re-probed. */
+export const VISION_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 const STATE_VERSION = 1;
 

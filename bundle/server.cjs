@@ -24565,6 +24565,7 @@ function resolvePoolLimits(tiers, overrides = {}, subs = loadSubscriptions()) {
 var import_node_fs2 = require("node:fs");
 var import_node_os = require("node:os");
 var import_node_path2 = require("node:path");
+var VISION_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1e3;
 var STATE_VERSION = 1;
 var clean = (v2) => {
   if (!v2) return void 0;
@@ -36817,10 +36818,14 @@ var CouncilOrchestrator = class {
     let visionRouting;
     if (images && images.length > 0) {
       const persistedVision = loadState().visionCapability ?? {};
+      const visionCheckedAt = Date.now();
+      const seededLabels = /* @__PURE__ */ new Set();
       for (const m2 of members) {
         const label = modelIdLabel(m2.modelId);
-        if (label in persistedVision) {
-          m2.provider.seedVisionCache({ [m2.modelId.model]: persistedVision[label] });
+        const entry = persistedVision[label];
+        if (entry && visionCheckedAt - entry.checkedAt < VISION_CACHE_TTL_MS) {
+          m2.provider.seedVisionCache({ [m2.modelId.model]: entry.value });
+          seededLabels.add(label);
         }
       }
       const checked = await checkVisionPooled(members, runtime, onProgress);
@@ -36829,10 +36834,11 @@ var CouncilOrchestrator = class {
       const newlyConfirmed = {};
       for (const m2 of members) {
         const label = modelIdLabel(m2.modelId);
+        if (seededLabels.has(label)) continue;
         const cache = m2.provider.getVisionCache();
         const value = cache[m2.modelId.model];
-        if (value !== void 0 && persistedVision[label] !== value) {
-          newlyConfirmed[label] = value;
+        if (value !== void 0) {
+          newlyConfirmed[label] = { value, checkedAt: visionCheckedAt };
         }
       }
       if (Object.keys(newlyConfirmed).length > 0) {
@@ -37553,9 +37559,29 @@ function effectiveTiers(subs = loadSubscriptions()) {
   };
   return { chatgpt: guard("chatgpt"), claude: guard("claude"), grok: guard("grok"), ollama: guard("ollama") };
 }
+var RESPONSE_MODES = /* @__PURE__ */ new Set(["individual", "categorized", "deconflicted", "pooled", "dialectic"]);
+function persistedConfigOverrides(persisted) {
+  const update = {};
+  if (persisted.responseMode && RESPONSE_MODES.has(persisted.responseMode)) {
+    update.responseMode = persisted.responseMode;
+  }
+  const rounds = persisted.maxDeconflictRounds;
+  if (typeof rounds === "number" && Number.isInteger(rounds) && rounds >= 1 && rounds <= 10) {
+    update.maxDeconflictRounds = rounds;
+  }
+  const judge = persisted.judgeModelId;
+  if (judge && typeof judge.provider === "string" && typeof judge.model === "string") {
+    update.judgeModelId = judge;
+  }
+  return update;
+}
 async function initCouncil() {
-  if (orchestrator.getConfig().members.length > 0) return;
   const persisted = loadState();
+  const settingsUpdate = persistedConfigOverrides(persisted);
+  if (Object.keys(settingsUpdate).length > 0) {
+    orchestrator.updateConfig(settingsUpdate);
+  }
+  if (orchestrator.getConfig().members.length > 0) return;
   if (Array.isArray(persisted.members)) {
     orchestrator.updateConfig({ members: labelsToMembers(persisted.members) });
     return;
@@ -37645,7 +37671,7 @@ var TOOLS = [
   {
     name: "configure_council",
     annotations: { title: "Configure council", readOnlyHint: false },
-    description: "Update the council configuration: select which models form the council, choose a judge model, set the response mode (individual / categorized / deconflicted), and set the maximum deconfliction rounds.",
+    description: "Update the council configuration: select which models form the council, choose a judge model, set the response mode (individual / categorized / deconflicted), and set the maximum deconfliction rounds. Each field supplied is persisted and survives restarts/reloads, same as setup_council's tier choices; a field left unset is untouched.",
     inputSchema: {
       type: "object",
       properties: {
@@ -37828,7 +37854,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.41"
+    version: "0.2.42"
   },
   {
     capabilities: { tools: {} },
@@ -37930,8 +37956,21 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         }
         orchestrator.updateConfig(update);
         const cfg = orchestrator.getConfig();
+        const persistPatch = {};
         if (input.models !== void 0) {
-          saveState({ members: cfg.members.map((m2) => modelIdLabel(m2.modelId)) });
+          persistPatch.members = cfg.members.map((m2) => modelIdLabel(m2.modelId));
+        }
+        if (input.judge_model !== void 0) {
+          persistPatch.judgeModelId = cfg.judgeModelId;
+        }
+        if (input.response_mode !== void 0) {
+          persistPatch.responseMode = cfg.responseMode;
+        }
+        if (input.max_deconflict_rounds !== void 0) {
+          persistPatch.maxDeconflictRounds = cfg.maxDeconflictRounds;
+        }
+        if (Object.keys(persistPatch).length > 0) {
+          saveState(persistPatch);
         }
         return {
           content: [

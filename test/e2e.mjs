@@ -1273,7 +1273,9 @@ async function main() {
     const dbgVis1 = await (await fetch(`${MOCK_URL}/debug`)).json();
     check('vision persistence: first ask actually ran the OCR challenge', dbgVis1.challengeCalls >= 1, `challengeCalls=${dbgVis1.challengeCalls}`);
     const persisted3 = JSON.parse(readFileSync(stateFile, 'utf8'));
-    check('vision persistence: result written to state file', persisted3.visionCapability?.['ollama:vision-a'] === true, JSON.stringify(persisted3.visionCapability));
+    check('vision persistence: result written to state file', persisted3.visionCapability?.['ollama:vision-a']?.value === true, JSON.stringify(persisted3.visionCapability));
+    check('vision persistence: entry carries a checkedAt timestamp (for TTL expiry)',
+      Number.isFinite(persisted3.visionCapability?.['ollama:vision-a']?.checkedAt), JSON.stringify(persisted3.visionCapability));
 
     // Restore the `reduced` council (the vision test above reconfigured members
     // to just vision-a) so the reboot-persistence check below still sees it.
@@ -1312,9 +1314,82 @@ async function main() {
     check('vision persistence: reboot still routes to the vision-capable member', visAsk2.responses?.length === 1, JSON.stringify(visAsk2.responses));
     const dbgVis2 = await (await fetch(`${MOCK_URL}/debug`)).json();
     check('vision persistence: reboot skips re-running the OCR challenge (seeded from disk)', dbgVis2.challengeCalls === 0, `challengeCalls=${dbgVis2.challengeCalls}`);
-    rmSync(visImgDir, { recursive: true, force: true });
 
     await rebootClient.close(); rebootClient = undefined;
+
+    // TTL regression: an entry older than VISION_CACHE_TTL_MS (30 days) must
+    // NOT be trusted — a stale "capable" (or "not capable") result from
+    // before a later Ollama pull / provider fix would otherwise stick
+    // forever with no way to clear it short of hand-editing state.json.
+    {
+      const stale = JSON.parse(readFileSync(stateFile, 'utf8'));
+      stale.visionCapability['ollama:vision-a'] = { value: true, checkedAt: Date.now() - 31 * 24 * 60 * 60 * 1000 };
+      writeFileSync(stateFile, JSON.stringify(stale, null, 2));
+      await resetMock();
+      const ttlTransport = new StdioClientTransport({
+        command: 'node', args: [serverEntry],
+        env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: stateFile },
+      });
+      const ttlClient = new Client({ name: 'ttl-e2e', version: '1.0.0' }, { capabilities: {} });
+      await ttlClient.connect(ttlTransport);
+      await ttlClient.callTool({ name: 'configure_council', arguments: { models: ['ollama:vision-a'], response_mode: 'individual' } });
+      const visAsk3 = parseToolResult(await ttlClient.callTool({ name: 'ask_council', arguments: { question: 'x', images: [visImgFile] } }));
+      check('vision TTL: expired cache entry still routes correctly (re-probed, not just trusted)', visAsk3.responses?.length === 1, JSON.stringify(visAsk3.responses));
+      const dbgVis3 = await (await fetch(`${MOCK_URL}/debug`)).json();
+      check('vision TTL: an expired entry triggers a genuine re-probe, not a stale trust', dbgVis3.challengeCalls >= 1, `challengeCalls=${dbgVis3.challengeCalls}`);
+      const refreshed = JSON.parse(readFileSync(stateFile, 'utf8'));
+      check('vision TTL: re-probe refreshes checkedAt (so it does not re-probe again every call)',
+        refreshed.visionCapability?.['ollama:vision-a']?.checkedAt > stale.visionCapability['ollama:vision-a'].checkedAt,
+        JSON.stringify(refreshed.visionCapability));
+      await ttlClient.close();
+    }
+    rmSync(visImgDir, { recursive: true, force: true });
+
+    // configure_council settings (judge_model/response_mode/max_deconflict_rounds)
+    // must persist across a restart, same as `members` already does — round-2
+    // and round-3 reviewers both flagged the prior session-only behavior as an
+    // inconsistency users would trip over.
+    {
+      const cfgDir = mkdtempSync(join(tmpdir(), 'mc-e2e-cfgpersist-'));
+      const cfgStateFile = join(cfgDir, 'state.json');
+      const cfgTransport1 = new StdioClientTransport({
+        command: 'node', args: [serverEntry],
+        env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: cfgStateFile },
+      });
+      const cfgClient1 = new Client({ name: 'cfgpersist-e2e-1', version: '1.0.0' }, { capabilities: {} });
+      await cfgClient1.connect(cfgTransport1);
+      await cfgClient1.callTool({
+        name: 'configure_council',
+        arguments: { judge_model: 'ollama:small-a', response_mode: 'deconflicted', max_deconflict_rounds: 5 },
+      });
+      const cfgPersisted = JSON.parse(readFileSync(cfgStateFile, 'utf8'));
+      check('configure_council: judge_model persisted to state file', cfgPersisted.judgeModelId?.model === 'small-a' && cfgPersisted.judgeModelId?.provider === 'ollama', JSON.stringify(cfgPersisted.judgeModelId));
+      check('configure_council: response_mode persisted to state file', cfgPersisted.responseMode === 'deconflicted');
+      check('configure_council: max_deconflict_rounds persisted to state file', cfgPersisted.maxDeconflictRounds === 5);
+      await cfgClient1.close();
+
+      // Reboot against the SAME state file → all three settings must be
+      // honoured WITHOUT re-supplying them (this is the actual bug fixed:
+      // previously only `members` survived, these three silently reset).
+      const cfgTransport2 = new StdioClientTransport({
+        command: 'node', args: [serverEntry],
+        env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: cfgStateFile },
+      });
+      const cfgClient2 = new Client({ name: 'cfgpersist-e2e-2', version: '1.0.0' }, { capabilities: {} });
+      await cfgClient2.connect(cfgTransport2);
+      const cfgAfterReboot = parseToolResult(await cfgClient2.callTool({ name: 'get_council_config', arguments: {} }));
+      check('configure_council: judge_model survives reboot', cfgAfterReboot.council?.judgeModel === 'ollama:small-a', JSON.stringify(cfgAfterReboot.council));
+      check('configure_council: response_mode survives reboot', cfgAfterReboot.council?.responseMode === 'deconflicted', JSON.stringify(cfgAfterReboot.council));
+      check('configure_council: max_deconflict_rounds survives reboot', cfgAfterReboot.council?.maxDeconflictRounds === 5, JSON.stringify(cfgAfterReboot.council));
+
+      // Clearing judge_model back to "auto" must persist as CLEARED (absent),
+      // not just skip re-writing whatever was there.
+      await cfgClient2.callTool({ name: 'configure_council', arguments: { judge_model: 'auto' } });
+      const cfgAfterClear = JSON.parse(readFileSync(cfgStateFile, 'utf8'));
+      check('configure_council: judge_model "auto" clears the persisted value (not left stale)', !('judgeModelId' in cfgAfterClear), JSON.stringify(cfgAfterClear.judgeModelId));
+      await cfgClient2.close();
+      rmSync(cfgDir, { recursive: true, force: true });
+    }
 
     // Logged-out Codex → detected not-usable, excluded from the auto-council, hinted.
     loDir = mkdtempSync(join(tmpdir(), 'mc-e2e-lo-'));

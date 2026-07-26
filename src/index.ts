@@ -35,7 +35,7 @@ import { ProviderRegistry } from './providers/registry.js';
 import { CouncilOrchestrator } from './council/orchestrator.js';
 import { ProgressReporter } from './council/query.js';
 import { CouncilConfig, CouncilMember, ModelId, ResponseMode, SubscriptionTiers } from './types.js';
-import { loadState, saveState } from './state.js';
+import { CouncilState, loadState, saveState } from './state.js';
 import { loadSubscriptions, validTiers, tierAllowsCloud, SubProvider } from './subscriptions.js';
 import { detectEnvironment, autoPopulatedMembers, quotaWarning } from './detect.js';
 import { buildAugmentedQuestion } from './context.js';
@@ -160,6 +160,32 @@ function effectiveTiers(subs = loadSubscriptions()): SubscriptionTiers {
   return { chatgpt: guard('chatgpt'), claude: guard('claude'), grok: guard('grok'), ollama: guard('ollama') };
 }
 
+const RESPONSE_MODES = new Set<string>(['individual', 'categorized', 'deconflicted', 'pooled', 'dialectic']);
+
+/**
+ * Build a CouncilConfig patch from whatever configure_council settings were
+ * persisted to state.json, lightly validated (the file is server-owned but
+ * could be hand-edited or left over from an older version). Independent of
+ * `members` — applied regardless of whether the council's membership came
+ * from COUNCIL_MODELS, persisted state, or auto-population, since a judge/
+ * mode/rounds choice is orthogonal to who's actually on the council.
+ */
+function persistedConfigOverrides(persisted: CouncilState): Partial<CouncilConfig> {
+  const update: Partial<CouncilConfig> = {};
+  if (persisted.responseMode && RESPONSE_MODES.has(persisted.responseMode)) {
+    update.responseMode = persisted.responseMode;
+  }
+  const rounds = persisted.maxDeconflictRounds;
+  if (typeof rounds === 'number' && Number.isInteger(rounds) && rounds >= 1 && rounds <= 10) {
+    update.maxDeconflictRounds = rounds;
+  }
+  const judge = persisted.judgeModelId;
+  if (judge && typeof judge.provider === 'string' && typeof judge.model === 'string') {
+    update.judgeModelId = judge;
+  }
+  return update;
+}
+
 /**
  * On boot: honour a persisted council (survives reloads), or — on a fresh
  * install — detect the environment and auto-populate the council with
@@ -167,10 +193,15 @@ function effectiveTiers(subs = loadSubscriptions()): SubscriptionTiers {
  * server, and falls back to zero-config Ollama auto-discovery on any failure.
  */
 async function initCouncil(): Promise<void> {
+  const persisted = loadState();
+  // Independent of the members guard below — see persistedConfigOverrides().
+  const settingsUpdate = persistedConfigOverrides(persisted);
+  if (Object.keys(settingsUpdate).length > 0) {
+    orchestrator.updateConfig(settingsUpdate);
+  }
   // Explicit COUNCIL_MODELS (or a prior configure_council in this process) wins —
   // don't override an already-configured council with persisted/auto state.
   if (orchestrator.getConfig().members.length > 0) return;
-  const persisted = loadState();
   if (Array.isArray(persisted.members)) {
     orchestrator.updateConfig({ members: labelsToMembers(persisted.members) });
     return;
@@ -374,7 +405,8 @@ const TOOLS = [
     description:
       'Update the council configuration: select which models form the council, ' +
       'choose a judge model, set the response mode (individual / categorized / deconflicted), ' +
-      'and set the maximum deconfliction rounds.',
+      'and set the maximum deconfliction rounds. Each field supplied is persisted and survives ' +
+      'restarts/reloads, same as setup_council\'s tier choices; a field left unset is untouched.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -626,7 +658,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.41',
+    version: '0.2.42',
   },
   {
     capabilities: { tools: {} },
@@ -794,9 +826,26 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         orchestrator.updateConfig(update);
         const cfg = orchestrator.getConfig();
 
-        // Persist member edits so deletions/selections survive plugin reloads.
+        // Persist ONLY the settings this call actually touched — matching
+        // setup_council's "only what was supplied" discipline (see its
+        // comment): an untouched field must never get pinned to its current
+        // snapshot value, which would then permanently shadow a later env
+        // var change or a different caller's edit for that field.
+        const persistPatch: Partial<CouncilState> = {};
         if (input.models !== undefined) {
-          saveState({ members: cfg.members.map(m => modelIdLabel(m.modelId)) });
+          persistPatch.members = cfg.members.map(m => modelIdLabel(m.modelId));
+        }
+        if (input.judge_model !== undefined) {
+          persistPatch.judgeModelId = cfg.judgeModelId; // undefined ("auto") is written as absent — JSON.stringify drops it
+        }
+        if (input.response_mode !== undefined) {
+          persistPatch.responseMode = cfg.responseMode;
+        }
+        if (input.max_deconflict_rounds !== undefined) {
+          persistPatch.maxDeconflictRounds = cfg.maxDeconflictRounds;
+        }
+        if (Object.keys(persistPatch).length > 0) {
+          saveState(persistPatch);
         }
 
         return {

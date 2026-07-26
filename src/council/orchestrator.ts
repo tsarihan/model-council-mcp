@@ -22,7 +22,7 @@ import { deconflict } from './deconflict.js';
 import { runDialectic } from './dialectic.js';
 import { runPooled } from './pool.js';
 import { checkVisionPooled, Member, ProgressReporter, queryMembers } from './query.js';
-import { loadState, saveState } from '../state.js';
+import { loadState, saveState, VisionCacheEntry, VISION_CACHE_TTL_MS } from '../state.js';
 
 // ─── Model classification ──────────────────────────────────────────────────────
 
@@ -217,12 +217,20 @@ export class CouncilOrchestrator {
       // Seed each member's provider from any previously-verified result on
       // disk, so a restart doesn't re-pay the OCR-challenge round trip for a
       // model already proven (in)capable in a prior session — on a slow
-      // machine that adds up across a multi-member council.
+      // machine that adds up across a multi-member council. A seed is only
+      // trusted within VISION_CACHE_TTL_MS of when it was actually verified
+      // — an expired entry is left unseeded so checkVisionPooled below
+      // genuinely re-probes it, rather than a stale "not capable" result
+      // (from before a later Ollama pull or provider fix) sticking forever.
       const persistedVision = loadState().visionCapability ?? {};
+      const visionCheckedAt = Date.now();
+      const seededLabels = new Set<string>();
       for (const m of members) {
         const label = modelIdLabel(m.modelId);
-        if (label in persistedVision) {
-          m.provider.seedVisionCache({ [m.modelId.model]: persistedVision[label] });
+        const entry = persistedVision[label];
+        if (entry && visionCheckedAt - entry.checkedAt < VISION_CACHE_TTL_MS) {
+          m.provider.seedVisionCache({ [m.modelId.model]: entry.value });
+          seededLabels.add(label);
         }
       }
 
@@ -230,10 +238,19 @@ export class CouncilOrchestrator {
       const visionMembers = checked.filter(c => c.vision).map(c => c.member);
       const skippedNonVision = checked.filter(c => !c.vision).map(c => modelIdLabel(c.member.modelId));
 
-      // Persist any newly-confirmed DEFINITIVE results — getVisionCache()
+      // Persist any freshly-verified DEFINITIVE results — getVisionCache()
       // only ever contains definitive entries, since a transient/inconclusive
       // probe is never cached in-memory in the first place — so future
       // restarts skip re-probing them too.
+      //
+      // "Freshly-verified" means genuinely re-probed THIS call — every label
+      // NOT in `seededLabels` (no cache seed, or its seed had expired), since
+      // that's exactly the set checkVisionPooled had to actually probe live.
+      // Persisting unconditionally for that set (not just when the value
+      // CHANGED) is what refreshes `checkedAt` on an expired-but-unchanged
+      // result — without this, an expired entry whose re-probe comes back
+      // the same would never reset its own clock and would re-probe on
+      // every single subsequent call forever, defeating the TTL's purpose.
       //
       // Collect only what THIS call newly learned (relative to the pre-probe
       // snapshot above), and merge it via saveState's mutator form — which
@@ -243,13 +260,14 @@ export class CouncilOrchestrator {
       // would otherwise have whichever saveState() call lands second
       // silently discard the other's newly-learned entries (same-key,
       // shallow-merge collision, not a torn write — see saveState's comment).
-      const newlyConfirmed: Record<string, boolean> = {};
+      const newlyConfirmed: Record<string, VisionCacheEntry> = {};
       for (const m of members) {
         const label = modelIdLabel(m.modelId);
+        if (seededLabels.has(label)) continue; // still within TTL, not re-probed this call
         const cache = m.provider.getVisionCache();
         const value = cache[m.modelId.model];
-        if (value !== undefined && persistedVision[label] !== value) {
-          newlyConfirmed[label] = value;
+        if (value !== undefined) {
+          newlyConfirmed[label] = { value, checkedAt: visionCheckedAt };
         }
       }
       if (Object.keys(newlyConfirmed).length > 0) {

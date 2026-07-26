@@ -25,6 +25,7 @@ export interface CouncilState {
   judgeModelId?: ModelId;
   responseMode?: ResponseMode;
   maxDeconflictRounds?: number;
+  autoCouncil?: boolean;
   /** Reference-data version the user was last welcomed for. */
   welcomedVersion?: string;
   /**

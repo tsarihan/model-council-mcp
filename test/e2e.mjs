@@ -1343,6 +1343,55 @@ async function main() {
         JSON.stringify(refreshed.visionCapability));
       await ttlClient.close();
     }
+
+    // Clock-skew regression (round 4): a FUTURE-dated checkedAt must not be
+    // trusted forever. Before the fix, `visionCheckedAt - entry.checkedAt`
+    // went negative for a future timestamp, which satisfies `< TTL` (a large
+    // positive number) permanently — the exact sticky-forever bug the TTL was
+    // added to kill, reintroduced via clock skew (VM resume, NTP correction,
+    // a hand-edited file) instead of simple staleness.
+    {
+      const future = JSON.parse(readFileSync(stateFile, 'utf8'));
+      future.visionCapability['ollama:vision-a'] = { value: true, checkedAt: Date.now() + 10 * 24 * 60 * 60 * 1000 };
+      writeFileSync(stateFile, JSON.stringify(future, null, 2));
+      await resetMock();
+      const skewTransport = new StdioClientTransport({
+        command: 'node', args: [serverEntry],
+        env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: stateFile },
+      });
+      const skewClient = new Client({ name: 'skew-e2e', version: '1.0.0' }, { capabilities: {} });
+      await skewClient.connect(skewTransport);
+      await skewClient.callTool({ name: 'configure_council', arguments: { models: ['ollama:vision-a'], response_mode: 'individual' } });
+      await skewClient.callTool({ name: 'ask_council', arguments: { question: 'x', images: [visImgFile] } });
+      const dbgSkew = await (await fetch(`${MOCK_URL}/debug`)).json();
+      check('vision clock-skew: a future-dated checkedAt is NOT trusted as fresh (genuine re-probe)', dbgSkew.challengeCalls >= 1, `challengeCalls=${dbgSkew.challengeCalls}`);
+      const afterSkew = JSON.parse(readFileSync(stateFile, 'utf8'));
+      check('vision clock-skew: re-probe corrects checkedAt back to a sane (non-future) value',
+        afterSkew.visionCapability?.['ollama:vision-a']?.checkedAt <= Date.now(), JSON.stringify(afterSkew.visionCapability));
+      await skewClient.close();
+    }
+
+    // Shape-validation regression (round 4): a non-boolean `value` (e.g. a
+    // hand-corrupted state.json with the STRING "false") must not be trusted
+    // — a truthy non-boolean would otherwise flow straight into
+    // seedVisionCache and defeat "an image never reaches a non-vision model."
+    {
+      const corrupt = JSON.parse(readFileSync(stateFile, 'utf8'));
+      corrupt.visionCapability['ollama:vision-a'] = { value: 'false', checkedAt: Date.now() };
+      writeFileSync(stateFile, JSON.stringify(corrupt, null, 2));
+      await resetMock();
+      const shapeTransport = new StdioClientTransport({
+        command: 'node', args: [serverEntry],
+        env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: stateFile },
+      });
+      const shapeClient = new Client({ name: 'shape-e2e', version: '1.0.0' }, { capabilities: {} });
+      await shapeClient.connect(shapeTransport);
+      await shapeClient.callTool({ name: 'configure_council', arguments: { models: ['ollama:vision-a'], response_mode: 'individual' } });
+      await shapeClient.callTool({ name: 'ask_council', arguments: { question: 'x', images: [visImgFile] } });
+      const dbgShape = await (await fetch(`${MOCK_URL}/debug`)).json();
+      check('vision shape-validation: a non-boolean cached value is NOT trusted (genuine re-probe)', dbgShape.challengeCalls >= 1, `challengeCalls=${dbgShape.challengeCalls}`);
+      await shapeClient.close();
+    }
     rmSync(visImgDir, { recursive: true, force: true });
 
     // configure_council settings (judge_model/response_mode/max_deconflict_rounds)
@@ -1387,7 +1436,42 @@ async function main() {
       await cfgClient2.callTool({ name: 'configure_council', arguments: { judge_model: 'auto' } });
       const cfgAfterClear = JSON.parse(readFileSync(cfgStateFile, 'utf8'));
       check('configure_council: judge_model "auto" clears the persisted value (not left stale)', !('judgeModelId' in cfgAfterClear), JSON.stringify(cfgAfterClear.judgeModelId));
+
+      // auto_council regression (round 4): it updates the live config but was
+      // never added to the persistence patch — survived only until reload.
+      await cfgClient2.callTool({ name: 'configure_council', arguments: { auto_council: false } });
+      const cfgAutoCouncilPersisted = JSON.parse(readFileSync(cfgStateFile, 'utf8'));
+      check('configure_council: auto_council persisted to state file', cfgAutoCouncilPersisted.autoCouncil === false, JSON.stringify(cfgAutoCouncilPersisted.autoCouncil));
       await cfgClient2.close();
+
+      const cfgTransport3 = new StdioClientTransport({
+        command: 'node', args: [serverEntry],
+        env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: cfgStateFile },
+      });
+      const cfgClient3 = new Client({ name: 'cfgpersist-e2e-3', version: '1.0.0' }, { capabilities: {} });
+      await cfgClient3.connect(cfgTransport3);
+      const cfgAfterAutoCouncilReboot = parseToolResult(await cfgClient3.callTool({ name: 'get_council_config', arguments: {} }));
+      check('configure_council: auto_council survives reboot', cfgAfterAutoCouncilReboot.council?.autoCouncil === false, JSON.stringify(cfgAfterAutoCouncilReboot.council));
+
+      // All-rejected regression (round 4): every entry failing to parse must
+      // throw and leave the council untouched, NOT silently wipe it to empty
+      // and persist that — the sibling bug to the one round 3 fixed for
+      // setup_council's auto-population path. An explicit `models: []` must
+      // still work as the real "clear the council" gesture.
+      await cfgClient3.callTool({ name: 'configure_council', arguments: { models: ['ollama:small-a'] } });
+      let allRejectedThrew = false, allRejectedMsg = '';
+      try {
+        await cfgClient3.callTool({ name: 'configure_council', arguments: { models: ['not-a-real-id', 'also:not:valid:::'] } });
+      } catch (e) { allRejectedThrew = true; allRejectedMsg = String(e?.message ?? e); }
+      const cfgAfterAllRejected = parseToolResult(await cfgClient3.callTool({ name: 'get_council_config', arguments: {} }));
+      check('configure_council: all-models-rejected throws instead of silently wiping', allRejectedThrew, allRejectedMsg);
+      check('configure_council: council unchanged after an all-rejected call', (cfgAfterAllRejected.council?.members ?? []).includes('ollama:small-a'), JSON.stringify(cfgAfterAllRejected.council?.members));
+
+      const clearRes = parseToolResult(await cfgClient3.callTool({ name: 'configure_council', arguments: { models: [] } }));
+      check('configure_council: an explicit models:[] still clears the council (not treated as all-rejected)',
+        Array.isArray(clearRes.council?.members) ? clearRes.council.members.length === 0 : /auto/.test(String(clearRes.council?.members)),
+        JSON.stringify(clearRes.council));
+      await cfgClient3.close();
       rmSync(cfgDir, { recursive: true, force: true });
     }
 

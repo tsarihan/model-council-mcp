@@ -36820,10 +36820,11 @@ var CouncilOrchestrator = class {
       const persistedVision = loadState().visionCapability ?? {};
       const visionCheckedAt = Date.now();
       const seededLabels = /* @__PURE__ */ new Set();
+      const isFreshEntry = (entry) => !!entry && typeof entry.value === "boolean" && typeof entry.checkedAt === "number" && entry.checkedAt <= visionCheckedAt && visionCheckedAt - entry.checkedAt < VISION_CACHE_TTL_MS;
       for (const m2 of members) {
         const label = modelIdLabel(m2.modelId);
         const entry = persistedVision[label];
-        if (entry && visionCheckedAt - entry.checkedAt < VISION_CACHE_TTL_MS) {
+        if (isFreshEntry(entry)) {
           m2.provider.seedVisionCache({ [m2.modelId.model]: entry.value });
           seededLabels.add(label);
         }
@@ -37113,7 +37114,7 @@ async function detectCodex() {
   const cmd = cliPath("CODEX_CLI_PATH", "codex");
   const installed = (await runCli(cmd, ["--version"], { timeoutMs: 8e3 })).code === 0;
   if (!installed) return { installed: false, usable: false };
-  const st2 = await runCli(cmd, ["login", "status"], { timeoutMs: 8e3 });
+  const st2 = await runCli(cmd, ["login", "status"], { timeoutMs: 8e3, stripKeys: "openai" });
   const out = `${st2.stdout}
 ${st2.stderr}`;
   const usable = /logged in/i.test(out) && !/not logged in/i.test(out);
@@ -37258,8 +37259,7 @@ async function buildGitDiff(input) {
       `git_ref "${ref}" looks like a git option, not a revision/range \u2014 refusing it. Use "uncommitted" | "staged" | "unstaged", or a revision/range like "main..HEAD".`
     );
   }
-  const repoPath = (0, import_node_path6.resolve)(input.repo?.trim() || process.cwd());
-  await assertGitRepo(repoPath);
+  const repoPath = await assertGitRepo((0, import_node_path6.resolve)(input.repo?.trim() || process.cwd()));
   const args = [...GLOBAL_SAFETY_ARGS, ...diffArgsForRef(ref)];
   let stdout;
   try {
@@ -37573,6 +37573,9 @@ function persistedConfigOverrides(persisted) {
   if (judge && typeof judge.provider === "string" && typeof judge.model === "string") {
     update.judgeModelId = judge;
   }
+  if (typeof persisted.autoCouncil === "boolean") {
+    update.autoCouncil = persisted.autoCouncil;
+  }
   return update;
 }
 async function initCouncil() {
@@ -37854,7 +37857,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.42"
+    version: "0.2.43"
   },
   {
     capabilities: { tools: {} },
@@ -37930,6 +37933,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
             if (!registry2.resolve(id)) unavailable.push(label);
             members.push({ modelId: id });
           }
+          if (input.models.length > 0 && members.length === 0) {
+            throw new Error(
+              `None of the supplied models parsed: ${rejected.join(", ")}. Expected "provider:model" (e.g. "ollama:llama3", "openai:gpt-4o") \u2014 the council was left unchanged.`
+            );
+          }
           update.members = members;
         }
         if (input.judge_model !== void 0) {
@@ -37968,6 +37976,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         }
         if (input.max_deconflict_rounds !== void 0) {
           persistPatch.maxDeconflictRounds = cfg.maxDeconflictRounds;
+        }
+        if (input.auto_council !== void 0) {
+          persistPatch.autoCouncil = cfg.autoCouncil;
         }
         if (Object.keys(persistPatch).length > 0) {
           saveState(persistPatch);
@@ -38134,7 +38145,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     CLOUD_CONCURRENCY: "Optional override: caps ALL cloud pools (overrides per-tier limits). Unset = tiers drive it.",
                     LOCAL_CONCURRENCY: "Max concurrent local requests (default: 1; 0 = unlimited)",
                     COMPLETION_RETRIES: "Attempts per completion before giving up on empty/error (default: 3)",
-                    REQUEST_TIMEOUT_MS: "Per-completion wall-clock timeout in ms (default: 120000). Raise for slow local models; CLI providers keep a 300s floor.",
+                    REQUEST_TIMEOUT_MS: "Per-completion wall-clock timeout in ms (default: 120000). Raise for slow local models or full-repo-access reviews \u2014 this is honoured verbatim by every provider, including claude-cli/codex-cli/grok-cli (no 300s floor).",
                     DECONFLICT_VERBOSE: "true \u2192 deconflicted results include per-round detail by default"
                   }
                 },

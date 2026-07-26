@@ -172,8 +172,14 @@ export async function buildGitDiff(input: GitDiffInput): Promise<string> {
     );
   }
 
-  const repoPath = resolve(input.repo?.trim() || process.cwd());
-  await assertGitRepo(repoPath);
+  // Use assertGitRepo's returned REALPATH, not the pre-realpath input, as the
+  // actual `git diff` cwd — the exact same TOCTOU class round 3 closed for
+  // full_repo_access's --add-dir grant: a symlink in the path could be
+  // retargeted between validation (including the $HOME rejection, which runs
+  // against the canonical path) and this execFileAsync call, so a diff
+  // taken from `repoPath` alone could come from a directory that was never
+  // actually checked.
+  const repoPath = await assertGitRepo(resolve(input.repo?.trim() || process.cwd()));
 
   const args = [...GLOBAL_SAFETY_ARGS, ...diffArgsForRef(ref)];
   let stdout: string;

@@ -218,17 +218,36 @@ export class CouncilOrchestrator {
       // disk, so a restart doesn't re-pay the OCR-challenge round trip for a
       // model already proven (in)capable in a prior session — on a slow
       // machine that adds up across a multi-member council. A seed is only
-      // trusted within VISION_CACHE_TTL_MS of when it was actually verified
-      // — an expired entry is left unseeded so checkVisionPooled below
-      // genuinely re-probes it, rather than a stale "not capable" result
-      // (from before a later Ollama pull or provider fix) sticking forever.
+      // trusted when it passes ALL of:
+      //  - shape: `value` a real boolean, `checkedAt` a real number — state.json
+      //    is server-owned but could be hand-edited/corrupted; loadState() only
+      //    rejects a bare top-level array, nothing validates individual
+      //    visionCapability entries. A truthy non-boolean `value` (e.g. the
+      //    STRING "false") would otherwise flow straight into seedVisionCache
+      //    and defeat the "an image never reaches a non-vision model"
+      //    guarantee this routing exists for.
+      //  - not future-dated: `checkedAt <= visionCheckedAt` — without this, a
+      //    `checkedAt` ahead of the current clock (skewed system clock, a
+      //    resumed VM, a hand-edited file) makes `visionCheckedAt -
+      //    entry.checkedAt` negative, which satisfies `< VISION_CACHE_TTL_MS`
+      //    forever — permanently defeating the TTL below for that entry.
+      //  - within VISION_CACHE_TTL_MS of when it was actually verified — an
+      //    expired entry is left unseeded so checkVisionPooled below genuinely
+      //    re-probes it, rather than a stale "not capable" result (from before
+      //    a later Ollama pull or provider fix) sticking forever.
       const persistedVision = loadState().visionCapability ?? {};
       const visionCheckedAt = Date.now();
       const seededLabels = new Set<string>();
+      const isFreshEntry = (entry: VisionCacheEntry | undefined): entry is VisionCacheEntry =>
+        !!entry &&
+        typeof entry.value === 'boolean' &&
+        typeof entry.checkedAt === 'number' &&
+        entry.checkedAt <= visionCheckedAt &&
+        visionCheckedAt - entry.checkedAt < VISION_CACHE_TTL_MS;
       for (const m of members) {
         const label = modelIdLabel(m.modelId);
         const entry = persistedVision[label];
-        if (entry && visionCheckedAt - entry.checkedAt < VISION_CACHE_TTL_MS) {
+        if (isFreshEntry(entry)) {
           m.provider.seedVisionCache({ [m.modelId.model]: entry.value });
           seededLabels.add(label);
         }

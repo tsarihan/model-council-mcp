@@ -174,7 +174,14 @@ async function detectCodex(): Promise<EnvReport['codex']> {
   const cmd = cliPath('CODEX_CLI_PATH', 'codex');
   const installed = (await runCli(cmd, ['--version'], { timeoutMs: 8000 })).code === 0;
   if (!installed) return { installed: false, usable: false };
-  const st = await runCli(cmd, ['login', 'status'], { timeoutMs: 8000 });
+  // stripKeys: 'openai' — matches detectClaude/detectGrok's own probes, and
+  // the real completion path (CodexCliProvider strips OPENAI_API_KEY/
+  // CODEX_API_KEY before every real call). Without stripping here, an
+  // OPENAI_API_KEY set in the environment can make `codex login status`
+  // report "logged in" via API-key auth even without a genuine ChatGPT
+  // subscription login — detection would then say usable while every real
+  // completion call (which does strip the key) fails.
+  const st = await runCli(cmd, ['login', 'status'], { timeoutMs: 8000, stripKeys: 'openai' });
   const out = `${st.stdout}\n${st.stderr}`;
   // NB: "Not logged in" contains "logged in" — must exclude it explicitly.
   const usable = /logged in/i.test(out) && !/not logged in/i.test(out);

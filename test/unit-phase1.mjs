@@ -667,6 +667,51 @@ console.log('▶ buildGitDiff validation (src/git.ts)');
   }
 }
 
+console.log('▶ buildGitDiff: runs against assertGitRepo\'s realpath, not the pre-realpath symlink (round-4 TOCTOU regression)');
+{
+  const { execFileSync } = await import('node:child_process');
+  const { writeFileSync, symlinkSync, realpathSync } = await import('node:fs');
+  const { buildGitDiff } = await import('../dist/git.js');
+
+  // round 3 fixed this TOCTOU for full_repo_access's --add-dir grant by making
+  // assertGitRepo return the realpath and having the caller use it; round 4
+  // found buildGitDiff — the OTHER consumer of assertGitRepo, in the same
+  // file — still discarded that return value and ran `git diff` against the
+  // pre-realpath input. Prove the diff actually runs in (and reports) the
+  // REAL directory, not just that it doesn't throw.
+  const realRepo = mkdtempSync(join(tmpdir(), 'mc-gitdiff-target-'));
+  execFileSync('git', ['init', '-q'], { cwd: realRepo });
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: realRepo });
+  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: realRepo });
+  const filePath = join(realRepo, 'a.txt');
+  writeFileSync(filePath, 'line one\n');
+  execFileSync('git', ['add', '.'], { cwd: realRepo });
+  execFileSync('git', ['commit', '-q', '-m', 'initial'], { cwd: realRepo });
+  writeFileSync(filePath, 'line one\nREAL_REPO_MARKER\n');
+
+  const symlinkRepo = join(tmpdir(), `mc-gitdiff-symlink-${process.pid}`);
+  symlinkSync(realRepo, symlinkRepo);
+  try {
+    const diff = await buildGitDiff({ ref: 'unstaged', repo: symlinkRepo });
+    check('buildGitDiff via a symlinked repo path still finds the real changes',
+      /\+REAL_REPO_MARKER/.test(diff), diff);
+
+    // No-changes error message embeds the resolved cwd — must be the REAL
+    // path (used to run `git diff`), not the symlink string, or the message
+    // itself proves the diff never actually ran where it claims to.
+    execFileSync('git', ['add', '.'], { cwd: realRepo });
+    execFileSync('git', ['commit', '-q', '-m', 'second'], { cwd: realRepo });
+    let errMsg = '';
+    try { await buildGitDiff({ ref: 'staged', repo: symlinkRepo }); }
+    catch (e) { errMsg = e.message; }
+    check('no-changes error reports the REAL (realpath) directory, not the symlink path',
+      errMsg.includes(realpathSync(realRepo)) && !errMsg.includes(symlinkRepo), errMsg);
+  } finally {
+    rmSync(symlinkRepo, { force: true });
+    rmSync(realRepo, { recursive: true, force: true });
+  }
+}
+
 console.log('▶ assertGitRepo: stdout check (rejects .git dir) + $HOME defense-in-depth');
 {
   const { assertGitRepo } = await import('../dist/git.js');

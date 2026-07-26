@@ -183,6 +183,9 @@ function persistedConfigOverrides(persisted: CouncilState): Partial<CouncilConfi
   if (judge && typeof judge.provider === 'string' && typeof judge.model === 'string') {
     update.judgeModelId = judge;
   }
+  if (typeof persisted.autoCouncil === 'boolean') {
+    update.autoCouncil = persisted.autoCouncil;
+  }
   return update;
 }
 
@@ -658,7 +661,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.42',
+    version: '0.2.43',
   },
   {
     capabilities: { tools: {} },
@@ -782,6 +785,19 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
             if (!registry.resolve(id)) unavailable.push(label);
             members.push({ modelId: id });
           }
+          // A non-empty `models` list where EVERY entry failed to parse (all
+          // typos, e.g. missing "provider:" prefixes) must not silently wipe
+          // the council to empty and then persist that empty result — the
+          // same failure mode round 3 closed for setup_council's
+          // auto-population path, reopened here on configure_council's
+          // explicit path. An intentional `models: []` (a real "clear the
+          // council" gesture) is unaffected — it never reaches this branch.
+          if (input.models.length > 0 && members.length === 0) {
+            throw new Error(
+              `None of the supplied models parsed: ${rejected.join(', ')}. Expected ` +
+                `"provider:model" (e.g. "ollama:llama3", "openai:gpt-4o") — the council was left unchanged.`,
+            );
+          }
           update.members = members;
         }
 
@@ -843,6 +859,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         }
         if (input.max_deconflict_rounds !== undefined) {
           persistPatch.maxDeconflictRounds = cfg.maxDeconflictRounds;
+        }
+        if (input.auto_council !== undefined) {
+          persistPatch.autoCouncil = cfg.autoCouncil;
         }
         if (Object.keys(persistPatch).length > 0) {
           saveState(persistPatch);
@@ -1040,7 +1059,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     CLOUD_CONCURRENCY: 'Optional override: caps ALL cloud pools (overrides per-tier limits). Unset = tiers drive it.',
                     LOCAL_CONCURRENCY: 'Max concurrent local requests (default: 1; 0 = unlimited)',
                     COMPLETION_RETRIES: 'Attempts per completion before giving up on empty/error (default: 3)',
-                    REQUEST_TIMEOUT_MS: 'Per-completion wall-clock timeout in ms (default: 120000). Raise for slow local models; CLI providers keep a 300s floor.',
+                    REQUEST_TIMEOUT_MS: 'Per-completion wall-clock timeout in ms (default: 120000). Raise for slow local models or full-repo-access reviews — this is honoured verbatim by every provider, including claude-cli/codex-cli/grok-cli (no 300s floor).',
                     DECONFLICT_VERBOSE: 'true → deconflicted results include per-round detail by default',
                   },
                 },

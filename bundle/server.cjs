@@ -24919,6 +24919,11 @@ function stripThinkBlocks(text) {
   if (m2 && m2.index !== void 0) out = out.slice(m2.index + m2[0].length);
   return out.trim();
 }
+function assertJsonShape(v2, keys) {
+  if (v2 === null || typeof v2 !== "object" || Array.isArray(v2) || !keys.some((k2) => k2 in v2)) {
+    throw new Error("judge JSON has an unexpected top-level shape");
+  }
+}
 function sliceBalancedJson(text) {
   const start = text.indexOf("{");
   if (start === -1) return text;
@@ -31985,10 +31990,18 @@ var OpenAICompatibleProvider = class {
     const accepted = await this.probeAcceptsImage(model);
     if (!accepted) return false;
     const outcome = await verifyVisionChallenge(async (challenge) => {
+      let maxTokens;
+      try {
+        maxTokens = clampMaxTokens(2e3, await this.maxModelLen(model), [
+          { role: "user", content: CHALLENGE_PROMPT, images: [{ base64: challenge.base64, mimeType: challenge.mimeType }] }
+        ]);
+      } catch {
+        return "";
+      }
       const res = await this.client.chat.completions.create(
         {
           model,
-          max_tokens: 2e3,
+          max_tokens: maxTokens,
           messages: [
             {
               role: "user",
@@ -36110,7 +36123,9 @@ Rules:
 }
 function parseCategorizationJSON(raw) {
   const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
-  return JSON.parse(sliceBalancedJson(stripped));
+  const obj = JSON.parse(sliceBalancedJson(stripped));
+  assertJsonShape(obj, ["conflicting", "complementary", "commonAgreement"]);
+  return obj;
 }
 async function categorize(question, responses, judgeModelId, judgeProvider, cc, runtime, existingConflictIds = [], openTopics = []) {
   if (responses.length === 0 || responses.every((r2) => r2.error)) {
@@ -36268,14 +36283,15 @@ function detectResolutions(previous, newCateg, erroredLabels = /* @__PURE__ */ n
   const norm = (s2) => String(s2 ?? "").trim().toLowerCase().replace(/\s+/g, " ");
   const resolved = [];
   const remaining = [];
-  const matchedNewTopics = /* @__PURE__ */ new Set();
+  const matchedNewIdx = /* @__PURE__ */ new Set();
   let partyDropout = false;
   for (const prev of previous) {
     const prevTopic = norm(prev.topic);
-    const updated = newCateg.conflicting.find((c2) => norm(c2.topic) === prevTopic);
+    const updatedIdx = newCateg.conflicting.findIndex((c2) => norm(c2.topic) === prevTopic);
+    const updated = updatedIdx >= 0 ? newCateg.conflicting[updatedIdx] : void 0;
     if (updated) {
       remaining.push({ ...updated, id: prev.id, positions: mergePositionsByModel(prev.positions, updated.positions) });
-      matchedNewTopics.add(norm(updated.topic));
+      matchedNewIdx.add(updatedIdx);
     } else if (prev.positions.some((p2) => (p2.models ?? []).some((m2) => erroredLabels.has(m2)))) {
       remaining.push(prev);
       partyDropout = true;
@@ -36287,11 +36303,11 @@ function detectResolutions(previous, newCateg, erroredLabels = /* @__PURE__ */ n
       });
     }
   }
-  for (const c2 of newCateg.conflicting) {
-    if (!matchedNewTopics.has(norm(c2.topic))) {
+  newCateg.conflicting.forEach((c2, i2) => {
+    if (!matchedNewIdx.has(i2)) {
       remaining.push(c2);
     }
-  }
+  });
   return { resolved, remaining, partyDropout };
 }
 async function synthesize(judgeProvider, judgeModelId, prompt, runtime) {
@@ -36532,7 +36548,9 @@ Return ONLY valid JSON (no markdown), with this schema:
 }
 function parsePoolJSON(raw) {
   const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
-  return JSON.parse(sliceBalancedJson(stripped));
+  const obj = JSON.parse(sliceBalancedJson(stripped));
+  assertJsonShape(obj, ["options"]);
+  return obj;
 }
 async function poolResponses(question, responses, judgeModelId, judgeProvider, cc, runtime) {
   if (responses.length === 0 || responses.every((r2) => r2.error)) {
@@ -36700,7 +36718,9 @@ Return ONLY valid JSON (no markdown):
 }
 function parseDossierJSON(raw) {
   const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
-  return JSON.parse(sliceBalancedJson(stripped));
+  const obj = JSON.parse(sliceBalancedJson(stripped));
+  assertJsonShape(obj, ["options"]);
+  return obj;
 }
 function toStrList(v2) {
   const arr = Array.isArray(v2) ? v2 : v2 == null ? [] : [v2];

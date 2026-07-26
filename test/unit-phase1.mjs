@@ -401,6 +401,23 @@ console.log('▶ categorize: judgeDegraded flags a judge failure, distinct from 
   const genuine = await categorize('q', resp, judgeId, fakeJudge('{"commonAgreement":"All agree.","complementary":[],"conflicting":[]}'), cc, runtime);
   check('genuine zero-conflict result → judgeDegraded NOT set', genuine.judgeDegraded === undefined);
 
+  // ── Wrong-SHAPE but valid JSON must be judgeDegraded, not fabricated consensus (round-11 W0) ──
+  // A judge (esp. the weak-JSON CLIs) can return valid JSON of the wrong shape;
+  // per-field guards alone would coerce to conflicting:[] and report a confident
+  // 100% with no flag. assertJsonShape must route these through the fallback.
+  const wrapper = await categorize('q', resp, judgeId, fakeJudge('{"analysis":{"conflicting":[{"topic":"t","positions":[]}]}}'), cc, runtime);
+  check('wrapper-object judge JSON → judgeDegraded true (not fabricated consensus)', wrapper.judgeDegraded === true && wrapper.conflicting.length === 0);
+  const bareArray = await categorize('q', resp, judgeId, fakeJudge('[{"topic":"t","positions":[]}]'), cc, runtime);
+  check('bare-array judge JSON → judgeDegraded true (sliceBalancedJson extracts an object w/o our keys)', bareArray.judgeDegraded === true);
+  const scalar = await categorize('q', resp, judgeId, fakeJudge('42'), cc, runtime);
+  check('scalar judge JSON → judgeDegraded true', scalar.judgeDegraded === true);
+  // assertJsonShape directly
+  const { assertJsonShape } = await import('../dist/providers/base.js');
+  let threw = false; try { assertJsonShape({ analysis: {} }, ['conflicting', 'complementary', 'commonAgreement']); } catch { threw = true; }
+  check('assertJsonShape: object missing all expected keys throws', threw);
+  check('assertJsonShape: object with one expected key passes (no throw)',
+    (() => { try { assertJsonShape({ commonAgreement: null }, ['conflicting', 'complementary', 'commonAgreement']); return true; } catch { return false; } })());
+
   // All members errored this round → nothing genuine to categorize; must flag
   // judgeDegraded WITHOUT even calling the judge (fakeJudge would throw here
   // if invoked, proving the guard short-circuits before completion).
@@ -476,6 +493,24 @@ console.log('▶ deconfliction round: open-topic prompt + exact-match resolution
   );
   check('carry-forward: a reworded topic is NOT silently dropped', reworded.remaining.length === 1, JSON.stringify(reworded));
   check('carry-forward: the old wording is marked resolved (pessimistic, not silently lost)', reworded.resolved.length === 1);
+
+  // Round-11 W0/W1: two DISTINCT new conflicts that normalize to the SAME topic
+  // (e.g. two topic-less conflicts both coerced to 'unknown') must BOTH be
+  // carried forward — index-keyed dedup, not topic-keyed. Topic-keyed dropped
+  // the second one, silently losing a real live disagreement.
+  const sameTopicCollision = detectResolutions(
+    [conflictItem('unknown')],
+    { conflicting: [
+      { topic: 'unknown', positions: [{ models: ['a'], position: 'p1' }] },
+      { topic: 'unknown', positions: [{ models: ['b'], position: 'p2' }] },
+    ], commonAgreement: null },
+  );
+  // prev 'unknown' matches the FIRST new 'unknown' (carried with prev id); the
+  // SECOND distinct 'unknown' must ALSO be carried forward, not dropped.
+  check('same-normalized-topic collision: BOTH distinct new conflicts are carried forward (not silently dropped)',
+    sameTopicCollision.remaining.length === 2, JSON.stringify(sameTopicCollision));
+  check('same-normalized-topic collision: the second conflict\'s distinct position survives',
+    sameTopicCollision.remaining.some(c => c.positions.some(p => p.models.includes('b'))), JSON.stringify(sameTopicCollision));
 
   // A matched (still-open, verbatim-reused) conflict must keep its ORIGINAL
   // id across rounds — a fresh id from this round's categorize() call would

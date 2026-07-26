@@ -13,7 +13,7 @@ import {
   RawResponse,
   RuntimeConfig,
 } from '../types.js';
-import { Provider, sliceBalancedJson } from '../providers/base.js';
+import { Provider, sliceBalancedJson, assertJsonShape } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
 import { EmptyCompletionError, pooledComplete } from './query.js';
 import { UNTRUSTED_CONTENT_NOTICE } from './prompt-safety.js';
@@ -112,7 +112,9 @@ function parseCategorizationJSON(raw: string): RawCategorizationJSON {
   // no structured-output mode at all (jsonMode there is just an appended
   // instruction sentence), so a preamble like "Here is the categorization:\n{…}"
   // is a real, reproducible failure mode for the two DEFAULT response modes.
-  return JSON.parse(sliceBalancedJson(stripped)) as RawCategorizationJSON;
+  const obj = JSON.parse(sliceBalancedJson(stripped));
+  assertJsonShape(obj, ['conflicting', 'complementary', 'commonAgreement']);
+  return obj as RawCategorizationJSON;
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────

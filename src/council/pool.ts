@@ -16,7 +16,7 @@
  * the neutral pool before and after reconsideration so movement is observable.
  */
 import { ModelId, PooledDigest, PooledResult, RawResponse, RuntimeConfig } from '../types.js';
-import { ChatImage, Provider, sliceBalancedJson } from '../providers/base.js';
+import { ChatImage, Provider, sliceBalancedJson, assertJsonShape } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
 import { CompleteConfig } from './categorizer.js';
 import { EmptyCompletionError, Member, pooledComplete, queryMembers } from './query.js';
@@ -68,7 +68,9 @@ function parsePoolJSON(raw: string): RawPoolJSON {
   // Tolerate a prose preamble/postamble around the JSON object (incl. trailing
   // prose that itself contains braces — sliceBalancedJson matches the first
   // object's BALANCED close, not the last brace in the whole string).
-  return JSON.parse(sliceBalancedJson(stripped)) as RawPoolJSON;
+  const obj = JSON.parse(sliceBalancedJson(stripped));
+  assertJsonShape(obj, ['options']);
+  return obj as RawPoolJSON;
 }
 
 /** Ask the judge to distil responses into a neutral, deduplicated digest. */

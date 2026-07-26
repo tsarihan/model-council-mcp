@@ -145,6 +145,24 @@ export function stripThinkBlocks(text: string): string {
  * back to the widest slice if no balanced object is found (a genuinely truncated
  * object still gets its best chance).
  */
+/**
+ * Throw unless `v` is a plain object carrying at least one of `keys`. jsonMode
+ * (where it exists) only guarantees PARSEABLE JSON, not the expected SHAPE — and
+ * the default CLI judges have no structured-output mode at all — so a judge can
+ * return valid JSON of the wrong shape: a wrapper `{"analysis":{…}}`, a bare
+ * array `[{…}]` (from which sliceBalancedJson extracts the first inner object),
+ * or a scalar. All of those have the expected top-level fields as `undefined`,
+ * so a parser that only guards FIELD types would coerce every field to empty and
+ * report a fabricated 100%-consensus result with NO judgeDegraded flag — the
+ * exact class judgeDegraded exists to catch. Throwing here routes such output
+ * through each caller's existing judge-failure fallback instead.
+ */
+export function assertJsonShape(v: unknown, keys: string[]): void {
+  if (v === null || typeof v !== 'object' || Array.isArray(v) || !keys.some(k => k in (v as object))) {
+    throw new Error('judge JSON has an unexpected top-level shape');
+  }
+}
+
 export function sliceBalancedJson(text: string): string {
   const start = text.indexOf('{');
   if (start === -1) return text;

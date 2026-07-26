@@ -133,13 +133,20 @@ export function detectResolutions(
 
   const resolved: ConflictItem[] = [];
   const remaining: ConflictItem[] = [];
-  const matchedNewTopics = new Set<string>();
+  // Track CONSUMED new conflicts by INDEX, not by topic string. Keying on the
+  // normalized topic would make two DISTINCT new conflicts that merely normalize
+  // to the same string (e.g. two topic-less conflicts both coerced to 'unknown'
+  // by categorizer, or 'Retry Strategy' vs 'retry  strategy') collide, and the
+  // carry-forward loop below would silently drop the second one — a real live
+  // disagreement absent from remaining/openConflicts/unresolvedConflicts/synthesis.
+  const matchedNewIdx = new Set<number>();
   let partyDropout = false;
 
   for (const prev of previous) {
     const prevTopic = norm(prev.topic);
     // A conflict is resolved if the judge no longer lists a conflict on this topic.
-    const updated = newCateg.conflicting.find(c => norm(c.topic) === prevTopic);
+    const updatedIdx = newCateg.conflicting.findIndex(c => norm(c.topic) === prevTopic);
+    const updated = updatedIdx >= 0 ? newCateg.conflicting[updatedIdx] : undefined;
 
     if (updated) {
       // Keep the ORIGINAL id stable across rounds (a fresh id from this
@@ -155,7 +162,7 @@ export function detectResolutions(
       // and falsely resolve the conflict (defeating the dropout guard below).
       // Union by model label so the party set only ever grows.
       remaining.push({ ...updated, id: prev.id, positions: mergePositionsByModel(prev.positions, updated.positions) });
-      matchedNewTopics.add(norm(updated.topic));
+      matchedNewIdx.add(updatedIdx);
     } else if (prev.positions.some(p => (p.models ?? []).some(m => erroredLabels.has(m)))) {
       // The topic vanished from the judge's output — but a MEMBER that is a
       // PARTY to this conflict errored this round, and the judge only ever sees
@@ -177,13 +184,15 @@ export function detectResolutions(
     }
   }
 
-  // Anything the judge reported this round that didn't match a previous
-  // topic — see the correctness note above.
-  for (const c of newCateg.conflicting) {
-    if (!matchedNewTopics.has(norm(c.topic))) {
+  // Anything the judge reported this round that wasn't CONSUMED as a previous
+  // conflict's update (by index — see the correctness note above) is carried
+  // forward: a genuinely new/reworded conflict, or a distinct conflict that
+  // merely shares a normalized topic with one already matched.
+  newCateg.conflicting.forEach((c, i) => {
+    if (!matchedNewIdx.has(i)) {
       remaining.push(c);
     }
-  }
+  });
 
   return { resolved, remaining, partyDropout };
 }

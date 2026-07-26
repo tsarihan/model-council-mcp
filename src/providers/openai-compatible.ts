@@ -180,10 +180,26 @@ export class OpenAICompatibleProvider implements Provider {
     if (!accepted) return false; // trustworthy negative, already cached above
 
     const outcome = await verifyVisionChallenge(async (challenge) => {
+      // Clamp the challenge's max_tokens to the server's context the same way
+      // complete() does — this is the one completion this provider issues that
+      // otherwise sent an unclamped 2000, which vLLM/SGLang hard-reject on a
+      // small-context model, so a genuinely vision-capable but small-context
+      // model would never get confirmed. Account for the image (a ChatMessage
+      // carrying the challenge image) so the reserve is realistic.
+      let maxTokens: number;
+      try {
+        maxTokens = clampMaxTokens(2000, await this.maxModelLen(model), [
+          { role: 'user', content: CHALLENGE_PROMPT, images: [{ base64: challenge.base64, mimeType: challenge.mimeType }] },
+        ]);
+      } catch {
+        // Prompt (image) doesn't fit this model's context at all → can't verify
+        // vision here; empty is treated as inconclusive (not a definitive fail).
+        return '';
+      }
       const res = await this.client.chat.completions.create(
         {
           model,
-          max_tokens: 2000,
+          max_tokens: maxTokens,
           messages: [
             {
               role: 'user',

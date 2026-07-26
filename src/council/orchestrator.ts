@@ -214,6 +214,22 @@ export class CouncilOrchestrator {
     let queryTargets = members;
     let visionRouting: VisionRouting | undefined;
     if (images && images.length > 0) {
+      // KNOWN, DEFERRED (round 7): this block's bookkeeping (seededLabels /
+      // alreadyCachedLabels below) is keyed by modelIdLabel (includes
+      // serverId), while each provider's own in-memory visionVerifiedCache is
+      // keyed by bare model name. Two council members that resolve to the
+      // SAME provider instance + bare model under DIFFERENT labels (e.g.
+      // "ollama:llama3" vs "ollama/ollama:llama3" — both resolve to the same
+      // provider, since "ollama" is that server's own registered id) can
+      // still launder a seeded-but-never-live-probed value into a fresh
+      // on-disk lease for the alias label, the same laundering class round 5
+      // fixed for the ordinary case. Low severity — requires a deliberately
+      // aliased member list — and a proper fix needs the bookkeeping keyed by
+      // resolved (provider, model) identity instead of label, consistently
+      // across every provider's getVisionCache()/seedVisionCache() AND
+      // state.ts's label-keyed visionCapability schema; not done here to
+      // avoid a narrowly-scoped fix reintroducing the same class of gap.
+      //
       // Seed each member's provider from any previously-verified result on
       // disk, so a restart doesn't re-pay the OCR-challenge round trip for a
       // model already proven (in)capable in a prior session — on a slow

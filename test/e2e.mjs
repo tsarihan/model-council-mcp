@@ -1692,6 +1692,39 @@ async function main() {
       (raceAfter.council?.members ?? []).length === 0, JSON.stringify(raceAfter.council));
     await raceClient.close();
     rmSync(raceDir, { recursive: true, force: true });
+
+    // Settings-only configure_council regression (round 7): a call that only
+    // changes response_mode (no `models` field — no membership intent at
+    // all) must NOT set explicitlyConfigured and must NOT block a racing
+    // background initCouncil() from auto-populating a fresh install — that
+    // flag exists to protect an explicit MEMBERSHIP decision, not any
+    // settings tweak.
+    const settingsOnlyDir = mkdtempSync(join(tmpdir(), 'mc-e2e-settingsonly-'));
+    const settingsOnlyTransport = new StdioClientTransport({
+      command: 'node', args: [serverEntry],
+      env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: join(settingsOnlyDir, 'state.json') },
+    });
+    const settingsOnlyClient = new Client({ name: 'settingsonly-e2e', version: '1.0.0' }, { capabilities: {} });
+    await settingsOnlyClient.connect(settingsOnlyTransport);
+    // Call immediately on connect, racing against boot's background
+    // initCouncil() detection — settings-only, no `models` field.
+    await settingsOnlyClient.callTool({ name: 'configure_council', arguments: { response_mode: 'deconflicted' } });
+    // Give initCouncil()'s background detection plenty of time to land.
+    await new Promise(r => setTimeout(r, 3000));
+    const settingsOnlyAfter = parseToolResult(await settingsOnlyClient.callTool({ name: 'get_council_config', arguments: {} }));
+    check('settings-only configure_council: response_mode change applied', settingsOnlyAfter.council?.responseMode === 'deconflicted', JSON.stringify(settingsOnlyAfter.council));
+    // get_council_config's OWN live "auto (Ollama-only)" fallback would show
+    // a non-empty member list even if initCouncil() were WRONGLY blocked —
+    // that fallback runs independently of whatever initCouncil() did. Check
+    // specifically for claude-cli/codex-cli members, which only
+    // initCouncil()'s real detectEnvironment()+autoPopulatedMembers() path
+    // adds, to actually prove auto-population wasn't blocked.
+    check('settings-only configure_council: does NOT block background auto-population (claude-cli/codex-cli members present, not just Ollama)',
+      (settingsOnlyAfter.council?.members ?? []).some(l => l.startsWith('claude-cli:')) &&
+      (settingsOnlyAfter.council?.members ?? []).some(l => l.startsWith('codex-cli:')),
+      JSON.stringify(settingsOnlyAfter.council?.members));
+    await settingsOnlyClient.close();
+    rmSync(settingsOnlyDir, { recursive: true, force: true });
   } finally {
     try { await detectClient.close(); } catch { /* already closed */ }
     try { if (rebootClient) await rebootClient.close(); } catch { /* noop */ }

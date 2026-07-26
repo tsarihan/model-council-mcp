@@ -1296,6 +1296,58 @@ console.log('▶ Semaphore / pooled (process-wide per-provider concurrency ceili
   }
 }
 
+console.log('▶ loadConfig: strictParseInt rejects a numeric PREFIX with trailing garbage (round 7 finding — envInt/MAX_DECONFLICT_ROUNDS/port parser all shared parseInt\'s lenient-prefix bug that round 6 only fixed for CLOUD_CONCURRENCY)');
+{
+  const { loadConfig } = await import('../dist/config.js');
+  const saved = { ...process.env };
+  try {
+    // envInt: MAX_TOKENS="16000kb" must fall back to the default (16000),
+    // not silently truncate to 16000 as a "successfully parsed" value that
+    // happens to equal the default (use a value that WOULD differ from the
+    // default if truncation "worked", to prove it's really falling back).
+    process.env.MAX_TOKENS = '5000oops';
+    process.env.COMPLETION_RETRIES = '7bad';
+    process.env.REQUEST_TIMEOUT_MS = '9999xyz';
+    process.env.MAX_DECONFLICT_ROUNDS = '4garbage';
+    delete process.env.CLOUD_CONCURRENCY;
+    delete process.env.LOCAL_CONCURRENCY;
+    delete process.env.VLLM_SERVERS;
+    delete process.env.TRTLLM_SERVERS;
+    delete process.env.SGLANG_SERVERS;
+    delete process.env.COUNCIL_MODELS;
+    const cfg = loadConfig();
+    check('envInt: MAX_TOKENS with trailing garbage falls back to the default, not a truncated value',
+      cfg.runtime.maxTokens === 16000, cfg.runtime.maxTokens);
+    check('envInt: COMPLETION_RETRIES with trailing garbage falls back to the default',
+      cfg.runtime.retries === 3, cfg.runtime.retries);
+    check('envInt: REQUEST_TIMEOUT_MS with trailing garbage falls back to the default',
+      cfg.runtime.requestTimeoutMs === 120000, cfg.runtime.requestTimeoutMs);
+    check('MAX_DECONFLICT_ROUNDS with trailing garbage falls back to the default (3)',
+      cfg.council.maxDeconflictRounds === 3, cfg.council.maxDeconflictRounds);
+
+    // A CLEAN integer must still parse normally — the stricter check must not
+    // reject legitimate values, only ones with actual trailing garbage.
+    process.env.MAX_TOKENS = '8000';
+    process.env.MAX_DECONFLICT_ROUNDS = '5';
+    const cfgClean = loadConfig();
+    check('envInt: a clean integer still parses normally', cfgClean.runtime.maxTokens === 8000, cfgClean.runtime.maxTokens);
+    check('MAX_DECONFLICT_ROUNDS: a clean integer still parses normally', cfgClean.council.maxDeconflictRounds === 5, cfgClean.council.maxDeconflictRounds);
+
+    // Self-hosted server port parser: "12345oops" must fall back to the
+    // provider's default port (8000 for vllm), not truncate to 12345 — using
+    // a port that DIFFERS from the default so a truncation bug is actually
+    // observable (vllm's own default happens to be 8000, which would make a
+    // "does it equal 8000" check pass vacuously either way).
+    process.env.VLLM_SERVERS = 'gpu1:localhost:12345oops';
+    const cfgPort = loadConfig();
+    const vllmServer = cfgPort.servers.find(s => s.type === 'vllm');
+    check('server port parser: a port with trailing garbage falls back to the default port, not a truncated one',
+      !!vllmServer && vllmServer.baseUrl === 'http://localhost:8000', JSON.stringify(vllmServer));
+  } finally {
+    process.env = saved;
+  }
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
 console.log('ALL PASSED ✅');

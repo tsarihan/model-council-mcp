@@ -200,6 +200,16 @@ async function detectGrok(tiers: SubscriptionTiers, subs: Subscriptions): Promis
   // CLI) — so it must not run at all until the same opt-in gate that governs
   // registration (config.ts) also allows cloud, or a "free" user pays for a
   // probe they never asked for just by running council_status.
+  // KNOWN, DEFERRED (round 7): the legacy GROK_CLI=true escape hatch gates
+  // THIS probe (spending real quota on a free tier), but autoPopulatedMembers
+  // and quotaWarning gate on tierAllowsCloud alone — a GROK_CLI=true user at
+  // the default free tier pays for this probe on every detection yet never
+  // gets grok-cli members auto-added, and council_status's hint still tells
+  // them to set a tier as if nothing had run. Low severity (legacy env var,
+  // no data-safety impact) but genuinely ambiguous which behavior is
+  // "correct" — fixing only one of the three gates (this probe,
+  // autoPopulatedMembers, quotaWarning) would just move the inconsistency
+  // rather than resolve it.
   if (!tierAllowsCloud('grok', tiers.grok, subs) && !envBool('GROK_CLI', false)) {
     return { installed: true, usable: false };
   }

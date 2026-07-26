@@ -70,10 +70,12 @@ function parseOpenAICompatibleServers(
       const parts = rest.split(':');
       const host = parts[0];
       // Validate the port so a non-numeric value can't produce "http://host:NaN".
+      // strictParseInt (not plain parseInt) so "8000oops" is rejected outright
+      // rather than silently truncated to the port 8000.
       let port = defaultPort;
       if (parts[1] !== undefined) {
-        const n = parseInt(parts[1], 10);
-        port = Number.isInteger(n) && n > 0 && n <= 65535 ? n : defaultPort;
+        const n = strictParseInt(parts[1]);
+        port = n !== undefined && n > 0 && n <= 65535 ? n : defaultPort;
       }
       return buildServer(type, name, `http://${host}:${port}`);
     });
@@ -155,11 +157,29 @@ function envClean(name: string): string | undefined {
   return trimmed;
 }
 
+/**
+ * Strict integer parse: the WHOLE trimmed string must be an optionally-signed
+ * run of digits, or this returns `undefined`. Plain `parseInt()` accepts a
+ * valid leading numeric PREFIX with trailing garbage (`parseInt("16000kb",
+ * 10) === 16000`, `parseInt("3oops", 10) === 3`) — every numeric env/config
+ * value in this file used to parse independently with that same lenient
+ * behavior (round 6 fixed ONE call site, `CLOUD_CONCURRENCY`/
+ * `LOCAL_CONCURRENCY`'s `parseOverride`, and a round-7 review found three
+ * sibling sites — `envInt` here, `MAX_DECONFLICT_ROUNDS`, and the
+ * OpenAI-compatible server port parser — still had the exact same gap).
+ * Centralizing the check here means a future numeric setting can't diverge
+ * from the others by accident.
+ */
+function strictParseInt(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim();
+  if (!/^-?\d+$/.test(trimmed)) return undefined;
+  const n = parseInt(trimmed, 10);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 function envInt(name: string, fallback: number): number {
-  const v = envClean(name);
-  if (v === undefined) return fallback;
-  const n = parseInt(v, 10);
-  return Number.isFinite(n) ? n : fallback;
+  return strictParseInt(envClean(name)) ?? fallback;
 }
 
 export function envBool(name: string, fallback: boolean): boolean {
@@ -351,7 +371,7 @@ export function loadConfig(): AppConfig {
       : 'categorized';
   const maxDeconflictRounds = Math.max(
     1,
-    Math.min(10, parseInt(envClean('MAX_DECONFLICT_ROUNDS') ?? '3', 10) || 3),
+    Math.min(10, strictParseInt(envClean('MAX_DECONFLICT_ROUNDS')) ?? 3),
   );
 
   // Auto-council: default ON. Only "false"/"0"/"no" disables it.
@@ -372,29 +392,20 @@ export function loadConfig(): AppConfig {
   // actually mean unlimited, unlike LOCAL_CONCURRENCY=0 one line below (which
   // already used the correct Number.isFinite-based pattern). Match it.
   //
-  // A genuinely UNPARSEABLE value (e.g. CLOUD_CONCURRENCY=three, a typo) must
-  // resolve to `undefined` — "as if unset" — not to the numeric default. A
-  // defined override collapses EVERY cloud pool to that single ceiling in
-  // resolvePoolLimits() below, so mapping a typo to the default number
-  // silently pins chatgpt/claude/grok/ollama-cloud/openai/anthropic/xai all
-  // to that one value, discarding each provider's real per-tier concurrency
-  // with no visible signal — worse than just falling through to per-tier
-  // limits, which is what an actually-unset var does.
-  // parseInt() parses a leading numeric PREFIX and silently ignores trailing
-  // garbage ("3oops" → 3, "1.5" → 1) — Number.isFinite(3) is true, so the
-  // guard above alone doesn't catch this. The whole trimmed string must be a
-  // clean integer, or this is exactly as unparseable as "three" and must
-  // resolve to `undefined` too, for the same reason (an active-but-wrong
-  // override collapses every cloud pool to a value nobody actually asked for).
-  const parseOverride = (raw: string | undefined): number | undefined => {
-    if (raw === undefined) return undefined;
-    const trimmed = raw.trim();
-    if (!/^-?\d+$/.test(trimmed)) return undefined;
-    const n = parseInt(trimmed, 10);
-    return Number.isFinite(n) ? n : undefined;
-  };
-  const cloudOverride = parseOverride(cloudOverrideRaw);
-  const localOverride = parseOverride(localOverrideRaw);
+  // A genuinely UNPARSEABLE value (e.g. CLOUD_CONCURRENCY=three, or a valid
+  // prefix with trailing garbage like "3oops") must resolve to `undefined` —
+  // "as if unset" — not to the numeric default. A defined override collapses
+  // EVERY cloud pool to that single ceiling in resolvePoolLimits() below, so
+  // mapping a typo to the default number silently pins
+  // chatgpt/claude/grok/ollama-cloud/openai/anthropic/xai all to that one
+  // value, discarding each provider's real per-tier concurrency with no
+  // visible signal — worse than just falling through to per-tier limits,
+  // which is what an actually-unset var does. strictParseInt() (shared with
+  // envInt/MAX_DECONFLICT_ROUNDS/the server-port parser above) is what
+  // rejects the trailing-garbage case; a plain Number.isFinite(parseInt(...))
+  // check alone does not, since parseInt("3oops", 10) === 3.
+  const cloudOverride = strictParseInt(cloudOverrideRaw);
+  const localOverride = strictParseInt(localOverrideRaw);
   const poolLimits = resolvePoolLimits(tiers, { cloud: cloudOverride, local: localOverride }, subs);
 
   const runtime: RuntimeConfig = {

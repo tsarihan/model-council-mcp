@@ -681,7 +681,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.45',
+    version: '0.2.46',
   },
   {
     capabilities: { tools: {} },
@@ -860,7 +860,19 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         }
 
         orchestrator.updateConfig(update);
-        explicitlyConfigured = true;
+        // Only a call that actually expresses MEMBERSHIP intent (touches
+        // `models`, even to an empty/intentional-clear list) should block
+        // initCouncil()'s background auto-population — that flag exists to
+        // protect an explicit membership decision (including a deliberate
+        // zero-member one), not any settings change. A settings-only call
+        // (e.g. just `response_mode`) setting it unconditionally could
+        // silently discard a racing initCouncil() detection on a fresh
+        // install with no membership decision actually made, losing
+        // claude-cli/codex-cli/grok-cli auto-members down to Ollama-only
+        // with no visible signal.
+        if (input.models !== undefined) {
+          explicitlyConfigured = true;
+        }
         const cfg = orchestrator.getConfig();
 
         // Persist ONLY the settings this call actually touched — matching

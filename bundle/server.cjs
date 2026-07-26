@@ -24627,8 +24627,8 @@ function parseOpenAICompatibleServers(raw, type) {
     const host = parts[0];
     let port = defaultPort;
     if (parts[1] !== void 0) {
-      const n2 = parseInt(parts[1], 10);
-      port = Number.isInteger(n2) && n2 > 0 && n2 <= 65535 ? n2 : defaultPort;
+      const n2 = strictParseInt(parts[1]);
+      port = n2 !== void 0 && n2 > 0 && n2 <= 65535 ? n2 : defaultPort;
     }
     return buildServer(type, name, `http://${host}:${port}`);
   });
@@ -24680,11 +24680,15 @@ function envClean(name) {
   if (trimmed.includes("${")) return void 0;
   return trimmed;
 }
+function strictParseInt(raw) {
+  if (raw === void 0) return void 0;
+  const trimmed = raw.trim();
+  if (!/^-?\d+$/.test(trimmed)) return void 0;
+  const n2 = parseInt(trimmed, 10);
+  return Number.isFinite(n2) ? n2 : void 0;
+}
 function envInt(name, fallback) {
-  const v2 = envClean(name);
-  if (v2 === void 0) return fallback;
-  const n2 = parseInt(v2, 10);
-  return Number.isFinite(n2) ? n2 : fallback;
+  return strictParseInt(envClean(name)) ?? fallback;
 }
 function envBool(name, fallback) {
   const v2 = envClean(name);
@@ -24797,21 +24801,14 @@ function loadConfig() {
   const responseMode = modeRaw === "individual" || modeRaw === "categorized" || modeRaw === "deconflicted" || modeRaw === "pooled" || modeRaw === "dialectic" ? modeRaw : "categorized";
   const maxDeconflictRounds = Math.max(
     1,
-    Math.min(10, parseInt(envClean("MAX_DECONFLICT_ROUNDS") ?? "3", 10) || 3)
+    Math.min(10, strictParseInt(envClean("MAX_DECONFLICT_ROUNDS")) ?? 3)
   );
   const autoRaw = (envClean("AUTO_COUNCIL") ?? "true").toLowerCase();
   const autoCouncil = !["false", "0", "no", "off"].includes(autoRaw);
   const cloudOverrideRaw = envClean("CLOUD_CONCURRENCY");
   const localOverrideRaw = envClean("LOCAL_CONCURRENCY");
-  const parseOverride = (raw) => {
-    if (raw === void 0) return void 0;
-    const trimmed = raw.trim();
-    if (!/^-?\d+$/.test(trimmed)) return void 0;
-    const n2 = parseInt(trimmed, 10);
-    return Number.isFinite(n2) ? n2 : void 0;
-  };
-  const cloudOverride = parseOverride(cloudOverrideRaw);
-  const localOverride = parseOverride(localOverrideRaw);
+  const cloudOverride = strictParseInt(cloudOverrideRaw);
+  const localOverride = strictParseInt(localOverrideRaw);
   const poolLimits = resolvePoolLimits(tiers, { cloud: cloudOverride, local: localOverride }, subs);
   const runtime = {
     maxTokens: Math.max(1, envInt("MAX_TOKENS", 16e3)),
@@ -37876,7 +37873,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.45"
+    version: "0.2.46"
   },
   {
     capabilities: { tools: {} },
@@ -37982,7 +37979,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
           update.autoCouncil = input.auto_council;
         }
         orchestrator.updateConfig(update);
-        explicitlyConfigured = true;
+        if (input.models !== void 0) {
+          explicitlyConfigured = true;
+        }
         const cfg = orchestrator.getConfig();
         const persistPatch = {};
         if (input.models !== void 0) {

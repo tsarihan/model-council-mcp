@@ -370,6 +370,41 @@ console.log('▶ buildGitDiff validation (src/git.ts)');
   }
 }
 
+console.log('▶ assertGitRepo: stdout check (rejects .git dir) + $HOME defense-in-depth');
+{
+  const { assertGitRepo } = await import('../dist/git.js');
+  const { execFileSync } = await import('node:child_process');
+  const dir = mkdtempSync(join(tmpdir(), 'mc-agr-'));
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  try {
+    await assertGitRepo(dir);
+    check('valid work tree root passes', true);
+  } catch (e) {
+    check('valid work tree root passes', false, String(e));
+  }
+  // Inside .git itself: `--is-inside-work-tree` exits 0 and prints "false" there
+  // (it's the metadata dir, not the working tree) — previously accepted because
+  // only the exit code was checked, never the stdout content.
+  let threwGitDir = false;
+  try { await assertGitRepo(join(dir, '.git')); } catch (e) { threwGitDir = /not inside a git work tree/i.test(e.message); }
+  check('.git directory itself is rejected (stdout checked, not just exit code)', threwGitDir);
+  rmSync(dir, { recursive: true, force: true });
+
+  // $HOME defense-in-depth: a dotfiles repo at ~ is a genuinely valid work
+  // tree, so no git-plumbing check can tell it apart from "the small project
+  // the caller meant to grant" — reject this one common, high-blast-radius
+  // case explicitly rather than pretending the general problem is solved.
+  const homeDir = mkdtempSync(join(tmpdir(), 'mc-agr-home-'));
+  execFileSync('git', ['init', '-q'], { cwd: homeDir });
+  const savedHome = process.env.HOME;
+  process.env.HOME = homeDir;
+  let threwHome = false, homeMsg = '';
+  try { await assertGitRepo(homeDir); } catch (e) { threwHome = true; homeMsg = e.message; }
+  process.env.HOME = savedHome;
+  rmSync(homeDir, { recursive: true, force: true });
+  check('$HOME (even a legitimate git repo) is rejected as a repo root', threwHome && /home directory/i.test(homeMsg), homeMsg);
+}
+
 console.log('▶ context.ts rejects image extensions in "files" (guards the other route to garbled data)');
 {
   const { buildAugmentedQuestion } = await import('../dist/context.js');

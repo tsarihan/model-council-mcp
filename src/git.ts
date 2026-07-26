@@ -8,6 +8,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolve } from 'node:path';
+import { homedir } from 'node:os';
 
 const execFileAsync = promisify(execFile);
 
@@ -50,12 +51,38 @@ function diffArgsForRef(ref: string): string[] {
  * full_repo_access's git_repo) can require the same validation git_ref
  * already gets — an unvalidated path here would otherwise accept anything
  * ("/", a home directory, a nonexistent path) as a "repo root" to grant.
+ *
+ * Checks the command's STDOUT, not just its exit code — `git rev-parse
+ * --is-inside-work-tree` exits 0 and prints "false" (not an error) when run
+ * from inside a `.git` directory itself (the metadata dir, not the working
+ * tree), so an exit-code-only check would accept `<repo>/.git` as a valid
+ * "repo root" and grant read access to git internals rather than the actual
+ * project. Found via a live council review of this exact function.
+ *
+ * Also special-cases the resolved path being exactly the user's home
+ * directory: a dotfiles repo initialized at `~` is a completely legitimate
+ * git work tree, so `--is-inside-work-tree` alone can never distinguish "the
+ * small project the caller meant to grant" from "the caller's entire home
+ * directory, which happens to also be a repo" — no git-plumbing check closes
+ * that gap in general. This one common, high-blast-radius case is rejected
+ * explicitly as defense-in-depth; anything narrower under $HOME still passes.
  */
 export async function assertGitRepo(repoPath: string): Promise<void> {
+  const resolved = resolve(repoPath);
+  if (resolved === resolve(homedir())) {
+    throw new Error(
+      `"${repoPath}" resolves to your home directory — refusing to grant it as a repo root even ` +
+        `though it is a valid git work tree. Point at a narrower project directory instead.`,
+    );
+  }
+  let stdout: string;
   try {
-    await execFileAsync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: repoPath });
+    ({ stdout } = await execFileAsync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: resolved }));
   } catch {
     throw new Error(`"${repoPath}" is not inside a git repository (or git is not installed).`);
+  }
+  if (stdout.trim() !== 'true') {
+    throw new Error(`"${repoPath}" is not inside a git work tree (it may be inside a .git directory).`);
   }
 }
 

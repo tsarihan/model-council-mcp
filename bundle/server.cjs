@@ -37019,6 +37019,7 @@ var import_node_path6 = require("node:path");
 var import_node_child_process5 = require("node:child_process");
 var import_node_util = require("node:util");
 var import_node_path5 = require("node:path");
+var import_node_os4 = require("node:os");
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process5.execFile);
 var MAX_DIFF_BYTES = 512 * 1024;
 var NO_HELPERS = ["--no-ext-diff", "--no-textconv"];
@@ -37035,10 +37036,20 @@ function diffArgsForRef(ref) {
   }
 }
 async function assertGitRepo(repoPath) {
+  const resolved = (0, import_node_path5.resolve)(repoPath);
+  if (resolved === (0, import_node_path5.resolve)((0, import_node_os4.homedir)())) {
+    throw new Error(
+      `"${repoPath}" resolves to your home directory \u2014 refusing to grant it as a repo root even though it is a valid git work tree. Point at a narrower project directory instead.`
+    );
+  }
+  let stdout;
   try {
-    await execFileAsync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: repoPath });
+    ({ stdout } = await execFileAsync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: resolved }));
   } catch {
     throw new Error(`"${repoPath}" is not inside a git repository (or git is not installed).`);
+  }
+  if (stdout.trim() !== "true") {
+    throw new Error(`"${repoPath}" is not inside a git work tree (it may be inside a .git directory).`);
   }
 }
 async function buildGitDiff(input) {
@@ -37597,7 +37608,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.27"
+    version: "0.2.28"
   },
   {
     capabilities: { tools: {} },

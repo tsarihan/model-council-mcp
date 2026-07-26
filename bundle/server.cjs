@@ -24542,7 +24542,7 @@ function tierAllowsCloud(provider, tier, subs = loadSubscriptions()) {
 }
 function tierConcurrency(provider, tier, subs = loadSubscriptions()) {
   const t2 = subs.providers[provider]?.tiers?.[tier];
-  if (t2?.concurrency && t2.concurrency > 0) return t2.concurrency;
+  if (t2?.concurrency !== void 0 && Number.isFinite(t2.concurrency)) return t2.concurrency;
   return subs.defaults.cloudConcurrency;
 }
 function validTiers(provider, subs = loadSubscriptions()) {
@@ -24805,7 +24805,9 @@ function loadConfig() {
   const localOverrideRaw = envClean("LOCAL_CONCURRENCY");
   const parseOverride = (raw) => {
     if (raw === void 0) return void 0;
-    const n2 = parseInt(raw, 10);
+    const trimmed = raw.trim();
+    if (!/^-?\d+$/.test(trimmed)) return void 0;
+    const n2 = parseInt(trimmed, 10);
     return Number.isFinite(n2) ? n2 : void 0;
   };
   const cloudOverride = parseOverride(cloudOverrideRaw);
@@ -37874,7 +37876,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.44"
+    version: "0.2.45"
   },
   {
     capabilities: { tools: {} },
@@ -38219,6 +38221,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       // ── setup_council ────────────────────────────────────────────────────
       case "setup_council": {
         const input = SetupCouncilInput.parse(args ?? {});
+        explicitlyConfigured = true;
         const subs = loadSubscriptions();
         const tiers = effectiveTiers(subs);
         const applied = {};
@@ -38242,7 +38245,6 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         const report = await detectEnvironment(registry2, tiers, subs);
         const labels = autoPopulatedMembers(report, tiers, subs);
         orchestrator.updateConfig({ members: labelsToMembers(labels) });
-        explicitlyConfigured = true;
         if (labels.length > 0) {
           saveState({ members: labels });
         }

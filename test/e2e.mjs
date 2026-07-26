@@ -1643,6 +1643,26 @@ async function main() {
     await badConcClient.close();
     rmSync(badConcDir, { recursive: true, force: true });
 
+    // Prefix-truncation regression (round 6): parseInt("3oops", 10) === 3, so
+    // an earlier "just check Number.isFinite" guard did NOT catch this —
+    // CLOUD_CONCURRENCY=3oops must resolve the same as any other unparseable
+    // value ("as if unset"), not silently become an active override of 3.
+    const prefixDir = mkdtempSync(join(tmpdir(), 'mc-e2e-prefixconc-'));
+    const prefixTransport = new StdioClientTransport({
+      command: 'node', args: [serverEntry],
+      env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, CLOUD_CONCURRENCY: '3oops', MODEL_COUNCIL_STATE: join(prefixDir, 'state.json') },
+    });
+    const prefixClient = new Client({ name: 'prefixconc-e2e', version: '1.0.0' }, { capabilities: {} });
+    await prefixClient.connect(prefixTransport);
+    const prefixStatus = parseToolResult(await prefixClient.callTool({ name: 'council_status', arguments: {} }));
+    check('prefix-truncated CLOUD_CONCURRENCY ("3oops"): chatgpt keeps its own tier-derived concurrency (6), not collapsed to 3',
+      prefixStatus.concurrency?.chatgpt === 6, JSON.stringify(prefixStatus.concurrency));
+    check('prefix-truncated CLOUD_CONCURRENCY ("3oops"): claude keeps its own tier-derived concurrency (2), distinct from chatgpt',
+      prefixStatus.concurrency?.claude === 2 && prefixStatus.concurrency?.claude !== prefixStatus.concurrency?.chatgpt,
+      JSON.stringify(prefixStatus.concurrency));
+    await prefixClient.close();
+    rmSync(prefixDir, { recursive: true, force: true });
+
     // Boot-race regression (round 5): setup_council concluding zero members
     // (e.g. every tier free, no local Ollama reachable) must not be
     // overwritten by a slower background initCouncil() detection landing

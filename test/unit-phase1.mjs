@@ -80,6 +80,21 @@ check('unknown tier denies cloud (safe)', !tierAllowsCloud('ollama', 'bogus'));
 check('validTiers lists ollama tiers', validTiers('ollama').includes('max') && validTiers('ollama').includes('free'));
 check('validTiers lists grok tiers', validTiers('grok').includes('supergrok') && validTiers('grok').includes('free'));
 
+// round 6: a tier's OWN concurrency: 0/negative is a legitimate "unlimited"
+// sentinel per isValid()'s tierOk() (already accepts any finite value) — the
+// function that actually reads it must honour that, not silently substitute
+// the unrelated global default for a value validation itself accepted.
+{
+  const customSubs = {
+    ...subs,
+    providers: { ...subs.providers, claude: { ...subs.providers.claude, tiers: { ...subs.providers.claude.tiers, unlimited: { cloud: true, concurrency: 0 }, negative: { cloud: true, concurrency: -1 } } } },
+  };
+  check('tierConcurrency: a tier concurrency of 0 ("unlimited") is honoured, not replaced by the default',
+    tierConcurrency('claude', 'unlimited', customSubs) === 0, tierConcurrency('claude', 'unlimited', customSubs));
+  check('tierConcurrency: a negative tier concurrency ("unlimited") is honoured, not replaced by the default',
+    tierConcurrency('claude', 'negative', customSubs) === -1, tierConcurrency('claude', 'negative', customSubs));
+}
+
 console.log('▶ resolvePoolLimits');
 const limits = resolvePoolLimits({ chatgpt: 'plus', claude: 'pro', grok: 'heavy', ollama: 'max' });
 check('chatgpt pool = 6', limits.chatgpt === 6, `got ${limits.chatgpt}`);

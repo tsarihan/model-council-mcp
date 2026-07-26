@@ -681,7 +681,7 @@ const TOOLS = [
 const server = new Server(
   {
     name: 'model-council-mcp',
-    version: '0.2.44',
+    version: '0.2.45',
   },
   {
     capabilities: { tools: {} },
@@ -1144,6 +1144,20 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       // ── setup_council ────────────────────────────────────────────────────
       case 'setup_council': {
         const input = SetupCouncilInput.parse(args ?? {});
+        // Set this BEFORE the await below (round 6 finding), not after this
+        // call's own updateConfig — setup_council's `detectEnvironment` call
+        // is genuinely slow (real subprocess probes). Setting the flag only
+        // after it resolves left a window where a concurrently-running
+        // background initCouncil() (racing on its own, stale, boot-time-tiers
+        // detection) could see `explicitlyConfigured` still false, run to
+        // completion, and PERSIST its own member list to state.json before
+        // this call ever gets a chance to set the flag. The round-5 fix only
+        // protected the live in-memory config (last write wins there
+        // regardless of flag timing) — the persisted side-channel was still
+        // exposed. Setting it immediately, synchronously, closes the window
+        // for both: nothing async happens between this call being received
+        // and this line, so no interleaving is possible.
+        explicitlyConfigured = true;
         const subs = loadSubscriptions();
         const tiers = effectiveTiers(subs); // re-validated base (drops tiers a pulled config removed)
         const applied: Record<string, string> = {};
@@ -1183,7 +1197,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         const report = await detectEnvironment(registry, tiers, subs);
         const labels = autoPopulatedMembers(report, tiers, subs);
         orchestrator.updateConfig({ members: labelsToMembers(labels) });
-        explicitlyConfigured = true;
+        // (explicitlyConfigured was already set at the top of this handler.)
         // Only PERSIST a non-empty result — matching initCouncil()'s own
         // `if (labels.length)` guard. A transient detection hiccup (Ollama
         // momentarily unreachable, a CLI probe timing out) can make a genuine

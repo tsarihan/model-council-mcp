@@ -380,9 +380,17 @@ export function loadConfig(): AppConfig {
   // to that one value, discarding each provider's real per-tier concurrency
   // with no visible signal — worse than just falling through to per-tier
   // limits, which is what an actually-unset var does.
+  // parseInt() parses a leading numeric PREFIX and silently ignores trailing
+  // garbage ("3oops" → 3, "1.5" → 1) — Number.isFinite(3) is true, so the
+  // guard above alone doesn't catch this. The whole trimmed string must be a
+  // clean integer, or this is exactly as unparseable as "three" and must
+  // resolve to `undefined` too, for the same reason (an active-but-wrong
+  // override collapses every cloud pool to a value nobody actually asked for).
   const parseOverride = (raw: string | undefined): number | undefined => {
     if (raw === undefined) return undefined;
-    const n = parseInt(raw, 10);
+    const trimmed = raw.trim();
+    if (!/^-?\d+$/.test(trimmed)) return undefined;
+    const n = parseInt(trimmed, 10);
     return Number.isFinite(n) ? n : undefined;
   };
   const cloudOverride = parseOverride(cloudOverrideRaw);

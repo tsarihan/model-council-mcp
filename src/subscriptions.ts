@@ -191,7 +191,14 @@ export function tierAllowsCloud(provider: SubProvider, tier: string, subs = load
 /** Concurrency for a provider at a tier (falls back to sensible defaults). */
 export function tierConcurrency(provider: SubProvider, tier: string, subs = loadSubscriptions()): number {
   const t = subs.providers[provider]?.tiers?.[tier];
-  if (t?.concurrency && t.concurrency > 0) return t.concurrency;
+  // Number.isFinite (not `> 0`) — 0/negative is a legitimate, documented
+  // "unlimited" sentinel for a tier's own concurrency too, matching
+  // isValid()'s tierOk() (which already accepts any finite value here) and
+  // the Semaphore's own `limit <= 0` convention. The previous `> 0` check
+  // silently discarded a tier's explicit unlimited sentinel and substituted
+  // the unrelated global default instead — accepted by validation, ignored
+  // by the only function that reads it.
+  if (t?.concurrency !== undefined && Number.isFinite(t.concurrency)) return t.concurrency;
   return subs.defaults.cloudConcurrency;
 }
 

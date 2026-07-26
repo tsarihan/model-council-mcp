@@ -416,6 +416,25 @@ console.log('▶ context.ts: per-call random nonce guards fence markers against 
   }
 }
 
+console.log('▶ judge prompts carry the untrusted-content notice (prompt-injection defense-in-depth)');
+{
+  const { UNTRUSTED_CONTENT_NOTICE } = await import('../dist/council/prompt-safety.js');
+  const { buildCategorizationPrompt } = await import('../dist/council/categorizer.js');
+  const { buildPoolPrompt } = await import('../dist/council/pool.js');
+  const { buildDossierPrompt } = await import('../dist/council/dialectic.js');
+  const resp = [{ modelId: { provider: 'ollama', model: 'a' }, label: 'ollama:a', response: 'x', latencyMs: 1 }];
+
+  check('categorization prompt includes the notice', buildCategorizationPrompt('q', resp).includes(UNTRUSTED_CONTENT_NOTICE));
+  check('pool prompt includes the notice', buildPoolPrompt('q', resp).includes(UNTRUSTED_CONTENT_NOTICE));
+  const dossier = buildDossierPrompt('q', { options: [{ answer: 'A', rationale: 'r', models: ['ollama:a'] }] }, resp, resp);
+  check('dossier prompt includes the notice', dossier.includes(UNTRUSTED_CONTENT_NOTICE));
+  // The notice must appear BEFORE the actual member content, not after — a
+  // judge that hasn't seen the framing yet when it starts reading member
+  // text gets no benefit from it.
+  const catPrompt = buildCategorizationPrompt('q', resp);
+  check('notice precedes member response content', catPrompt.indexOf(UNTRUSTED_CONTENT_NOTICE) < catPrompt.indexOf('### ollama:a'));
+}
+
 console.log('▶ vision-challenge.ts (OCR-challenge behavioral vision verification)');
 {
   const { CHALLENGE_IMAGES, pickChallenges, matchesCode, verifyVisionChallenge } =

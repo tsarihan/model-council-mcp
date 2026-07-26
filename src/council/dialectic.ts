@@ -33,6 +33,7 @@ import {
   queryMembersVarying,
 } from './query.js';
 import { poolResponses } from './pool.js';
+import { UNTRUSTED_CONTENT_NOTICE } from './prompt-safety.js';
 
 // ─── Step 2 prompt: defend your pick, critique the rest ──────────────────────
 
@@ -66,7 +67,7 @@ critical, but fair — concede a genuine strength where one exists. Keep it focu
 
 // ─── Step 3: judge builds the pros/cons dossier ──────────────────────────────
 
-function buildDossierPrompt(
+export function buildDossierPrompt(
   question: string,
   digest: PooledDigest,
   initial: RawResponse[],
@@ -91,6 +92,8 @@ ${question}
 
 The distinct options under debate:
 ${optionList || '(none)'}
+
+${UNTRUSTED_CONTENT_NOTICE}
 
 [INITIAL ANSWERS — theses]
 ${initialBlock}

@@ -15,6 +15,7 @@ import {
 import { Provider } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
 import { completeWithRetry, EmptyCompletionError } from './query.js';
+import { UNTRUSTED_CONTENT_NOTICE } from './prompt-safety.js';
 
 /** Completion tuning passed down to judge calls. */
 export interface CompleteConfig {
@@ -26,7 +27,7 @@ export interface CompleteConfig {
 
 // ─── Judge prompt ─────────────────────────────────────────────────────────────
 
-function buildCategorizationPrompt(
+export function buildCategorizationPrompt(
   question: string,
   responses: RawResponse[],
 ): string {
@@ -41,6 +42,8 @@ Question asked to all models:
 """
 ${question}
 """
+
+${UNTRUSTED_CONTENT_NOTICE}
 
 Model responses:
 ${responseBlock}

@@ -20,10 +20,11 @@ import { Provider } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
 import { CompleteConfig } from './categorizer.js';
 import { completeWithRetry, EmptyCompletionError, Member, queryMembers } from './query.js';
+import { UNTRUSTED_CONTENT_NOTICE } from './prompt-safety.js';
 
 // ─── Judge prompt: build the neutral pooled digest ───────────────────────────
 
-function buildPoolPrompt(question: string, responses: RawResponse[]): string {
+export function buildPoolPrompt(question: string, responses: RawResponse[]): string {
   const responseBlock = responses
     .filter(r => !r.error && r.response.trim())
     .map(r => `### ${r.label}\n${r.response}`)
@@ -35,6 +36,8 @@ Question:
 """
 ${question}
 """
+
+${UNTRUSTED_CONTENT_NOTICE}
 
 Model responses (the labels are for your bookkeeping only):
 ${responseBlock}

@@ -62,6 +62,39 @@ export function isTimeoutError(err: unknown): boolean {
   return /\btimed out\b|\btimeout\b/i.test(String((err as { message?: string }).message ?? err));
 }
 
+/** Ceiling for a single CLI subprocess's accumulated stdout/stderr — see CappedBuffer. */
+export const MAX_CLI_OUTPUT_BYTES = 8 * 1024 * 1024; // 8 MB
+
+/**
+ * Accumulates a spawned CLI subprocess's stdout/stderr with a hard ceiling, so
+ * a runaway or misbehaving configured executable (a bad `--command`/`_PATH`
+ * override, or one that goes into an infinite-output loop) can't grow an
+ * unbounded in-memory string and exhaust server memory the way `str += chunk`
+ * does with no cap. Every legitimate response here is bounded well under this
+ * ceiling by `maxTokens`; once hit, further chunks are silently dropped rather
+ * than killing the process — the caller's existing JSON-parse/shape checks
+ * already turn truncated output into a clear error.
+ */
+export class CappedBuffer {
+  private chunks: string[] = [];
+  private bytes = 0;
+  private readonly cap: number;
+
+  constructor(cap: number = MAX_CLI_OUTPUT_BYTES) {
+    this.cap = cap;
+  }
+
+  append(chunk: string): void {
+    if (this.bytes >= this.cap) return;
+    this.chunks.push(chunk);
+    this.bytes += Buffer.byteLength(chunk, 'utf8');
+  }
+
+  toString(): string {
+    return this.chunks.join('');
+  }
+}
+
 /**
  * Reasoning models emit their chain-of-thought wrapped in <think>…</think>.
  * Some wrap it fully; others emit only the closing </think> (the opening tag is

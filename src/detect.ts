@@ -14,6 +14,7 @@ import { isEmbeddingModel } from './council/orchestrator.js';
 import { Subscriptions, tierAllowsCloud } from './subscriptions.js';
 import { SubscriptionTiers } from './types.js';
 import { envBool } from './config.js';
+import { CappedBuffer } from './providers/base.js';
 
 export interface EnvReport {
   ollama: {
@@ -45,20 +46,34 @@ function runCli(
 
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(command, args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+      // Own process group (like the real provider CLI invocations) so a
+      // timeout reaps any subprocesses the probed CLI itself spawns, not just
+      // the direct child — otherwise a hung probe can leave descendants
+      // running after `council_status` gives up on it.
+      child = spawn(command, args, { env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
     } catch {
       resolve({ code: 127, stdout: '', stderr: 'spawn failed' });
       return;
     }
-    let stdout = '', stderr = '', settled = false;
+    const stdout = new CappedBuffer();
+    const stderr = new CappedBuffer();
+    let settled = false;
     const done = (r: CliResult) => { if (!settled) { settled = true; clearTimeout(timer); resolve(r); } };
-    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* ignore */ } done({ code: 124, stdout, stderr }); }, opts.timeoutMs);
+    const killTree = () => {
+      try {
+        if (child.pid) process.kill(-child.pid, 'SIGKILL');
+        else child.kill('SIGKILL');
+      } catch {
+        try { child.kill('SIGKILL'); } catch { /* ignore */ }
+      }
+    };
+    const timer = setTimeout(() => { killTree(); done({ code: 124, stdout: stdout.toString(), stderr: stderr.toString() }); }, opts.timeoutMs);
     child.stdout?.setEncoding('utf8'); child.stderr?.setEncoding('utf8');
-    child.stdout?.on('data', d => (stdout += d));
-    child.stderr?.on('data', d => (stderr += d));
+    child.stdout?.on('data', d => stdout.append(d));
+    child.stderr?.on('data', d => stderr.append(d));
     child.stdin?.on('error', () => {});
-    child.on('error', () => done({ code: 127, stdout, stderr }));
-    child.on('close', code => done({ code: code ?? 1, stdout, stderr }));
+    child.on('error', () => done({ code: 127, stdout: stdout.toString(), stderr: stderr.toString() }));
+    child.on('close', code => done({ code: code ?? 1, stdout: stdout.toString(), stderr: stderr.toString() }));
     if (opts.input !== undefined) child.stdin?.write(opts.input);
     child.stdin?.end();
   });

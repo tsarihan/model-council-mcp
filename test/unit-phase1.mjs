@@ -452,6 +452,41 @@ console.log('▶ vision-challenge.ts (OCR-challenge behavioral vision verificati
   }
 }
 
+console.log('▶ AnthropicProvider: per-request timeout + SDK retries disabled');
+{
+  const { AnthropicProvider } = await import('../dist/providers/anthropic.js');
+  const provider = new AnthropicProvider({ type: 'anthropic', apiKey: 'test-key' });
+  let capturedOpts;
+  // Monkey-patch the real SDK client's create() — TS `private` is erased at
+  // runtime, so `provider.client` is a normal reachable property. No network
+  // mock harness exists for the Anthropic SDK (unlike Ollama/CLI providers),
+  // so this intercepts the actual call site to prove the fix behaviorally
+  // rather than just grepping the compiled source for the right text.
+  provider.client.messages.create = async (_body, opts) => {
+    capturedOpts = opts;
+    return { content: [{ type: 'text', text: 'ok' }] };
+  };
+  await provider.complete('claude-opus-4-8', [{ role: 'user', content: 'hi' }], { timeoutMs: 42_000 });
+  check('complete(): per-request timeout passed through to the SDK call', capturedOpts?.timeout === 42_000, `got ${JSON.stringify(capturedOpts)}`);
+  await provider.complete('claude-opus-4-8', [{ role: 'user', content: 'hi' }], {});
+  check('complete(): falls back to DEFAULT_COMPLETION_TIMEOUT_MS when unset', capturedOpts?.timeout === 120_000, `got ${JSON.stringify(capturedOpts)}`);
+}
+
+console.log('▶ CappedBuffer (bounds CLI subprocess stdout/stderr accumulation)');
+{
+  const { CappedBuffer } = await import('../dist/providers/base.js');
+  const buf = new CappedBuffer(10); // 10-byte cap
+  buf.append('12345');
+  buf.append('67890');
+  check('appends up to the cap', buf.toString() === '1234567890');
+  buf.append('EXTRA');
+  check('further appends past the cap are dropped', buf.toString() === '1234567890');
+  const unbounded = new CappedBuffer();
+  const big = 'x'.repeat(1000);
+  for (let i = 0; i < 20; i++) unbounded.append(big);
+  check('default cap allows normal-sized accumulation', unbounded.toString().length === 20000);
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
 console.log('ALL PASSED ✅');

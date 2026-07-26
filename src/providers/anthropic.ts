@@ -1,6 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
-import { ChatMessage, CompletionOptions, Provider, PROBE_IMAGE_BASE64, isTimeoutError } from './base.js';
+import {
+  ChatMessage, CompletionOptions, Provider, PROBE_IMAGE_BASE64,
+  DEFAULT_COMPLETION_TIMEOUT_MS, isTimeoutError,
+} from './base.js';
 import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
 
 // Curated list — Anthropic's REST API has no model-listing endpoint
@@ -51,7 +54,10 @@ export class AnthropicProvider implements Provider {
 
   constructor(config: ServerConfig) {
     this.config = config;
-    this.client = new Anthropic({ apiKey: config.apiKey });
+    // maxRetries: 0 — the SDK's own retries would multiply completeWithRetry's
+    // outer retries on top, and (more importantly) they were masking the fact
+    // that no per-request timeout was set at all here either; see complete().
+    this.client = new Anthropic({ apiKey: config.apiKey, maxRetries: 0 });
   }
 
   async ping(): Promise<boolean> {
@@ -85,19 +91,22 @@ export class AnthropicProvider implements Provider {
     const cached = this.acceptCache.get(model);
     if (cached !== undefined) return cached;
     try {
-      await this.client.messages.create({
-        model,
-        max_tokens: 1,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PROBE_IMAGE_BASE64 } },
-              { type: 'text', text: '.' },
-            ],
-          },
-        ],
-      });
+      await this.client.messages.create(
+        {
+          model,
+          max_tokens: 1,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PROBE_IMAGE_BASE64 } },
+                { type: 'text', text: '.' },
+              ],
+            },
+          ],
+        },
+        { timeout: 15_000 },
+      );
       this.acceptCache.set(model, true);
       return true;
     } catch (err) {
@@ -162,12 +171,15 @@ export class AnthropicProvider implements Provider {
       ? `${systemParts}\n\nRespond with valid JSON only.`.trim()
       : systemParts || undefined;
 
-    const res = await this.client.messages.create({
-      model,
-      max_tokens: opts.maxTokens ?? 16000,
-      ...(systemText ? { system: systemText } : {}),
-      messages: userMessages,
-    });
+    const res = await this.client.messages.create(
+      {
+        model,
+        max_tokens: opts.maxTokens ?? 16000,
+        ...(systemText ? { system: systemText } : {}),
+        messages: userMessages,
+      },
+      { timeout: opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS },
+    );
 
     const block = res.content[0];
     return block?.type === 'text' ? block.text : '';

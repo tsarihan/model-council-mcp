@@ -47,7 +47,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ChatImage, ChatMessage, CompletionOptions, Provider } from './base.js';
+import { CappedBuffer, ChatImage, ChatMessage, CompletionOptions, Provider } from './base.js';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
 import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
 
@@ -266,8 +266,8 @@ export class CodexCliProvider implements Provider {
         detached: true,
       });
 
-      let stdout = '';
-      let stderr = '';
+      const stdout = new CappedBuffer();
+      const stderr = new CappedBuffer();
       let settled = false;
 
       const timer = setTimeout(() => {
@@ -278,8 +278,8 @@ export class CodexCliProvider implements Provider {
 
       child.stdout.setEncoding('utf8');
       child.stderr.setEncoding('utf8');
-      child.stdout.on('data', d => (stdout += d));
-      child.stderr.on('data', d => (stderr += d));
+      child.stdout.on('data', d => stdout.append(d));
+      child.stderr.on('data', d => stderr.append(d));
       child.stdin.on('error', () => {}); // swallow EPIPE on early child exit
       child.on('error', err => {
         if (settled) return;
@@ -291,7 +291,7 @@ export class CodexCliProvider implements Provider {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve({ code: code ?? 1, stdout, stderr });
+        resolve({ code: code ?? 1, stdout: stdout.toString(), stderr: stderr.toString() });
       });
 
       if (input !== undefined) child.stdin.write(input);

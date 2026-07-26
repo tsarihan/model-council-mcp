@@ -24824,6 +24824,23 @@ function isTimeoutError(err) {
   if (name === "TimeoutError" || name === "AbortError" || name === "APIConnectionTimeoutError") return true;
   return /\btimed out\b|\btimeout\b/i.test(String(err.message ?? err));
 }
+var MAX_CLI_OUTPUT_BYTES = 8 * 1024 * 1024;
+var CappedBuffer = class {
+  chunks = [];
+  bytes = 0;
+  cap;
+  constructor(cap = MAX_CLI_OUTPUT_BYTES) {
+    this.cap = cap;
+  }
+  append(chunk) {
+    if (this.bytes >= this.cap) return;
+    this.chunks.push(chunk);
+    this.bytes += Buffer.byteLength(chunk, "utf8");
+  }
+  toString() {
+    return this.chunks.join("");
+  }
+};
 function stripThinkBlocks(text) {
   if (!text) return text;
   let out = text.replace(/<think>[\s\S]*?<\/think>/gi, "");
@@ -34880,7 +34897,7 @@ var AnthropicProvider = class {
   visionVerifiedCache = /* @__PURE__ */ new Map();
   constructor(config2) {
     this.config = config2;
-    this.client = new sdk_default({ apiKey: config2.apiKey });
+    this.client = new sdk_default({ apiKey: config2.apiKey, maxRetries: 0 });
   }
   async ping() {
     try {
@@ -34909,19 +34926,22 @@ var AnthropicProvider = class {
     const cached3 = this.acceptCache.get(model);
     if (cached3 !== void 0) return cached3;
     try {
-      await this.client.messages.create({
-        model,
-        max_tokens: 1,
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "image", source: { type: "base64", media_type: "image/png", data: PROBE_IMAGE_BASE64 } },
-              { type: "text", text: "." }
-            ]
-          }
-        ]
-      });
+      await this.client.messages.create(
+        {
+          model,
+          max_tokens: 1,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "image", source: { type: "base64", media_type: "image/png", data: PROBE_IMAGE_BASE64 } },
+                { type: "text", text: "." }
+              ]
+            }
+          ]
+        },
+        { timeout: 15e3 }
+      );
       this.acceptCache.set(model, true);
       return true;
     } catch (err) {
@@ -34974,12 +34994,15 @@ var AnthropicProvider = class {
     const systemText = opts.jsonMode ? `${systemParts}
 
 Respond with valid JSON only.`.trim() : systemParts || void 0;
-    const res = await this.client.messages.create({
-      model,
-      max_tokens: opts.maxTokens ?? 16e3,
-      ...systemText ? { system: systemText } : {},
-      messages: userMessages
-    });
+    const res = await this.client.messages.create(
+      {
+        model,
+        max_tokens: opts.maxTokens ?? 16e3,
+        ...systemText ? { system: systemText } : {},
+        messages: userMessages
+      },
+      { timeout: opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS }
+    );
     const block = res.content[0];
     return block?.type === "text" ? block.text : "";
   }
@@ -35165,8 +35188,8 @@ var ClaudeCliProvider = class {
         // inherits the server's own working directory as extra tool scope.
         ...cwd ? { cwd } : {}
       });
-      let stdout = "";
-      let stderr = "";
+      const stdout = new CappedBuffer();
+      const stderr = new CappedBuffer();
       let settled = false;
       const timer = setTimeout(() => {
         settled = true;
@@ -35175,8 +35198,8 @@ var ClaudeCliProvider = class {
       }, timeoutMs);
       child.stdout.setEncoding("utf8");
       child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (d2) => stdout += d2);
-      child.stderr.on("data", (d2) => stderr += d2);
+      child.stdout.on("data", (d2) => stdout.append(d2));
+      child.stderr.on("data", (d2) => stderr.append(d2));
       child.stdin.on("error", () => {
       });
       child.on("error", (err) => {
@@ -35189,7 +35212,7 @@ var ClaudeCliProvider = class {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve5({ code: code ?? 1, stdout, stderr });
+        resolve5({ code: code ?? 1, stdout: stdout.toString(), stderr: stderr.toString() });
       });
       if (input !== void 0) child.stdin.write(input);
       child.stdin.end();
@@ -35364,8 +35387,8 @@ var CodexCliProvider = class {
         // subprocesses (grandchildren), not just the direct child.
         detached: true
       });
-      let stdout = "";
-      let stderr = "";
+      const stdout = new CappedBuffer();
+      const stderr = new CappedBuffer();
       let settled = false;
       const timer = setTimeout(() => {
         settled = true;
@@ -35374,8 +35397,8 @@ var CodexCliProvider = class {
       }, timeoutMs);
       child.stdout.setEncoding("utf8");
       child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (d2) => stdout += d2);
-      child.stderr.on("data", (d2) => stderr += d2);
+      child.stdout.on("data", (d2) => stdout.append(d2));
+      child.stderr.on("data", (d2) => stderr.append(d2));
       child.stdin.on("error", () => {
       });
       child.on("error", (err) => {
@@ -35388,7 +35411,7 @@ var CodexCliProvider = class {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve5({ code: code ?? 1, stdout, stderr });
+        resolve5({ code: code ?? 1, stdout: stdout.toString(), stderr: stderr.toString() });
       });
       if (input !== void 0) child.stdin.write(input);
       child.stdin.end();
@@ -35539,8 +35562,8 @@ var GrokCliProvider = class {
         // Own process group so a timeout reaps any subprocesses grok spawns.
         detached: true
       });
-      let stdout = "";
-      let stderr = "";
+      const stdout = new CappedBuffer();
+      const stderr = new CappedBuffer();
       let settled = false;
       const timer = setTimeout(() => {
         settled = true;
@@ -35549,8 +35572,8 @@ var GrokCliProvider = class {
       }, timeoutMs);
       child.stdout.setEncoding("utf8");
       child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (d2) => stdout += d2);
-      child.stderr.on("data", (d2) => stderr += d2);
+      child.stdout.on("data", (d2) => stdout.append(d2));
+      child.stderr.on("data", (d2) => stderr.append(d2));
       child.stdin.on("error", () => {
       });
       child.on("error", (err) => {
@@ -35563,7 +35586,7 @@ var GrokCliProvider = class {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve5({ code: code ?? 1, stdout, stderr });
+        resolve5({ code: code ?? 1, stdout: stdout.toString(), stderr: stderr.toString() });
       });
       if (input !== void 0) child.stdin.write(input);
       child.stdin.end();
@@ -36788,12 +36811,14 @@ function runCli(command, args, opts = { timeoutMs: 8e3 }) {
     }
     let child;
     try {
-      child = (0, import_node_child_process4.spawn)(command, args, { env, stdio: ["pipe", "pipe", "pipe"] });
+      child = (0, import_node_child_process4.spawn)(command, args, { env, stdio: ["pipe", "pipe", "pipe"], detached: true });
     } catch {
       resolve5({ code: 127, stdout: "", stderr: "spawn failed" });
       return;
     }
-    let stdout = "", stderr = "", settled = false;
+    const stdout = new CappedBuffer();
+    const stderr = new CappedBuffer();
+    let settled = false;
     const done = (r2) => {
       if (!settled) {
         settled = true;
@@ -36801,21 +36826,29 @@ function runCli(command, args, opts = { timeoutMs: 8e3 }) {
         resolve5(r2);
       }
     };
-    const timer = setTimeout(() => {
+    const killTree4 = () => {
       try {
-        child.kill("SIGKILL");
+        if (child.pid) process.kill(-child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
       } catch {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+        }
       }
-      done({ code: 124, stdout, stderr });
+    };
+    const timer = setTimeout(() => {
+      killTree4();
+      done({ code: 124, stdout: stdout.toString(), stderr: stderr.toString() });
     }, opts.timeoutMs);
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
-    child.stdout?.on("data", (d2) => stdout += d2);
-    child.stderr?.on("data", (d2) => stderr += d2);
+    child.stdout?.on("data", (d2) => stdout.append(d2));
+    child.stderr?.on("data", (d2) => stderr.append(d2));
     child.stdin?.on("error", () => {
     });
-    child.on("error", () => done({ code: 127, stdout, stderr }));
-    child.on("close", (code) => done({ code: code ?? 1, stdout, stderr }));
+    child.on("error", () => done({ code: 127, stdout: stdout.toString(), stderr: stderr.toString() }));
+    child.on("close", (code) => done({ code: code ?? 1, stdout: stdout.toString(), stderr: stderr.toString() }));
     if (opts.input !== void 0) child.stdin?.write(opts.input);
     child.stdin?.end();
   });
@@ -37528,7 +37561,7 @@ var TOOLS = [
 var server = new Server(
   {
     name: "model-council-mcp",
-    version: "0.2.23"
+    version: "0.2.24"
   },
   {
     capabilities: { tools: {} },

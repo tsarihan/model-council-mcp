@@ -50,7 +50,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ChatImage, ChatMessage, CompletionOptions, Provider } from './base.js';
+import { CappedBuffer, ChatImage, ChatMessage, CompletionOptions, Provider } from './base.js';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
 import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
 
@@ -299,8 +299,8 @@ export class ClaudeCliProvider implements Provider {
         ...(cwd ? { cwd } : {}),
       });
 
-      let stdout = '';
-      let stderr = '';
+      const stdout = new CappedBuffer();
+      const stderr = new CappedBuffer();
       let settled = false;
 
       const timer = setTimeout(() => {
@@ -312,8 +312,8 @@ export class ClaudeCliProvider implements Provider {
       // setEncoding decodes multi-byte UTF-8 across chunk boundaries correctly.
       child.stdout.setEncoding('utf8');
       child.stderr.setEncoding('utf8');
-      child.stdout.on('data', d => (stdout += d));
-      child.stderr.on('data', d => (stderr += d));
+      child.stdout.on('data', d => stdout.append(d));
+      child.stderr.on('data', d => stderr.append(d));
       // Swallow stdin EPIPE: if the child exits before draining stdin, the pipe
       // errors asynchronously; with no listener Node escalates it to an uncaught
       // exception that would kill the whole server. close/error still settle us.
@@ -328,7 +328,7 @@ export class ClaudeCliProvider implements Provider {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve({ code: code ?? 1, stdout, stderr });
+        resolve({ code: code ?? 1, stdout: stdout.toString(), stderr: stderr.toString() });
       });
 
       if (input !== undefined) child.stdin.write(input);

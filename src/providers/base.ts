@@ -30,6 +30,17 @@ export interface CompletionOptions {
   maxTokens?: number;
   /** If true, response MUST be valid JSON */
   jsonMode?: boolean;
+  /**
+   * JSON Schema for SCHEMA-CONSTRAINED decoding, where the surface supports it
+   * (Ollama `format:<schema>`, OpenAI-compatible `response_format.json_schema`).
+   * This is strictly stronger than `jsonMode`: json-mode only guarantees
+   * PARSEABLE JSON, and a judge under json-mode was observed live returning a
+   * valid JSON *schema* instead of an answer. Constrained decoding makes the
+   * shape itself unrepresentable-if-wrong. Surfaces that don't support it (the
+   * CLI providers, and Ollama `:cloud` models, which ignore `format` entirely —
+   * measured) simply omit it and rely on the parse+shape guard instead.
+   */
+  jsonSchema?: Record<string, unknown>;
   /** Per-attempt wall-clock timeout (ms). Bounds a hung server/subprocess. */
   timeoutMs?: number;
   /**
@@ -178,6 +189,70 @@ export function assertJsonShape(v: unknown, required: Record<string, 'array'>): 
       );
     }
   }
+}
+
+/**
+ * Every top-level balanced `{…}` object in `text`, in order (string/escape
+ * aware). A judge often emits more than one: the DEFAULT judges are CLI
+ * subprocesses with no structured-output mode, so they're prone to
+ * "here is the schema I'll use: {…schema…} and here is my answer: {…}" —
+ * reproduced live. An extractor that takes the FIRST object then parses the
+ * SCHEMA ECHO instead of the answer, and because a schema example has
+ * `conflicting` as an array it passes the shape check and yields garbage
+ * conflicts. Enumerating candidates lets the caller pick the right one.
+ */
+export function extractJsonCandidates(text: string): string[] {
+  const out: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const start = text.indexOf('{', i);
+    if (start === -1) break;
+    let depth = 0, inStr = false, esc = false, end = -1;
+    for (let j = start; j < text.length; j++) {
+      const c = text[j];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === '\\') esc = true;
+        else if (c === '"') inStr = false;
+      } else if (c === '"') inStr = true;
+      else if (c === '{') depth++;
+      else if (c === '}') { depth--; if (depth === 0) { end = j; break; } }
+    }
+    if (end === -1) break;      // unterminated — nothing further is parseable
+    out.push(text.slice(start, end + 1));
+    i = end + 1;
+  }
+  return out;
+}
+
+/**
+ * Parse a judge reply into a shape-valid object, tolerating markdown fences,
+ * prose around the JSON, and multiple JSON objects in one reply.
+ *
+ * Candidates are tried LAST-first: the instruction to emit JSON is the final
+ * thing the judge reads, so the real answer is the last JSON in the reply,
+ * while a schema echo or worked example precedes it. Combined with the shape
+ * check, this rejects both the decoy-preamble case and trailing prose. Throws
+ * when nothing shape-valid is present, so callers route it through their
+ * existing judgeDegraded fallback rather than acting on a fabricated result.
+ */
+export function parseJudgeJson<T>(raw: string, required: Record<string, 'array'>): T {
+  const stripped = raw
+    .replace(/^```(?:json)?\s*/im, '')
+    .replace(/\s*```\s*$/im, '')
+    .trim();
+  const candidates = extractJsonCandidates(stripped);
+  let lastErr: unknown;
+  for (let k = candidates.length - 1; k >= 0; k--) {
+    try {
+      const obj = JSON.parse(candidates[k]);
+      assertJsonShape(obj, required);
+      return obj as T;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error('judge reply contained no shape-valid JSON object');
 }
 
 export function sliceBalancedJson(text: string): string {

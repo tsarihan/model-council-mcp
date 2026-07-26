@@ -16,7 +16,7 @@
  * the neutral pool before and after reconsideration so movement is observable.
  */
 import { ModelId, PooledDigest, PooledResult, RawResponse, RuntimeConfig } from '../types.js';
-import { ChatImage, Provider, sliceBalancedJson, assertJsonShape } from '../providers/base.js';
+import { ChatImage, Provider, parseJudgeJson } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
 import { CompleteConfig } from './categorizer.js';
 import { EmptyCompletionError, Member, pooledComplete, queryMembers } from './query.js';
@@ -60,6 +60,14 @@ interface RawPoolJSON {
   options?: Array<{ answer?: string; rationale?: string; models?: string[] }>;
 }
 
+const POOL_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: { options: { type: 'array', items: { type: 'object', properties: {
+    answer: { type: 'string' }, rationale: { type: 'string' }, models: { type: 'array', items: { type: 'string' } },
+  }, required: ['answer', 'rationale', 'models'] } } },
+  required: ['options'],
+};
+
 function parsePoolJSON(raw: string): RawPoolJSON {
   const stripped = raw
     .replace(/^```(?:json)?\s*/im, '')
@@ -68,9 +76,7 @@ function parsePoolJSON(raw: string): RawPoolJSON {
   // Tolerate a prose preamble/postamble around the JSON object (incl. trailing
   // prose that itself contains braces — sliceBalancedJson matches the first
   // object's BALANCED close, not the last brace in the whole string).
-  const obj = JSON.parse(sliceBalancedJson(stripped));
-  assertJsonShape(obj, { options: 'array' });
-  return obj as RawPoolJSON;
+  return parseJudgeJson<RawPoolJSON>(raw, { options: 'array' });
 }
 
 /** Ask the judge to distil responses into a neutral, deduplicated digest. */
@@ -98,7 +104,7 @@ export async function poolResponses(
     rawJson = await pooledComplete(
       { modelId: judgeModelId, provider: judgeProvider },
       [{ role: 'user', content: prompt }],
-      { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
+      { jsonMode: true, jsonSchema: POOL_SCHEMA, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
       cc.retries,
       runtime,
     );

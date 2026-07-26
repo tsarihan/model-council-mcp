@@ -22,7 +22,7 @@ import {
   RawResponse,
   RuntimeConfig,
 } from '../types.js';
-import { ChatImage, Provider, sliceBalancedJson, assertJsonShape } from '../providers/base.js';
+import { ChatImage, Provider, parseJudgeJson } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
 import { CompleteConfig } from './categorizer.js';
 import {
@@ -117,6 +117,14 @@ interface RawDossierJSON {
   options?: unknown;
 }
 
+const DOSSIER_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: { options: { type: 'array', items: { type: 'object', properties: {
+    answer: { type: 'string' }, pros: { type: 'array', items: { type: 'string' } }, cons: { type: 'array', items: { type: 'string' } },
+  }, required: ['answer', 'pros', 'cons'] } } },
+  required: ['options'],
+};
+
 function parseDossierJSON(raw: string): RawDossierJSON {
   const stripped = raw
     .replace(/^```(?:json)?\s*/im, '')
@@ -124,9 +132,7 @@ function parseDossierJSON(raw: string): RawDossierJSON {
     .trim();
   // Tolerate a prose preamble/postamble around the JSON object (incl. trailing
   // prose containing braces — see sliceBalancedJson).
-  const obj = JSON.parse(sliceBalancedJson(stripped));
-  assertJsonShape(obj, { options: 'array' });
-  return obj as RawDossierJSON;
+  return parseJudgeJson<RawDossierJSON>(raw, { options: 'array' });
 }
 
 /** Coerce an untrusted JSON value to a clean string[] (judge output is not to be trusted). */
@@ -206,7 +212,7 @@ async function buildProsCons(
       rawJson = await pooledComplete(
         { modelId: judgeModelId, provider: judgeProvider },
         [{ role: 'user', content: buildDossierPrompt(question, digest, initial, defenses) }],
-        { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
+        { jsonMode: true, jsonSchema: DOSSIER_SCHEMA, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
         cc.retries,
         runtime,
       );

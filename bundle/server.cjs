@@ -24932,27 +24932,49 @@ function assertJsonShape(v2, required2) {
     }
   }
 }
-function sliceBalancedJson(text) {
-  const start = text.indexOf("{");
-  if (start === -1) return text;
-  let depth = 0, inStr = false, esc2 = false;
-  for (let i2 = start; i2 < text.length; i2++) {
-    const c2 = text[i2];
-    if (inStr) {
-      if (esc2) esc2 = false;
-      else if (c2 === "\\") esc2 = true;
-      else if (c2 === '"') inStr = false;
-    } else if (c2 === '"') {
-      inStr = true;
-    } else if (c2 === "{") {
-      depth++;
-    } else if (c2 === "}") {
-      depth--;
-      if (depth === 0) return text.slice(start, i2 + 1);
+function extractJsonCandidates(text) {
+  const out = [];
+  let i2 = 0;
+  while (i2 < text.length) {
+    const start = text.indexOf("{", i2);
+    if (start === -1) break;
+    let depth = 0, inStr = false, esc2 = false, end = -1;
+    for (let j2 = start; j2 < text.length; j2++) {
+      const c2 = text[j2];
+      if (inStr) {
+        if (esc2) esc2 = false;
+        else if (c2 === "\\") esc2 = true;
+        else if (c2 === '"') inStr = false;
+      } else if (c2 === '"') inStr = true;
+      else if (c2 === "{") depth++;
+      else if (c2 === "}") {
+        depth--;
+        if (depth === 0) {
+          end = j2;
+          break;
+        }
+      }
+    }
+    if (end === -1) break;
+    out.push(text.slice(start, end + 1));
+    i2 = end + 1;
+  }
+  return out;
+}
+function parseJudgeJson(raw, required2) {
+  const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
+  const candidates = extractJsonCandidates(stripped);
+  let lastErr;
+  for (let k2 = candidates.length - 1; k2 >= 0; k2--) {
+    try {
+      const obj = JSON.parse(candidates[k2]);
+      assertJsonShape(obj, required2);
+      return obj;
+    } catch (err) {
+      lastErr = err;
     }
   }
-  const end = text.lastIndexOf("}");
-  return end > start ? text.slice(start, end + 1) : text;
+  throw lastErr instanceof Error ? lastErr : new Error("judge reply contained no shape-valid JSON object");
 }
 var IMAGE_TOKEN_ESTIMATE = 1500;
 function estimatePromptTokens(messages) {
@@ -25255,7 +25277,10 @@ var OllamaProvider = class {
         temperature: opts.temperature ?? 0.7,
         num_predict: numPredict
       },
-      ...opts.jsonMode ? { format: "json" } : {}
+      // A schema (when supplied) constrains decoding; plain 'json' is the
+      // weaker fallback. NOTE: Ollama :cloud models ignore `format` entirely
+      // (measured), so the caller's parse+shape guard remains the real backstop.
+      ...opts.jsonSchema ? { format: opts.jsonSchema } : opts.jsonMode ? { format: "json" } : {}
     };
     const res = await fetch(`${this.config.baseUrl}/api/chat`, {
       method: "POST",
@@ -32077,7 +32102,12 @@ var OpenAICompatibleProvider = class {
         messages: wireMessages,
         temperature: opts.temperature ?? 0.7,
         max_tokens: maxTokens,
-        ...opts.jsonMode ? { response_format: { type: "json_object" } } : {}
+        // Prefer schema-constrained decoding (OpenAI + vLLM/SGLang guided
+        // decoding) over plain json_object, which only guarantees parseable JSON.
+        ...opts.jsonSchema ? { response_format: {
+          type: "json_schema",
+          json_schema: { name: "council_judge", schema: opts.jsonSchema, strict: false }
+        } } : opts.jsonMode ? { response_format: { type: "json_object" } } : {}
       },
       { timeout: opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS }
     );
@@ -36129,11 +36159,28 @@ Rules:
 - Use the exact model labels provided above.
 - Empty arrays [] are valid if there are no items in that category.`;
 }
+var CATEGORIZATION_SCHEMA = {
+  type: "object",
+  properties: {
+    commonAgreement: { type: ["string", "null"] },
+    complementary: { type: "array", items: { type: "object", properties: {
+      aspect: { type: "string" },
+      models: { type: "array", items: { type: "string" } },
+      insight: { type: "string" }
+    }, required: ["aspect", "models", "insight"] } },
+    conflicting: { type: "array", items: { type: "object", properties: {
+      topic: { type: "string" },
+      positions: { type: "array", items: { type: "object", properties: {
+        models: { type: "array", items: { type: "string" } },
+        position: { type: "string" }
+      }, required: ["models", "position"] } }
+    }, required: ["topic", "positions"] } }
+  },
+  required: ["commonAgreement", "complementary", "conflicting"]
+};
 function parseCategorizationJSON(raw) {
   const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
-  const obj = JSON.parse(sliceBalancedJson(stripped));
-  assertJsonShape(obj, { conflicting: "array" });
-  return obj;
+  return parseJudgeJson(raw, { conflicting: "array" });
 }
 async function categorize(question, responses, judgeModelId, judgeProvider, cc, runtime, existingConflictIds = [], openTopics = []) {
   if (responses.length === 0 || responses.every((r2) => r2.error)) {
@@ -36153,7 +36200,7 @@ async function categorize(question, responses, judgeModelId, judgeProvider, cc, 
     rawJson = await pooledComplete(
       { modelId: judgeModelId, provider: judgeProvider },
       [{ role: "user", content: prompt }],
-      { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
+      { jsonMode: true, jsonSchema: CATEGORIZATION_SCHEMA, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
       cc.retries,
       runtime
     );
@@ -36584,11 +36631,18 @@ Return ONLY valid JSON (no markdown), with this schema:
   ]
 }`;
 }
+var POOL_SCHEMA = {
+  type: "object",
+  properties: { options: { type: "array", items: { type: "object", properties: {
+    answer: { type: "string" },
+    rationale: { type: "string" },
+    models: { type: "array", items: { type: "string" } }
+  }, required: ["answer", "rationale", "models"] } } },
+  required: ["options"]
+};
 function parsePoolJSON(raw) {
   const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
-  const obj = JSON.parse(sliceBalancedJson(stripped));
-  assertJsonShape(obj, { options: "array" });
-  return obj;
+  return parseJudgeJson(raw, { options: "array" });
 }
 async function poolResponses(question, responses, judgeModelId, judgeProvider, cc, runtime) {
   if (responses.length === 0 || responses.every((r2) => r2.error)) {
@@ -36600,7 +36654,7 @@ async function poolResponses(question, responses, judgeModelId, judgeProvider, c
     rawJson = await pooledComplete(
       { modelId: judgeModelId, provider: judgeProvider },
       [{ role: "user", content: prompt }],
-      { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
+      { jsonMode: true, jsonSchema: POOL_SCHEMA, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
       cc.retries,
       runtime
     );
@@ -36754,11 +36808,18 @@ Use each option's answer text EXACTLY as written in the list above \u2014 do not
 Return ONLY valid JSON (no markdown):
 { "options": [ { "answer": "<option>", "pros": ["..."], "cons": ["..."] } ] }`;
 }
+var DOSSIER_SCHEMA = {
+  type: "object",
+  properties: { options: { type: "array", items: { type: "object", properties: {
+    answer: { type: "string" },
+    pros: { type: "array", items: { type: "string" } },
+    cons: { type: "array", items: { type: "string" } }
+  }, required: ["answer", "pros", "cons"] } } },
+  required: ["options"]
+};
 function parseDossierJSON(raw) {
   const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
-  const obj = JSON.parse(sliceBalancedJson(stripped));
-  assertJsonShape(obj, { options: "array" });
-  return obj;
+  return parseJudgeJson(raw, { options: "array" });
 }
 function toStrList(v2) {
   const arr = Array.isArray(v2) ? v2 : v2 == null ? [] : [v2];
@@ -36800,7 +36861,7 @@ async function buildProsCons(question, digest, initial, defenses, judgeModelId, 
       rawJson = await pooledComplete(
         { modelId: judgeModelId, provider: judgeProvider },
         [{ role: "user", content: buildDossierPrompt(question, digest, initial, defenses) }],
-        { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
+        { jsonMode: true, jsonSchema: DOSSIER_SCHEMA, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
         cc.retries,
         runtime
       );

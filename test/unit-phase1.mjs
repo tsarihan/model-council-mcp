@@ -278,6 +278,31 @@ console.log('▶ sliceBalancedJson (judge JSON extraction robust to trailing pro
     JSON.parse(sliceBalancedJson('{"x":[1,2,3]}```\nsome note }')).x.length === 3);
 }
 
+console.log('▶ parseJudgeJson: decoy/schema-echo preamble does not replace the real answer (round-12 research)');
+{
+  const { parseJudgeJson, extractJsonCandidates } = await import('../dist/providers/base.js');
+  // Reproduced LIVE: a judge (CLI subprocesses have no structured-output mode)
+  // emits "here is the schema I'll use: {…}" and THEN the real answer. Taking the
+  // FIRST object parses the schema echo — and because a schema example has
+  // `conflicting` as an array, it passes the shape check and yields garbage.
+  const decoy = 'Here is the schema I will use:\n```json\n{"commonAgreement":"<summary>","conflicting":[{"topic":"<topic>","positions":[]}]}\n```\nAnd here is my answer:\n{"commonAgreement":"All agree on Rust.","complementary":[],"conflicting":[]}';
+  const got = parseJudgeJson(decoy, { conflicting: 'array' });
+  check('decoy schema echo first → the REAL answer is parsed, not the example',
+    got.commonAgreement === 'All agree on Rust.' && got.conflicting.length === 0, JSON.stringify(got));
+  check('extractJsonCandidates finds both objects', extractJsonCandidates(decoy).length === 2);
+  // Still robust to the round-11 case: trailing prose containing braces.
+  const trailing = '{"conflicting":[],"commonAgreement":"ok"}\n\nLet me know if you want {more} detail.';
+  check('trailing prose with braces still parses the real object',
+    parseJudgeJson(trailing, { conflicting: 'array' }).commonAgreement === 'ok');
+  // A reply with NOTHING shape-valid must throw (→ caller sets judgeDegraded).
+  let threw = false;
+  try { parseJudgeJson('Here is some prose. {"unrelated":1}', { conflicting: 'array' }); } catch { threw = true; }
+  check('no shape-valid object → throws (routes to judgeDegraded)', threw);
+  // Single clean object still works.
+  check('single clean object parses',
+    parseJudgeJson('{"conflicting":[],"commonAgreement":null}', { conflicting: 'array' }).conflicting.length === 0);
+}
+
 console.log('▶ maxTokensCapFrom400 (Anthropic reactive max_tokens clamp)');
 {
   const { maxTokensCapFrom400 } = await import('../dist/providers/anthropic.js');

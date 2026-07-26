@@ -195,7 +195,10 @@ export class OllamaProvider implements Provider {
         temperature: opts.temperature ?? 0.7,
         num_predict: numPredict,
       },
-      ...(opts.jsonMode ? { format: 'json' } : {}),
+      // A schema (when supplied) constrains decoding; plain 'json' is the
+      // weaker fallback. NOTE: Ollama :cloud models ignore `format` entirely
+      // (measured), so the caller's parse+shape guard remains the real backstop.
+      ...(opts.jsonSchema ? { format: opts.jsonSchema } : opts.jsonMode ? { format: 'json' } : {}),
     };
 
     const res = await fetch(`${this.config.baseUrl}/api/chat`, {

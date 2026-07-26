@@ -277,7 +277,12 @@ export class OpenAICompatibleProvider implements Provider {
         messages: wireMessages,
         temperature: opts.temperature ?? 0.7,
         max_tokens: maxTokens,
-        ...(opts.jsonMode ? { response_format: { type: 'json_object' } } : {}),
+        // Prefer schema-constrained decoding (OpenAI + vLLM/SGLang guided
+        // decoding) over plain json_object, which only guarantees parseable JSON.
+        ...(opts.jsonSchema
+          ? { response_format: { type: 'json_schema' as const,
+              json_schema: { name: 'council_judge', schema: opts.jsonSchema, strict: false } } }
+          : opts.jsonMode ? { response_format: { type: 'json_object' as const } } : {}),
       },
       { timeout: opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS },
     );

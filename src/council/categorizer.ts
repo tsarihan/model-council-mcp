@@ -13,7 +13,7 @@ import {
   RawResponse,
   RuntimeConfig,
 } from '../types.js';
-import { Provider, sliceBalancedJson, assertJsonShape } from '../providers/base.js';
+import { Provider, parseJudgeJson } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
 import { EmptyCompletionError, pooledComplete } from './query.js';
 import { UNTRUSTED_CONTENT_NOTICE } from './prompt-safety.js';
@@ -100,6 +100,24 @@ interface RawCategorizationJSON {
   }>;
 }
 
+/** Schema for constrained decoding where the surface supports it (see CompletionOptions.jsonSchema). */
+const CATEGORIZATION_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    commonAgreement: { type: ['string', 'null'] },
+    complementary: { type: 'array', items: { type: 'object', properties: {
+      aspect: { type: 'string' }, models: { type: 'array', items: { type: 'string' } }, insight: { type: 'string' },
+    }, required: ['aspect', 'models', 'insight'] } },
+    conflicting: { type: 'array', items: { type: 'object', properties: {
+      topic: { type: 'string' },
+      positions: { type: 'array', items: { type: 'object', properties: {
+        models: { type: 'array', items: { type: 'string' } }, position: { type: 'string' },
+      }, required: ['models', 'position'] } },
+    }, required: ['topic', 'positions'] } },
+  },
+  required: ['commonAgreement', 'complementary', 'conflicting'],
+};
+
 function parseCategorizationJSON(raw: string): RawCategorizationJSON {
   // Strip markdown code fences if present
   const stripped = raw
@@ -112,12 +130,12 @@ function parseCategorizationJSON(raw: string): RawCategorizationJSON {
   // no structured-output mode at all (jsonMode there is just an appended
   // instruction sentence), so a preamble like "Here is the categorization:\n{…}"
   // is a real, reproducible failure mode for the two DEFAULT response modes.
-  const obj = JSON.parse(sliceBalancedJson(stripped));
   // `conflicting` is the DECISIVE field — it alone drives the consensus/score
   // result, so it must be present AND an array. (`complementary`/`commonAgreement`
   // missing is benign: it loses detail but cannot fabricate convergence.)
-  assertJsonShape(obj, { conflicting: 'array' });
-  return obj as RawCategorizationJSON;
+  // parseJudgeJson tries every balanced object LAST-first, so a schema echo or
+  // worked example preceding the real answer can't be parsed in its place.
+  return parseJudgeJson<RawCategorizationJSON>(raw, { conflicting: 'array' });
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -170,7 +188,7 @@ export async function categorize(
     rawJson = await pooledComplete(
       { modelId: judgeModelId, provider: judgeProvider },
       [{ role: 'user', content: prompt }],
-      { jsonMode: true, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
+      { jsonMode: true, jsonSchema: CATEGORIZATION_SCHEMA, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
       cc.retries,
       runtime,
     );

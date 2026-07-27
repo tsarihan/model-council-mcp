@@ -166,6 +166,7 @@ export async function categorize(
       conflicting: [],
       judgeModel: modelIdLabel(judgeModelId),
       judgeDegraded: true,
+      judgeFailed: true, // no usable input existed at all
     };
   }
 
@@ -208,6 +209,7 @@ export async function categorize(
         conflicting: [],
         judgeModel: modelIdLabel(judgeModelId),
         judgeDegraded: true,
+        judgeFailed: true, // judge produced no usable output
       };
     }
     throw new Error(
@@ -227,6 +229,7 @@ export async function categorize(
       conflicting: [],
       judgeModel: modelIdLabel(judgeModelId),
       judgeDegraded: true,
+      judgeFailed: true, // unparseable / wrong-shaped judge JSON
     };
   }
 

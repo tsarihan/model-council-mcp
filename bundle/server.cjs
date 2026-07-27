@@ -24886,7 +24886,10 @@ function loadConfig() {
 var PROBE_IMAGE_BASE64 = "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";
 function neutralizeFileMentions(text) {
   if (!text) return text;
-  return text.replace(/@(?=[~./]|[\w.\-]*\/)/g, "@\u200B");
+  return text.replace(
+    /(?<![\w@])@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-]))/g,
+    "@\u200B"
+  );
 }
 var DEFAULT_COMPLETION_TIMEOUT_MS = 12e4;
 function isTimeoutError(err) {
@@ -24933,7 +24936,10 @@ function stripThinkBlocks(text) {
   }
   let out = text.replace(new RegExp(`<(?:${REASON_TAG})>[\\s\\S]*?</(?:${REASON_TAG})>`, "gi"), "");
   const m2 = out.match(new RegExp(`</(?:${REASON_TAG})>(?![\\s\\S]*</(?:${REASON_TAG})>)`, "i"));
-  if (m2 && m2.index !== void 0) out = out.slice(m2.index + m2[0].length);
+  if (m2 && m2.index !== void 0) {
+    const after = out.slice(m2.index + m2[0].length);
+    out = after.trim() ? after : out.slice(0, m2.index);
+  }
   return out.trim();
 }
 function assertJsonShape(v2, required2) {
@@ -24978,18 +24984,46 @@ function extractJsonCandidates(text) {
   }
   return out;
 }
+function looksLikeSchemaEcho(v2) {
+  if (v2 === null || typeof v2 !== "object") return false;
+  const o2 = v2;
+  if (typeof o2.type === "string" && o2.properties && typeof o2.properties === "object") return true;
+  let placeholders = 0, strings = 0;
+  const walk = (x2, depth) => {
+    if (depth > 6 || x2 === null) return;
+    if (typeof x2 === "string") {
+      strings++;
+      if (/^<.+>$/.test(x2.trim())) placeholders++;
+      return;
+    }
+    if (Array.isArray(x2)) {
+      for (const i2 of x2) walk(i2, depth + 1);
+      return;
+    }
+    if (typeof x2 === "object") {
+      for (const i2 of Object.values(x2)) walk(i2, depth + 1);
+    }
+  };
+  walk(o2, 0);
+  return strings > 0 && placeholders / strings >= 0.5;
+}
 function parseJudgeJson(raw, required2) {
   const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
   const candidates = extractJsonCandidates(stripped);
+  const valid = [];
   let lastErr;
-  for (let k2 = candidates.length - 1; k2 >= 0; k2--) {
+  for (const c2 of candidates) {
     try {
-      const obj = JSON.parse(candidates[k2]);
+      const obj = JSON.parse(c2);
       assertJsonShape(obj, required2);
-      return obj;
+      valid.push({ obj, echo: looksLikeSchemaEcho(obj) });
     } catch (err) {
       lastErr = err;
     }
+  }
+  if (valid.length) {
+    const real = valid.filter((v2) => !v2.echo);
+    return (real.length ? real : valid)[(real.length ? real : valid).length - 1].obj;
   }
   throw lastErr instanceof Error ? lastErr : new Error("judge reply contained no shape-valid JSON object");
 }
@@ -35396,12 +35430,25 @@ var ClaudeCliProvider = class {
         // replace the default coding-agent persona
       ];
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-      const { code, stdout, stderr } = await this.run(
-        args,
-        prompt,
-        timeoutMs,
-        addDirs[addDirs.length - 1]
-      );
+      let scratchCwd;
+      if (addDirs.length === 0) {
+        scratchCwd = (0, import_node_fs5.mkdtempSync)((0, import_node_path3.join)((0, import_node_os2.tmpdir)(), "claude-council-cwd-"));
+      }
+      try {
+        var { code, stdout, stderr } = await this.run(
+          args,
+          prompt,
+          timeoutMs,
+          addDirs[addDirs.length - 1] ?? scratchCwd
+        );
+      } finally {
+        if (scratchCwd) {
+          try {
+            (0, import_node_fs5.rmSync)(scratchCwd, { recursive: true, force: true });
+          } catch {
+          }
+        }
+      }
       if (code !== 0) {
         throw new Error(
           `claude CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || "(no stderr)"}`
@@ -36242,7 +36289,9 @@ async function categorize(question, responses, judgeModelId, judgeProvider, cc, 
       complementary: [],
       conflicting: [],
       judgeModel: modelIdLabel(judgeModelId),
-      judgeDegraded: true
+      judgeDegraded: true,
+      judgeFailed: true
+      // no usable input existed at all
     };
   }
   const partialOutage = responses.some((r2) => r2.error);
@@ -36264,7 +36313,9 @@ async function categorize(question, responses, judgeModelId, judgeProvider, cc, 
         complementary: [],
         conflicting: [],
         judgeModel: modelIdLabel(judgeModelId),
-        judgeDegraded: true
+        judgeDegraded: true,
+        judgeFailed: true
+        // judge produced no usable output
       };
     }
     throw new Error(
@@ -36281,7 +36332,9 @@ async function categorize(question, responses, judgeModelId, judgeProvider, cc, 
       complementary: [],
       conflicting: [],
       judgeModel: modelIdLabel(judgeModelId),
-      judgeDegraded: true
+      judgeDegraded: true,
+      judgeFailed: true
+      // unparseable / wrong-shaped judge JSON
     };
   }
   const existingSet = new Set(existingConflictIds);
@@ -36562,7 +36615,7 @@ async function deconflict(input) {
       }
       break;
     }
-    if (newCateg.judgeDegraded) {
+    if (newCateg.judgeFailed) {
       midLoopJudgeFailure = true;
       roundHistory.push({
         round,
@@ -36584,6 +36637,7 @@ async function deconflict(input) {
       }
       break;
     }
+    if (newCateg.judgeDegraded) partyDropoutDegraded = true;
     const erroredLabels = new Set(roundResponses.filter((r2) => r2.error).map((r2) => r2.label));
     const { resolved, remaining, partyDropout } = detectResolutions(openConflicts, newCateg, erroredLabels);
     if (partyDropout) partyDropoutDegraded = true;

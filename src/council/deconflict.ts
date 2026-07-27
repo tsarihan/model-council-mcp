@@ -441,7 +441,12 @@ export async function deconflict(
       break;
     }
 
-    if (newCateg.judgeDegraded) {
+    // Break ONLY on a genuine judge failure. Using the broader `judgeDegraded`
+    // here was a regression: that flag is also set for a PARTIAL member outage,
+    // so one member timing out in round 1 aborted the entire deconfliction loop
+    // and reported it as a judge failure — when the judge worked fine and the
+    // member would likely have answered next round.
+    if (newCateg.judgeFailed) {
       // categorize() didn't throw, but only because it degrades gracefully to
       // an empty conflicting[] on judge failure/unparseable JSON (see
       // categorizer.ts). Left unchecked, detectResolutions() would read that
@@ -474,6 +479,9 @@ export async function deconflict(
     // ── Detect resolved vs remaining conflicts ────────────────────────────
     // Pass the labels of members that errored THIS round so a conflict whose
     // party dropped out isn't fabricated into a resolution (see detectResolutions).
+    // A degraded-but-usable round (e.g. partial member outage) does NOT stop the
+    // loop, but the run is no longer a clean measurement.
+    if (newCateg.judgeDegraded) partyDropoutDegraded = true;
     const erroredLabels = new Set(roundResponses.filter(r => r.error).map(r => r.label));
     const { resolved, remaining, partyDropout } = detectResolutions(openConflicts, newCateg, erroredLabels);
     if (partyDropout) partyDropoutDegraded = true;

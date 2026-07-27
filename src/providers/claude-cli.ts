@@ -387,12 +387,28 @@ export class ClaudeCliProvider implements Provider {
       // git_repo points elsewhere). Pin cwd to one of the already-granted
       // directories so the process's own directory never adds scope beyond
       // what --add-dir explicitly lists.
-      const { code, stdout, stderr } = await this.run(
-        args,
-        prompt,
-        timeoutMs,
-        addDirs[addDirs.length - 1],
-      );
+      // ALWAYS pin cwd. `addDirs[addDirs.length - 1]` is undefined when there is
+      // no image dir and no repo grant (the plain locked-down call), and an
+      // undefined cwd makes the child inherit the SERVER's working directory —
+      // which Claude's Read tool can access with no --add-dir at all, and which a
+      // bare `@file.ext` mention resolves against. Fall back to a fresh empty
+      // directory so the child's own cwd never adds scope.
+      let scratchCwd: string | undefined;
+      if (addDirs.length === 0) {
+        scratchCwd = mkdtempSync(join(tmpdir(), 'claude-council-cwd-'));
+      }
+      try {
+        var { code, stdout, stderr } = await this.run(
+          args,
+          prompt,
+          timeoutMs,
+          addDirs[addDirs.length - 1] ?? scratchCwd,
+        );
+      } finally {
+        if (scratchCwd) {
+          try { rmSync(scratchCwd, { recursive: true, force: true }); } catch { /* best-effort */ }
+        }
+      }
       if (code !== 0) {
         throw new Error(
           `claude CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || '(no stderr)'}`,

@@ -177,6 +177,15 @@ export interface CategorizedResult {
    * agreed" finding — check this before trusting an empty `conflicting` array.
    */
   judgeDegraded?: boolean;
+  /**
+   * True only when the JUDGE ITSELF produced nothing usable (no output, or
+   * unparseable/wrong-shaped JSON). Distinct from `judgeDegraded`, which is the
+   * broader "don't read this as clean convergence" marker and is ALSO set for a
+   * partial member outage. The deconfliction loop must stop on a judge failure
+   * (its conflict list is meaningless) but must NOT stop merely because a member
+   * timed out — that member may well answer next round.
+   */
+  judgeFailed?: boolean;
   visionRouting?: VisionRouting;
 }
 

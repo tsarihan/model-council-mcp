@@ -326,6 +326,45 @@ console.log('▶ round-12 batch 3: pooled partial outage, dossier notice placeme
     `notice@${dossier.indexOf('analysis only')} option@${dossier.indexOf('OptionAlpha')}`);
 }
 
+console.log('▶ round-13: judgeFailed vs judgeDegraded, mention coverage, dangling-closer, schema-echo');
+{
+  const { stripThinkBlocks, parseJudgeJson, neutralizeFileMentions } = await import('../dist/providers/base.js');
+  const { categorize } = await import('../dist/council/categorizer.js');
+  const jid = { provider: 'ollama', model: 'j' };
+  const cc = { maxTokens: 100, retries: 1, timeoutMs: 5000 };
+  const rt = { localConcurrency: 0, cloudConcurrency: 0 };
+  const fj = (json) => ({ config: { type: 'ollama' }, serverId: 'ollama', complete: async () => json, listModels: async () => [], ping: async () => true });
+
+  // A PARTIAL member outage marks the run degraded but must NOT be reported as a
+  // judge failure — deconflict breaks its loop on judgeFailed, so conflating the
+  // two made one member timeout abort the whole deconfliction run.
+  const partial = [
+    { modelId: { provider: 'ollama', model: 'a' }, label: 'ollama:a', response: 'x', latencyMs: 1 },
+    { modelId: { provider: 'ollama', model: 'b' }, label: 'ollama:b', response: '', error: 'timeout', latencyMs: 1 },
+  ];
+  const po = await categorize('q', partial, jid, fj('{"conflicting":[],"complementary":[]}'), cc, rt);
+  check('partial outage → judgeDegraded set', po.judgeDegraded === true);
+  check('partial outage → judgeFailed NOT set (must not abort the deconflict loop)', po.judgeFailed === undefined, JSON.stringify(po.judgeFailed));
+  const jf = await categorize('q', [partial[0]], jid, fj('{not json'), cc, rt);
+  check('genuine judge failure → BOTH judgeDegraded and judgeFailed set', jf.judgeDegraded === true && jf.judgeFailed === true);
+
+  // Mention coverage: a bare filename resolves against cwd, so it is a real read.
+  check('bare @filename.ext is neutralized (resolves against cwd)', neutralizeFileMentions('read @credentials.json') !== 'read @credentials.json');
+  check('windows @C:\\path\\file is neutralized', neutralizeFileMentions('@C:\\keys\\id.txt').includes('@\u200b'));
+  check('an email is still untouched', neutralizeFileMentions('mail bob@example.com') === 'mail bob@example.com');
+
+  // A stray closing tag AFTER the answer must not delete the answer.
+  const ans = '{"conflicting":[],"commonAgreement":"ok"}';
+  check('answer followed by a stray </think> survives', stripThinkBlocks(ans + '\n</think>') === ans);
+  check('reasoning then </think> then answer still strips the reasoning',
+    stripThinkBlocks('thinking...\n</think>\nFinal.') === 'Final.');
+
+  // A leading schema echo must not be parsed in place of the real answer.
+  const echoed = 'Format:\n{"commonAgreement":"<summary>","conflicting":[{"topic":"<conflict topic>","positions":[]}]}\nAnswer:\n{"commonAgreement":"x","conflicting":[{"topic":"real","positions":[]}]}';
+  check('leading schema echo is skipped; the real answer is parsed',
+    parseJudgeJson(echoed, { conflicting: 'array' }).conflicting[0].topic === 'real');
+}
+
 console.log('▶ round-12 batch: state.json 0600, anthropic temperature, conflict-id seeding');
 {
   // state.json persists the resolved (possibly credentialed) Ollama URL raw, so

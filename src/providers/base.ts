@@ -54,7 +54,19 @@ export const PROBE_IMAGE_BASE64 =
  */
 export function neutralizeFileMentions(text: string): string {
   if (!text) return text;
-  return text.replace(/@(?=[~./]|[\w.\-]*\/)/g, '@​');
+  // A file MENTION starts a token: `@` at the start of input or after
+  // whitespace/an opening delimiter. An EMAIL's `@` is preceded by a word
+  // character (bob@example.com), so the lookbehind alone separates the two —
+  // which is what lets the path shape stay broad without eating addresses.
+  //
+  // Path shapes covered: absolute/relative/home (`/x`, `./x`, `~/x`), any token
+  // containing a POSIX or Windows separator, AND a bare `name.ext` — the last of
+  // these matters because the CLI resolves a bare filename against its cwd, so
+  // `@credentials.json` is a real read even with no slash in it.
+  return text.replace(
+    /(?<![\w@])@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-]))/g,
+    '@​',
+  );
 }
 
 export interface CompletionOptions {
@@ -207,7 +219,16 @@ export function stripThinkBlocks(text: string): string {
   // Handle a dangling closing tag (chain-of-thought with no opening tag):
   // everything up to and including the final closing tag is reasoning.
   const m = out.match(new RegExp(`</(?:${REASON_TAG})>(?![\\s\\S]*</(?:${REASON_TAG})>)`, 'i'));
-  if (m && m.index !== undefined) out = out.slice(m.index + m[0].length);
+  if (m && m.index !== undefined) {
+    const after = out.slice(m.index + m[0].length);
+    // The dangling-closer heuristic assumes the ANSWER FOLLOWS the tag ("all the
+    // reasoning, then </think>, then the answer"). When nothing follows, that
+    // assumption is inverted — the answer came FIRST and a stray closer trailed
+    // it — and slicing would delete the entire reply (measured: a valid judge
+    // JSON followed by "\n</think>" reduced to ""). Keep what precedes and drop
+    // just the tag in that case.
+    out = after.trim() ? after : out.slice(0, m.index);
+  }
   return out.trim();
 }
 
@@ -302,21 +323,55 @@ export function extractJsonCandidates(text: string): string[] {
  * when nothing shape-valid is present, so callers route it through their
  * existing judgeDegraded fallback rather than acting on a fabricated result.
  */
+/**
+ * Does this parsed object look like an ECHO of the schema we asked for, rather
+ * than an answer? Our judge prompts show the schema with angle-bracket
+ * placeholders ("<summary of what all/most models agree on>"), and weak-JSON
+ * CLI judges sometimes restate it before answering. A JSON-Schema document
+ * (`type`/`properties`) is the other shape seen live. Neither is an answer.
+ */
+function looksLikeSchemaEcho(v: unknown): boolean {
+  if (v === null || typeof v !== 'object') return false;
+  const o = v as Record<string, unknown>;
+  if (typeof o.type === 'string' && o.properties && typeof o.properties === 'object') return true;
+  let placeholders = 0, strings = 0;
+  const walk = (x: unknown, depth: number): void => {
+    if (depth > 6 || x === null) return;
+    if (typeof x === 'string') { strings++; if (/^<.+>$/.test(x.trim())) placeholders++; return; }
+    if (Array.isArray(x)) { for (const i of x) walk(i, depth + 1); return; }
+    if (typeof x === 'object') { for (const i of Object.values(x as object)) walk(i, depth + 1); }
+  };
+  walk(o, 0);
+  return strings > 0 && placeholders / strings >= 0.5;
+}
+
 export function parseJudgeJson<T>(raw: string, required: Record<string, 'array'>): T {
   const stripped = raw
     .replace(/^```(?:json)?\s*/im, '')
     .replace(/\s*```\s*$/im, '')
     .trim();
   const candidates = extractJsonCandidates(stripped);
+  // Collect every shape-valid candidate, then choose — rather than returning the
+  // first one tried. Two opposite failure modes exist and they pull in opposite
+  // directions: a SCHEMA ECHO before the answer ("here's the format: {…}") and a
+  // worked EXAMPLE after it. Preferring the last handles the (much more common)
+  // preamble case; the schema-echo filter below removes the echo explicitly so
+  // the choice doesn't rest on position alone.
+  const valid: Array<{ obj: unknown; echo: boolean }> = [];
   let lastErr: unknown;
-  for (let k = candidates.length - 1; k >= 0; k--) {
+  for (const c of candidates) {
     try {
-      const obj = JSON.parse(candidates[k]);
+      const obj = JSON.parse(c);
       assertJsonShape(obj, required);
-      return obj as T;
+      valid.push({ obj, echo: looksLikeSchemaEcho(obj) });
     } catch (err) {
       lastErr = err;
     }
+  }
+  if (valid.length) {
+    // Prefer the last NON-echo candidate; fall back to the last of any kind.
+    const real = valid.filter(v => !v.echo);
+    return ((real.length ? real : valid)[(real.length ? real : valid).length - 1].obj) as T;
   }
   throw lastErr instanceof Error ? lastErr : new Error('judge reply contained no shape-valid JSON object');
 }

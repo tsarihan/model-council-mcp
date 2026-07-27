@@ -79,8 +79,21 @@ export function neutralizeFileMentions(text: string): string {
   // broken. A `@@` NOT followed by a path shape (`@@channel`) still matches
   // neither the `@`-prefixed nor the ordinary path alts, so it is left
   // untouched; and an email's `@` is still blocked by the word char before it.
+  //
+  // BARE SECRET FILENAMES (round 20, kimi): a plain single-word, extensionless
+  // filename with no `_`/`-` and not in the well-known list (`@secrets`,
+  // `@token`, `@key`, `@credentials`, …) matched NONE of the alts above, so it
+  // stayed live. This is NOT an exploitable out-of-scope escape — the CLI
+  // provider always pins cwd to an empty temp dir (or the granted repo root
+  // under full_repo_access), so `@secrets` resolves to nothing (or to an
+  // in-scope repo file), never to an arbitrary system file (deepseek verified
+  // this containment in round 19). But neutralization is defense-in-depth and
+  // must not lean on a single layer, so the common secret bare filenames are
+  // added to the extensionless well-known list (alongside Makefile/LICENSE/…),
+  // matching them the same way. Common decorators/handles (`@Override`,
+  // `@Bean`, `@property`, `@tom`) are NOT secret filenames and stay untouched.
   return text.replace(
-    /(?<!\w)@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|go)\b|[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@)|@[~./\\]|@[\w.\-:]*[/\\]|@[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|@(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|go)\b|@[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@))/g,
+    /(?<!\w)@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|go|secrets|secret|token|tokens|credentials|credential|password|passwd|otp|apikey|key|keys)\b|[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@)|@[~./\\]|@[\w.\-:]*[/\\]|@[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|@(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|go|secrets|secret|token|tokens|credentials|credential|password|passwd|otp|apikey|key|keys)\b|@[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@))/g,
     '@​',
   );
 }

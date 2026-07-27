@@ -946,6 +946,27 @@ console.log('▶ neutralizeFileMentions (@path client-side expansion bypasses th
     neutralizeFileMentions('ping @@channel') === 'ping @@channel');
   check('triple-@ path is neutralized on its path-bearing @s (@@@/etc/passwd)',
     neutralizeFileMentions('@@@/etc/passwd').includes(ZW + '/etc/passwd'));
+  // Round 20 (kimi): bare single-word extensionless secret filenames with no
+  // _/- and not in the well-known list (@secrets, @token, @key, …) bypassed the
+  // path-shape alts. Not an out-of-scope escape (cwd is pinned to an empty temp
+  // dir or the granted repo root), but neutralization is defense-in-depth, so
+  // common secret bare names are added to the extensionless well-known list.
+  for (const f of ['secrets', 'secret', 'token', 'tokens', 'credentials', 'credential', 'password', 'passwd', 'otp', 'apikey', 'key', 'keys']) {
+    check(`bare secret @${f} is neutralized (round-20 hardening)`,
+      neutralizeFileMentions(`read @${f}`) !== `read @${f}` &&
+      neutralizeFileMentions(`read @${f}`).includes(ZW));
+    check(`double-@ bare secret @@${f} is neutralized`,
+      neutralizeFileMentions(`read @@${f}`) !== `read @@${f}`);
+  }
+  // The \b boundary must NOT over-match a longer token that STARTS with a secret
+  // name (@keyfield, @tokenizer) — those are not the bare secret filename.
+  check('bare-secret \\b does not over-match @keyfield',
+    neutralizeFileMentions('the @keyfield report') === 'the @keyfield report');
+  check('bare-secret \\b does not over-match @tokenizer',
+    neutralizeFileMentions('a @tokenizer') === 'a @tokenizer');
+  // Common decorators/handles must STILL be untouched (they are not secret filenames).
+  check('decorators/handles still untouched after the secret-word hardening',
+    neutralizeFileMentions('use @Override and ask @tom about @Bean and @property') === 'use @Override and ask @tom about @Bean and @property');
   // The visible text is unchanged once the zero-width char is removed, so the
   // model still reads exactly what the author wrote.
   // Only UNTRUSTED input is neutralized. Our own scaffolding — notably the

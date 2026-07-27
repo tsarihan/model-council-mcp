@@ -285,10 +285,17 @@ export class ClaudeCliProvider implements Provider {
     messages: ChatMessage[],
     opts: CompletionOptions = {},
   ): Promise<string> {
-    const systemParts = messages
-      .filter(m => m.role === 'system')
-      .map(m => m.content)
-      .join('\n\n');
+    // Neutralize @-mentions in UNTRUSTED input only (caller-supplied system
+    // messages). Our own scaffolding — the persona, the repo root, the image
+    // temp paths — is trusted and must stay byte-exact: a repo path that itself
+    // contains an '@' (e.g. /Users/bob@corp/proj) would otherwise be rewritten in
+    // the prompt and the model would be told a path it cannot Read.
+    const systemParts = neutralizeFileMentions(
+      messages
+        .filter(m => m.role === 'system')
+        .map(m => m.content)
+        .join('\n\n'),
+    );
 
     // Images are attached only on a user message; the orchestrator only routes
     // here at all when supportsVision() was confirmed for this member.
@@ -317,10 +324,12 @@ export class ClaudeCliProvider implements Provider {
         ? `\n\n(${imagePaths.length} image(s) are attached. Read each one with the ` +
           `Read tool before answering: ${imagePaths.join(', ')})`
         : '';
-      const prompt = messages
-        .filter(m => m.role !== 'system')
-        .map(m => (m.role === 'assistant' ? `Assistant: ${m.content}` : m.content))
-        .join('\n\n') + imageNote;
+      const prompt = neutralizeFileMentions(
+        messages
+          .filter(m => m.role !== 'system')
+          .map(m => (m.role === 'assistant' ? `Assistant: ${m.content}` : m.content))
+          .join('\n\n'),
+      ) + imageNote; // imageNote holds OUR temp paths — must stay byte-exact
 
       const repoRoot = opts.fullRepoAccess;
 
@@ -358,7 +367,7 @@ export class ClaudeCliProvider implements Provider {
         ...(addDirs.length ? ['--add-dir', ...addDirs] : []),
         '--strict-mcp-config',    // no MCP servers (no recursion into this plugin)
         '--no-session-persistence',
-        '--system-prompt', neutralizeFileMentions(systemText), // replace default persona; @-mentions neutralized
+        '--system-prompt', systemText, // replace the default coding-agent persona
       ];
 
       // Respect an explicit opts.timeoutMs verbatim (matches every other
@@ -378,15 +387,9 @@ export class ClaudeCliProvider implements Provider {
       // git_repo points elsewhere). Pin cwd to one of the already-granted
       // directories so the process's own directory never adds scope beyond
       // what --add-dir explicitly lists.
-      // Neutralize @path file mentions: the CLI expands them CLIENT-SIDE, before
-      // the tool-permission system, so they bypass --tools ''/--add-dir entirely
-      // (verified live). Untrusted text reaches this prompt (member responses in
-      // judge prompts, context/files/git-diff, repo content under
-      // full_repo_access), so this must happen for every call.
-      const safePrompt = neutralizeFileMentions(prompt);
       const { code, stdout, stderr } = await this.run(
         args,
-        safePrompt,
+        prompt,
         timeoutMs,
         addDirs[addDirs.length - 1],
       );

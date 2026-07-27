@@ -35348,7 +35348,9 @@ var ClaudeCliProvider = class {
     }
   }
   async complete(model, messages, opts = {}) {
-    const systemParts = messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n");
+    const systemParts = neutralizeFileMentions(
+      messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n")
+    );
     const images = messages.find((m2) => m2.role === "user" && m2.images?.length)?.images ?? [];
     let imageDir;
     let imagePaths = [];
@@ -35364,7 +35366,9 @@ var ClaudeCliProvider = class {
       const imageNote = imagePaths.length ? `
 
 (${imagePaths.length} image(s) are attached. Read each one with the Read tool before answering: ${imagePaths.join(", ")})` : "";
-      const prompt = messages.filter((m2) => m2.role !== "system").map((m2) => m2.role === "assistant" ? `Assistant: ${m2.content}` : m2.content).join("\n\n") + imageNote;
+      const prompt = neutralizeFileMentions(
+        messages.filter((m2) => m2.role !== "system").map((m2) => m2.role === "assistant" ? `Assistant: ${m2.content}` : m2.content).join("\n\n")
+      ) + imageNote;
       const repoRoot = opts.fullRepoAccess;
       const toolNote = repoRoot ? `You have read-only access to explore the repository at ${repoRoot} using the Read, Grep, and Glob tools to inform your answer. Do not attempt to run commands or modify any files, and do not ask follow-up questions.` + (imagePaths.length ? ` Also use Read to view the attached image(s): ${imagePaths.join(", ")}.` : "") : imagePaths.length ? "Use the Read tool only to view the attached image(s); do not use it for anything else, and do not ask follow-up questions." : "Do not use tools or ask follow-up questions.";
       const base = "You are a member of a model council. Answer the question directly, neutrally, and concisely. " + toolNote;
@@ -35388,14 +35392,13 @@ var ClaudeCliProvider = class {
         // no MCP servers (no recursion into this plugin)
         "--no-session-persistence",
         "--system-prompt",
-        neutralizeFileMentions(systemText)
-        // replace default persona; @-mentions neutralized
+        systemText
+        // replace the default coding-agent persona
       ];
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-      const safePrompt = neutralizeFileMentions(prompt);
       const { code, stdout, stderr } = await this.run(
         args,
-        safePrompt,
+        prompt,
         timeoutMs,
         addDirs[addDirs.length - 1]
       );
@@ -35562,8 +35565,12 @@ var CodexCliProvider = class {
     }
   }
   async complete(model, messages, opts = {}) {
-    const systemParts = messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n");
-    const convo = messages.filter((m2) => m2.role !== "system").map((m2) => m2.role === "assistant" ? `Assistant: ${m2.content}` : m2.content).join("\n\n");
+    const systemParts = neutralizeFileMentions(
+      messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n")
+    );
+    const convo = neutralizeFileMentions(
+      messages.filter((m2) => m2.role !== "system").map((m2) => m2.role === "assistant" ? `Assistant: ${m2.content}` : m2.content).join("\n\n")
+    );
     const repoRoot = opts.fullRepoAccess;
     const preamble = "You are a member of a model council. Answer the question directly, neutrally, and concisely. " + (repoRoot ? `You have read-only access to explore the repository at ${repoRoot} \u2014 the sandbox will not let you write or modify anything regardless. Stay inside ${repoRoot}; do not read files elsewhere on the system. Do not run commands that mutate state; just explore and answer.` : "Do not run commands or modify files \u2014 just answer.");
     const prompt = [
@@ -35602,7 +35609,7 @@ var CodexCliProvider = class {
         args.push("-i", path);
       });
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS2;
-      const { code, stderr } = await this.run(args, neutralizeFileMentions(prompt), timeoutMs);
+      const { code, stderr } = await this.run(args, prompt, timeoutMs);
       if (code !== 0) {
         throw new Error(
           `codex CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || "(no stderr)"}`
@@ -35758,9 +35765,13 @@ var GrokCliProvider = class {
     }
   }
   async complete(model, messages, opts = {}) {
-    const systemParts = messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n");
+    const systemParts = neutralizeFileMentions(
+      messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n")
+    );
     const images = messages.find((m2) => m2.role === "user" && m2.images?.length)?.images ?? [];
-    const convo = messages.filter((m2) => m2.role !== "system").map((m2) => m2.role === "assistant" ? `Assistant: ${m2.content}` : m2.content).join("\n\n");
+    const convo = neutralizeFileMentions(
+      messages.filter((m2) => m2.role !== "system").map((m2) => m2.role === "assistant" ? `Assistant: ${m2.content}` : m2.content).join("\n\n")
+    );
     const base = "You are a member of a model council. Answer the question directly, neutrally, and concisely. Do not use tools or ask follow-up questions.";
     const systemText = [
       base,
@@ -35775,11 +35786,11 @@ var GrokCliProvider = class {
       if (images.length === 0) {
         promptDir = (0, import_node_fs7.mkdtempSync)((0, import_node_path5.join)((0, import_node_os4.tmpdir)(), "grok-council-prompt-"));
         const promptFile = (0, import_node_path5.join)(promptDir, "prompt.txt");
-        (0, import_node_fs7.writeFileSync)(promptFile, neutralizeFileMentions(convo), "utf8");
+        (0, import_node_fs7.writeFileSync)(promptFile, convo, "utf8");
         promptArgs = ["--prompt-file", promptFile];
       } else {
         const blocks = [
-          { type: "text", text: neutralizeFileMentions(convo) },
+          { type: "text", text: convo },
           ...images.map((img) => ({ type: "image", data: img.base64, mimeType: img.mimeType }))
         ];
         promptArgs = ["--prompt-json", JSON.stringify(blocks)];

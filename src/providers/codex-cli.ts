@@ -153,14 +153,17 @@ export class CodexCliProvider implements Provider {
     messages: ChatMessage[],
     opts: CompletionOptions = {},
   ): Promise<string> {
-    const systemParts = messages
-      .filter(m => m.role === 'system')
-      .map(m => m.content)
-      .join('\n\n');
-    const convo = messages
-      .filter(m => m.role !== 'system')
-      .map(m => (m.role === 'assistant' ? `Assistant: ${m.content}` : m.content))
-      .join('\n\n');
+    // Neutralize @-mentions in UNTRUSTED input only — the preamble below embeds
+    // repoRoot, which must stay byte-exact (a path containing '@' would break).
+    const systemParts = neutralizeFileMentions(
+      messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n'),
+    );
+    const convo = neutralizeFileMentions(
+      messages
+        .filter(m => m.role !== 'system')
+        .map(m => (m.role === 'assistant' ? `Assistant: ${m.content}` : m.content))
+        .join('\n\n'),
+    );
 
     const repoRoot = opts.fullRepoAccess;
 
@@ -224,9 +227,7 @@ export class CodexCliProvider implements Provider {
       // a caller with a genuinely low REQUEST_TIMEOUT_MS now correctly has
       // that honoured here too, consistent with API providers.
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-      // Defensive: codex's @-mention handling is unverified, and the claude/grok
-      // CLIs both expand mentions client-side (verified) — cheap to neutralize.
-      const { code, stderr } = await this.run(args, neutralizeFileMentions(prompt), timeoutMs);
+      const { code, stderr } = await this.run(args, prompt, timeoutMs);
       if (code !== 0) {
         throw new Error(
           `codex CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || '(no stderr)'}`,

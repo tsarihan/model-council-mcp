@@ -159,10 +159,12 @@ export class GrokCliProvider implements Provider {
     messages: ChatMessage[],
     opts: CompletionOptions = {},
   ): Promise<string> {
-    const systemParts = messages
-      .filter(m => m.role === 'system')
-      .map(m => m.content)
-      .join('\n\n');
+    // Untrusted caller-supplied system text — @-mentions neutralized (grok also
+    // gets --verbatim below; this is defense in depth). Our own scaffolding is
+    // composed after this and stays byte-exact.
+    const systemParts = neutralizeFileMentions(
+      messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n'),
+    );
 
     // Images are attached only on a user message; the orchestrator only routes
     // here at all when supportsVision() was confirmed for this member.
@@ -170,10 +172,12 @@ export class GrokCliProvider implements Provider {
 
     // Flatten the conversation into one text block, then append native image
     // blocks — no temp files, no tool loosening (see file header).
-    const convo = messages
-      .filter(m => m.role !== 'system')
-      .map(m => (m.role === 'assistant' ? `Assistant: ${m.content}` : m.content))
-      .join('\n\n');
+    const convo = neutralizeFileMentions(
+      messages
+        .filter(m => m.role !== 'system')
+        .map(m => (m.role === 'assistant' ? `Assistant: ${m.content}` : m.content))
+        .join('\n\n'),
+    );
 
     // Replace the CLI's default coding-agent persona with a neutral
     // council-member one, matching claude-cli/codex-cli's treatment.
@@ -205,11 +209,11 @@ export class GrokCliProvider implements Provider {
       if (images.length === 0) {
         promptDir = mkdtempSync(join(tmpdir(), 'grok-council-prompt-'));
         const promptFile = join(promptDir, 'prompt.txt');
-        writeFileSync(promptFile, neutralizeFileMentions(convo), 'utf8');
+        writeFileSync(promptFile, convo, 'utf8');
         promptArgs = ['--prompt-file', promptFile];
       } else {
         const blocks: ContentBlock[] = [
-          { type: 'text', text: neutralizeFileMentions(convo) },
+          { type: 'text', text: convo },
           ...images.map(img => ({ type: 'image' as const, data: img.base64, mimeType: img.mimeType })),
         ];
         promptArgs = ['--prompt-json', JSON.stringify(blocks)];

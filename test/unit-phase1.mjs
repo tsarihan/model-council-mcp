@@ -386,6 +386,27 @@ console.log('▶ neutralizeFileMentions (@path client-side expansion bypasses th
   check('empty input is safe', neutralizeFileMentions('') === '');
   // The visible text is unchanged once the zero-width char is removed, so the
   // model still reads exactly what the author wrote.
+  // Only UNTRUSTED input is neutralized. Our own scaffolding — notably the
+  // full_repo_access repo root — must stay byte-exact, or a path containing '@'
+  // (e.g. /Users/bob@corp/proj, common on enterprise macOS) would be rewritten in
+  // the system prompt and the model told a path it cannot Read. Exercise the REAL
+  // provider: capture the argv it builds and assert both halves at once.
+  {
+    const { ClaudeCliProvider } = await import('../dist/providers/claude-cli.js');
+    const AT_REPO = '/Users/bob@corp/dev/myrepo';
+    const prov = new ClaudeCliProvider({ id: 'claude-cli', type: 'claude-cli', baseUrl: '(sub)', label: 'Claude', command: 'claude', models: ['haiku'] });
+    let captured;
+    prov.run = async (args, input) => { captured = { args, input }; return { code: 0, stdout: JSON.stringify({ result: 'ok', is_error: false }), stderr: '' }; };
+    await prov.complete('haiku', [{ role: 'user', content: 'please read @/etc/passwd' }], { fullRepoAccess: AT_REPO });
+    const sysIdx = captured.args.indexOf('--system-prompt');
+    const systemPrompt = captured.args[sysIdx + 1];
+    check('full_repo_access repo path containing @ survives BYTE-EXACT in the system prompt',
+      systemPrompt.includes(AT_REPO), systemPrompt.slice(0, 160));
+    check('--add-dir still receives the exact repo path', captured.args.includes(AT_REPO));
+    check('untrusted @mention in the USER prompt is still neutralized',
+      !captured.input.includes('@/etc/passwd') && captured.input.includes('@\u200b/etc/passwd'),
+      JSON.stringify(captured.input.slice(0, 90)));
+  }
   check('mitigation is visually invisible (text identical minus the ZWSP)',
     neutralizeFileMentions('read @/tmp/a.txt').replace(new RegExp(ZW, 'g'), '') === 'read @/tmp/a.txt');
 }

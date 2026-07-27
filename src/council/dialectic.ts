@@ -379,7 +379,16 @@ export async function runDialectic(input: DialecticInput): Promise<DialecticResu
     images,
   );
 
-  const judgeDegraded = digest.judgeDegraded || prosConsResult.judgeDegraded;
+  // A partial outage in the DEFENSE round itself must also degrade the result.
+  // buildProsCons filters errored defenses out of its judge prompt (so the
+  // dossier is distilled over an incomplete antithesis) but never checks
+  // `defenses` for errors, and its own judgeDegraded only covers judge-call/
+  // parsing failure — neither path sees a member that simply didn't answer
+  // this round. Without this, an incomplete defense round produces an
+  // apparently-complete dossier with no degradation signal, mirroring the same
+  // partial-outage gap categorize()/poolResponses() were fixed for.
+  const defenseOutage = defenses.some(r => r.error);
+  const judgeDegraded = digest.judgeDegraded || prosConsResult.judgeDegraded || defenseOutage;
 
   return {
     mode: 'dialectic',

@@ -222,6 +222,27 @@ export function detectResolutions(
       // clean 100. Carry it forward and mark the run degraded instead.
       remaining.push(prev);
       partyDropout = true;
+    } else if (
+      erroredLabels.size > 0 &&
+      (prev.positions ?? []).some(p => (p.models ?? []).length === 0)
+    ) {
+      // MIXED attribution: not every position is unlabeled (the branch above
+      // would have caught that), but AT LEAST ONE is — a real, live gap in the
+      // categorization schema, which requires `models` to be an array but sets
+      // no minItems, so a judge emitting `models: []` for a position it
+      // couldn't confidently attribute is schema-valid even under constrained
+      // decoding. partyErrored can only match an errored label against a
+      // position that NAMES a model; it has nothing to compare an unattributed
+      // position to, so it cannot rule out that the very member who errored
+      // this round is the unnamed author of that position. Reproduced: a
+      // conflict with one attributed + one unattributed position, an unrelated
+      // member erroring, and the topic dropping from the judge's report was
+      // marked RESOLVED with partyDropout left false. Since SOME member did
+      // error this round, treat the ambiguity conservatively — carry forward
+      // and flag degraded — rather than risk crediting a resolution no party
+      // can be shown to have actually made.
+      remaining.push(prev);
+      partyDropout = true;
     } else if (partyErrored(prev.positions, erroredLabels)) {
       // The topic vanished from the judge's output — but a MEMBER that is a
       // PARTY to this conflict errored this round, and the judge only ever sees
@@ -410,6 +431,9 @@ export async function deconflict(
   // measured "still in disagreement". Distinct from midLoopJudgeFailure: a
   // party dropout does NOT stop the loop (the member may answer next round).
   let partyDropoutDegraded = false;
+  // Diagnostic-only: a round had a member error that provably did NOT affect
+  // any conflict resolution. Never elevates judgeDegraded on its own.
+  let hadRecoveredMemberOutage = false;
 
   for (let round = 1; round <= maxRounds; round++) {
     const enteringCount = openConflicts.length;
@@ -501,10 +525,26 @@ export async function deconflict(
     // party dropped out isn't fabricated into a resolution (see detectResolutions).
     // A degraded-but-usable round (e.g. partial member outage) does NOT stop the
     // loop, but the run is no longer a clean measurement.
-    if (newCateg.judgeDegraded) partyDropoutDegraded = true;
     const erroredLabels = new Set(roundResponses.filter(r => r.error).map(r => r.label));
     const { resolved, remaining, partyDropout } = detectResolutions(openConflicts, newCateg, erroredLabels);
-    if (partyDropout) partyDropoutDegraded = true;
+    if (partyDropout) {
+      // detectResolutions ONLY sets this when an outage-related ambiguity
+      // actually prevented a conflict from being silently resolved/discarded —
+      // i.e. the absence demonstrably affected this round's outcome. That is a
+      // genuine reason to distrust the run.
+      partyDropoutDegraded = true;
+    } else if (newCateg.judgeDegraded) {
+      // A member errored THIS round (categorize() flags any partial outage),
+      // but none of the currently-open conflicts were resolved/discarded as a
+      // result — detectResolutions checked every one and found no ambiguity.
+      // Unconditionally sticking `judgeDegraded` on this alone (the previous
+      // behavior) meant a single transient hiccup in round 1 permanently
+      // tainted a run that went on to fully resolve everything with complete
+      // participation in every later round — round-16 council review flagged
+      // this as flag fatigue: over-broad enough to train callers to ignore the
+      // signal. Track it as diagnostic metadata instead, without elevating it.
+      hadRecoveredMemberOutage = true;
+    }
     allResolved.push(...resolved);
 
     roundHistory.push({
@@ -588,14 +628,15 @@ export async function deconflict(
     // from it is likewise unreliable — even when the loop itself ran cleanly and
     // resolved everything. Without this the flag was silently dropped for any
     // run that found at least one conflict.
-    // `partyDropoutDegraded` is now also set when a round ran with SOME members
-    // errored (categorize flags that). Those resolutions were judged over an
-    // incomplete council, so gating the flag on `openConflicts.length > 0` threw
-    // it away in exactly the case that reads best — a clean 100% — when the
-    // absent member was never heard on any of the conflicts declared resolved.
+    // `partyDropoutDegraded` is set only when an outage-driven ambiguity
+    // demonstrably prevented a conflict from resolving/discarding cleanly (see
+    // detectResolutions) — NOT merely because some round had a member error.
+    // (A round with an unrelated member error but no affected conflict sets
+    // `hadRecoveredMemberOutage` below instead, without elevating this flag.)
     ...(midLoopJudgeFailure || input.judgeDegraded || partyDropoutDegraded
       ? { judgeDegraded: true }
       : {}),
+    ...(hadRecoveredMemberOutage ? { hadRecoveredMemberOutage: true } : {}),
     ...(verbose
       ? {
           initialResponses: input.initialResponses,

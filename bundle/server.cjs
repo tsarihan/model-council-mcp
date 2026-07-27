@@ -36555,6 +36555,9 @@ function detectResolutions(previous, newCateg, erroredLabels = /* @__PURE__ */ n
     } else if ((prev.positions ?? []).every((p2) => (p2.models ?? []).length === 0)) {
       remaining.push(prev);
       partyDropout = true;
+    } else if (erroredLabels.size > 0 && (prev.positions ?? []).some((p2) => (p2.models ?? []).length === 0)) {
+      remaining.push(prev);
+      partyDropout = true;
     } else if (partyErrored(prev.positions, erroredLabels)) {
       remaining.push(prev);
       partyDropout = true;
@@ -36650,6 +36653,7 @@ async function deconflict(input) {
   const roundDetails = [];
   let midLoopJudgeFailure = false;
   let partyDropoutDegraded = false;
+  let hadRecoveredMemberOutage = false;
   for (let round = 1; round <= maxRounds; round++) {
     const enteringCount = openConflicts.length;
     const roundPrompt = buildConflictRoundPrompt(question, openConflicts, round);
@@ -36716,10 +36720,13 @@ async function deconflict(input) {
       }
       break;
     }
-    if (newCateg.judgeDegraded) partyDropoutDegraded = true;
     const erroredLabels = new Set(roundResponses.filter((r2) => r2.error).map((r2) => r2.label));
     const { resolved, remaining, partyDropout } = detectResolutions(openConflicts, newCateg, erroredLabels);
-    if (partyDropout) partyDropoutDegraded = true;
+    if (partyDropout) {
+      partyDropoutDegraded = true;
+    } else if (newCateg.judgeDegraded) {
+      hadRecoveredMemberOutage = true;
+    }
     allResolved.push(...resolved);
     roundHistory.push({
       round,
@@ -36780,12 +36787,13 @@ async function deconflict(input) {
     // from it is likewise unreliable — even when the loop itself ran cleanly and
     // resolved everything. Without this the flag was silently dropped for any
     // run that found at least one conflict.
-    // `partyDropoutDegraded` is now also set when a round ran with SOME members
-    // errored (categorize flags that). Those resolutions were judged over an
-    // incomplete council, so gating the flag on `openConflicts.length > 0` threw
-    // it away in exactly the case that reads best — a clean 100% — when the
-    // absent member was never heard on any of the conflicts declared resolved.
+    // `partyDropoutDegraded` is set only when an outage-driven ambiguity
+    // demonstrably prevented a conflict from resolving/discarding cleanly (see
+    // detectResolutions) — NOT merely because some round had a member error.
+    // (A round with an unrelated member error but no affected conflict sets
+    // `hadRecoveredMemberOutage` below instead, without elevating this flag.)
     ...midLoopJudgeFailure || input.judgeDegraded || partyDropoutDegraded ? { judgeDegraded: true } : {},
+    ...hadRecoveredMemberOutage ? { hadRecoveredMemberOutage: true } : {},
     ...verbose ? {
       initialResponses: input.initialResponses,
       initialCategorization: {
@@ -37176,7 +37184,8 @@ async function runDialectic(input) {
     {},
     images
   );
-  const judgeDegraded = digest.judgeDegraded || prosConsResult.judgeDegraded;
+  const defenseOutage = defenses.some((r2) => r2.error);
+  const judgeDegraded = digest.judgeDegraded || prosConsResult.judgeDegraded || defenseOutage;
   return {
     mode: "dialectic",
     question,

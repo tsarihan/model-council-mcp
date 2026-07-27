@@ -404,6 +404,98 @@ console.log('▶ PooledResult exposes top-level judgeDegraded (mode-uniform trus
   check('a healthy pooled run has no top-level judgeDegraded', ok.judgeDegraded === undefined, JSON.stringify(ok.judgeDegraded));
 }
 
+console.log('▶ round-16 (fable+codex+glm dialectic council): mechanism 14, dialectic defense outage, un-sticky partyDropoutDegraded');
+{
+  const { detectResolutions, deconflict } = await import('../dist/council/deconflict.js');
+  const { runDialectic } = await import('../dist/council/dialectic.js');
+  const stub = (fn) => ({ config: { type: 'ollama' }, serverId: 'ollama', listModels: async () => [], ping: async () => true, complete: fn });
+  const runtime = { maxTokens: 100, retries: 1, requestTimeoutMs: 5000, localConcurrency: 0, cloudConcurrency: 0, poolLimits: { local: 0 } };
+
+  // Mechanism 14 (mixed attribution): one position names a model ('a'), the
+  // other has an EMPTY models array -- schema-valid (the categorization schema
+  // requires `models` to be an array but sets no minItems). Round-15's fully-
+  // positionless guard uses `.every()`, so this MIXED case fell through it,
+  // and partyErrored can't match an errored label against an unattributed
+  // position. Reproduced live: this was marked RESOLVED with partyDropout=false.
+  const mixed = [{ id: 'c1', topic: 'retry strategy', positions: [
+    { models: ['a'], position: 'Exponential backoff.' },
+    { models: [], position: 'Fixed delay is simpler.' },
+  ] }];
+  const gotMixed = detectResolutions(mixed, { conflicting: [], commonAgreement: 'Converged.' }, new Set(['b']));
+  check('mixed-attribution conflict is carried forward when SOME member errored (mechanism 14)',
+    gotMixed.resolved.length === 0 && gotMixed.remaining.length === 1 && gotMixed.partyDropout === true,
+    JSON.stringify(gotMixed));
+  const mixedClean = detectResolutions(mixed, { conflicting: [], commonAgreement: 'ok' }, new Set());
+  check('mixed-attribution conflict resolves normally when NOTHING errored (no over-correction)',
+    mixedClean.resolved.length === 1);
+  const fullyAttributed = [{ id: 'c2', topic: 'Y', positions: [{ models: ['x'], position: 'p' }, { models: ['y'], position: 'q' }] }];
+  const gotFull = detectResolutions(fullyAttributed, { conflicting: [], commonAgreement: 'ok' }, new Set(['z']));
+  check('fully-attributed conflict with an unrelated error still resolves normally', gotFull.resolved.length === 1);
+
+  // Dialectic defense-round outage: buildProsCons filters errored defenses out
+  // of its prompt but never sets judgeDegraded for it -- an incomplete
+  // antithesis produced an apparently-complete dossier with no degradation
+  // signal.
+  const initialResponses = [
+    { modelId: { provider: 'ollama', model: 'a' }, label: 'ollama:a', response: 'A', latencyMs: 1 },
+    { modelId: { provider: 'ollama', model: 'b' }, label: 'ollama:b', response: 'B', latencyMs: 1 },
+  ];
+  const judge = stub(async () => JSON.stringify({ options: [{ answer: 'A', rationale: 'r', models: ['ollama:a'] }, { answer: 'B', rationale: 'r', models: ['ollama:b'] }] }));
+  let n = 0;
+  const degradedMembers = [
+    { modelId: { provider: 'ollama', model: 'a' }, provider: stub(async () => { n++; if (n === 1) throw new Error('t'); return 'sel A'; }) },
+    { modelId: { provider: 'ollama', model: 'b' }, provider: stub(async () => 'B') },
+  ];
+  const degraded = await runDialectic({ question: 'q', judgeQuestion: 'q', initialResponses, members: degradedMembers, judgeModelId: { provider: 'ollama', model: 'j' }, judgeProvider: judge, runtime, verbose: false });
+  check('dialectic: a defense-round outage sets judgeDegraded',
+    degraded.defenses.some(r => r.error) && degraded.judgeDegraded === true,
+    JSON.stringify({ err: degraded.defenses.some(r => r.error), jd: degraded.judgeDegraded }));
+  const healthyMembers = [
+    { modelId: { provider: 'ollama', model: 'a' }, provider: stub(async () => 'A') },
+    { modelId: { provider: 'ollama', model: 'b' }, provider: stub(async () => 'B') },
+  ];
+  const healthy = await runDialectic({ question: 'q', judgeQuestion: 'q', initialResponses, members: healthyMembers, judgeModelId: { provider: 'ollama', model: 'j' }, judgeProvider: judge, runtime, verbose: false });
+  check('dialectic: a healthy defense round has no judgeDegraded', healthy.judgeDegraded === undefined);
+
+  // Un-sticky partyDropoutDegraded: BOTH codex and glm independently
+  // recommended the same fix -- an unrelated, un-affecting member outage must
+  // not taint the whole run's judgeDegraded, but should stay visible
+  // diagnostically.
+  const unrelatedMembers = [
+    { modelId: { provider: 'ollama', model: 'a' }, provider: stub(async () => { throw new Error('transient'); }) },
+    { modelId: { provider: 'ollama', model: 'b' }, provider: stub(async () => 'stance B') },
+  ];
+  const deconflictJudge = stub(async () => JSON.stringify({ conflicting: [], complementary: [], commonAgreement: 'Converged.' }));
+  const unrelatedResult = await deconflict({
+    question: 'q', judgeQuestion: 'q', commonAgreement: null, complementary: [],
+    initialConflicts: [{ id: 'conflict-1', topic: 'X', positions: [{ models: ['ollama:c'], position: 'p1' }, { models: ['ollama:d'], position: 'p2' }] }],
+    initialResponses: [
+      { modelId: { provider: 'ollama', model: 'a' }, label: 'ollama:a', response: 'stance A', latencyMs: 1 },
+      { modelId: { provider: 'ollama', model: 'b' }, label: 'ollama:b', response: 'stance B', latencyMs: 1 },
+    ],
+    members: unrelatedMembers, judgeModelId: { provider: 'ollama', model: 'j' }, judgeProvider: deconflictJudge, runtime, maxRounds: 2, verbose: false,
+  });
+  check('un-sticky: an outage unrelated to any conflict resolution does NOT set judgeDegraded',
+    unrelatedResult.deconflictionScore === 100 && unrelatedResult.judgeDegraded === undefined,
+    JSON.stringify({ score: unrelatedResult.deconflictionScore, jd: unrelatedResult.judgeDegraded }));
+  check('un-sticky: the unrelated outage IS still visible as diagnostic metadata',
+    unrelatedResult.hadRecoveredMemberOutage === true);
+  const affectedMembers = [
+    { modelId: { provider: 'ollama', model: 'a' }, provider: stub(async () => { throw new Error('transient'); }) },
+    { modelId: { provider: 'ollama', model: 'b' }, provider: stub(async () => 'stance B') },
+  ];
+  const affectedResult = await deconflict({
+    question: 'q', judgeQuestion: 'q', commonAgreement: null, complementary: [],
+    initialConflicts: [{ id: 'conflict-1', topic: 'X', positions: [{ models: ['ollama:a'], position: 'p1' }, { models: ['ollama:b'], position: 'p2' }] }],
+    initialResponses: [
+      { modelId: { provider: 'ollama', model: 'a' }, label: 'ollama:a', response: 'stance A', latencyMs: 1 },
+      { modelId: { provider: 'ollama', model: 'b' }, label: 'ollama:b', response: 'stance B', latencyMs: 1 },
+    ],
+    members: affectedMembers, judgeModelId: { provider: 'ollama', model: 'j' }, judgeProvider: deconflictJudge, runtime, maxRounds: 1, verbose: false,
+  });
+  check('a party-affecting outage still sets judgeDegraded (no over-correction)', affectedResult.judgeDegraded === true);
+}
+
 console.log('▶ round-15: transient "quota" wording, extensionless secret filenames');
 {
   const { isQuotaError, isRateLimitError, neutralizeFileMentions } = await import('../dist/providers/base.js');

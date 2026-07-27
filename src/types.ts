@@ -240,6 +240,17 @@ export interface DeconflictedResult {
    * Never set on a genuine outcome (real 100%, real 0%, real partial score).
    */
   judgeDegraded?: boolean;
+  /**
+   * Diagnostic only — does NOT imply `judgeDegraded` and does not affect
+   * `deconflictionScore`. True when some round had a member error that was
+   * checked against every open conflict and provably did NOT affect any of
+   * their resolutions (a transient, recovered outage). Surfaced so a caller
+   * can see that something happened without the whole run being marked
+   * untrustworthy over an absence that demonstrably didn't change the result —
+   * unconditionally tainting the run on ANY round's member error, regardless
+   * of whether it affected anything, trained callers to ignore the signal.
+   */
+  hadRecoveredMemberOutage?: boolean;
   // ── Verbose-only fields (present when verbose is requested) ──
   /** The initial fan-out responses from every council member. */
   initialResponses?: RawResponse[];

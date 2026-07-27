@@ -2,7 +2,7 @@
  * Shared member-query machinery: bounded-concurrency fan-out and
  * retry-on-empty completion.
  */
-import { ChatImage, ChatMessage, CompletionOptions, Provider, isTimeoutError, PromptTooLargeError } from '../providers/base.js';
+import { ChatImage, ChatMessage, CompletionOptions, Provider, isTimeoutError, isQuotaError, QuotaExceededError, PromptTooLargeError } from '../providers/base.js';
 import { ModelId, PoolKey, RawResponse, RuntimeConfig } from '../types.js';
 import { modelIdLabel } from '../config.js';
 
@@ -225,6 +225,16 @@ export async function completeWithRetry(
       // A timeout means the server/subprocess is unresponsive; retrying just
       // multiplies the wall-clock wait (and rarely succeeds), so give up now.
       // A too-large prompt is likewise not going to change between attempts.
+      // A quota/rate-limit refusal will not change between attempts either —
+      // retrying just burns more of an already-exhausted plan and adds backoff
+      // delay per member, per round. Normalize it so the caller sees plainly
+      // that this member was refused for quota, not that it produced a bad answer.
+      if (isQuotaError(err)) {
+        lastErr = new QuotaExceededError(
+          `quota/rate limit reached for ${model}: ${String((err as Error)?.message ?? err).slice(0, 200)}`,
+        );
+        break;
+      }
       if (isTimeoutError(err) || err instanceof PromptTooLargeError) break;
     }
     if (attempt < attempts) await sleep(400 * attempt);

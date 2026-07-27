@@ -132,6 +132,58 @@ export function isTimeoutError(err: unknown): boolean {
   return /\btimed out\b|\btimeout\b/i.test(String((err as { message?: string }).message ?? err));
 }
 
+/**
+ * Raised (or detected) when a provider refuses because the user's QUOTA / rate
+ * limit is exhausted, rather than because anything is wrong with the request.
+ *
+ * This is an ordinary production case for a subscription-billed council — every
+ * CLI provider here runs on the user's own plan — and it needs its own handling
+ * for two reasons:
+ *   1. RETRYING IS POINTLESS AND COSTLY. The generic retry path made 3 attempts
+ *      with backoff, so one exhausted plan burned three calls and seconds of
+ *      wall-clock per member, per round.
+ *   2. IT MUST BE LEGIBLE. A quota refusal is not a bug in the council or a bad
+ *      answer, and it must not be mistaken for one. (It fooled this project's own
+ *      verification twice: a grok probe returned the usage-limit error and the
+ *      run *looked* like the security fix had worked.)
+ * A quota-failed member is also a partial outage, so the council already marks
+ * the result judgeDegraded rather than reporting clean convergence over a
+ * silently-shrunken council.
+ */
+export class QuotaExceededError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'QuotaExceededError';
+  }
+}
+
+/** Quota/rate-limit signatures across every provider surface used here. */
+const QUOTA_PATTERNS = [
+  /\busage limit\b/i,                 // grok ("reached your free Grok Build usage limit"), claude CLI
+  /\bquota\b/i,                       // OpenAI insufficient_quota, generic
+  /\brate[ _-]?limit/i,                // Anthropic rate_limit_error, OpenAI, Ollama cloud
+  /\bcredit balance is too low\b/i,   // Anthropic billing
+  /\bout of credits?\b/i,
+  /\bbilling\b.*\b(hard limit|required)\b/i,
+  /\btoo many requests\b/i,           // 429 text form
+  /\bplan limit\b|\bupgrade to\b.*\b(continue|higher)\b/i,
+];
+
+/**
+ * Is this failure a quota/rate-limit refusal? Checks an HTTP 429 status and the
+ * provider-specific message shapes above. Deliberately message-based as well as
+ * status-based: the CLI providers return their refusal as ordinary JSON/stderr
+ * text with no status code at all.
+ */
+export function isQuotaError(err: unknown): boolean {
+  if (!err) return false;
+  if (err instanceof QuotaExceededError) return true;
+  const e = err as { status?: number; message?: string };
+  if (e.status === 429) return true;
+  const msg = String(e.message ?? err);
+  return QUOTA_PATTERNS.some(re => re.test(msg));
+}
+
 /** Ceiling for a single CLI subprocess's accumulated stdout/stderr — see CappedBuffer. */
 export const MAX_CLI_OUTPUT_BYTES = 8 * 1024 * 1024; // 8 MB
 

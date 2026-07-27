@@ -24898,6 +24898,35 @@ function isTimeoutError(err) {
   if (name === "TimeoutError" || name === "AbortError" || name === "APIConnectionTimeoutError") return true;
   return /\btimed out\b|\btimeout\b/i.test(String(err.message ?? err));
 }
+var QuotaExceededError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "QuotaExceededError";
+  }
+};
+var QUOTA_PATTERNS = [
+  /\busage limit\b/i,
+  // grok ("reached your free Grok Build usage limit"), claude CLI
+  /\bquota\b/i,
+  // OpenAI insufficient_quota, generic
+  /\brate[ _-]?limit/i,
+  // Anthropic rate_limit_error, OpenAI, Ollama cloud
+  /\bcredit balance is too low\b/i,
+  // Anthropic billing
+  /\bout of credits?\b/i,
+  /\bbilling\b.*\b(hard limit|required)\b/i,
+  /\btoo many requests\b/i,
+  // 429 text form
+  /\bplan limit\b|\bupgrade to\b.*\b(continue|higher)\b/i
+];
+function isQuotaError(err) {
+  if (!err) return false;
+  if (err instanceof QuotaExceededError) return true;
+  const e2 = err;
+  if (e2.status === 429) return true;
+  const msg = String(e2.message ?? err);
+  return QUOTA_PATTERNS.some((re2) => re2.test(msg));
+}
 var MAX_CLI_OUTPUT_BYTES = 8 * 1024 * 1024;
 var CappedBuffer = class {
   chunks = [];
@@ -36166,6 +36195,12 @@ async function completeWithRetry(provider, model, messages, opts, retries) {
       lastErr = new EmptyCompletionError();
     } catch (err) {
       lastErr = err;
+      if (isQuotaError(err)) {
+        lastErr = new QuotaExceededError(
+          `quota/rate limit reached for ${model}: ${String(err?.message ?? err).slice(0, 200)}`
+        );
+        break;
+      }
       if (isTimeoutError(err) || err instanceof PromptTooLargeError) break;
     }
     if (attempt < attempts) await sleep3(400 * attempt);

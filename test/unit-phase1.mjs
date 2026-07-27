@@ -329,6 +329,48 @@ console.log('▶ round-12 batch 3: pooled partial outage, dossier notice placeme
     `notice@${dossier.indexOf('analysis only')} option@${dossier.indexOf('OptionAlpha')}`);
 }
 
+console.log('▶ quota/rate-limit handling (real-world: a subscription runs out mid-council)');
+{
+  const { isQuotaError, QuotaExceededError } = await import('../dist/providers/base.js');
+  const { completeWithRetry } = await import('../dist/council/query.js');
+
+  // Real messages observed from the actual providers.
+  const REAL = [
+    ['grok', 'You\u2019ve reached your free Grok Build usage limit for now. Get SuperGrok for much higher limits.'],
+    ['openai', '429 You exceeded your current quota, please check your plan and billing details.'],
+    ['anthropic', 'Your credit balance is too low to access the Anthropic API.'],
+    ['generic 429', 'Too Many Requests'],
+    ['claude cli', 'Claude usage limit reached. Your limit will reset at 3pm.'],
+  ];
+  for (const [who, msg] of REAL) check(`isQuotaError detects the real ${who} refusal`, isQuotaError(new Error(msg)), msg.slice(0, 50));
+  check('isQuotaError detects an HTTP 429 status with no message', isQuotaError({ status: 429 }));
+  // Must NOT fire on ordinary failures — a false positive would silently stop retrying.
+  check('isQuotaError ignores a timeout', !isQuotaError(new Error('claude CLI timed out after 900000ms')));
+  check('isQuotaError ignores a parse failure', !isQuotaError(new Error('claude CLI returned non-JSON output: <html>')));
+  check('isQuotaError ignores a generic 500', !isQuotaError({ status: 500, message: 'internal error' }));
+
+  // A quota refusal must NOT be retried: retrying burns an already-exhausted
+  // plan and adds backoff per member, per round.
+  let calls = 0;
+  const quotaProvider = { config: { type: 'ollama' }, serverId: 'ollama', listModels: async () => [], ping: async () => true,
+    complete: async () => { calls++; throw new Error('You\u2019ve reached your free Grok Build usage limit for now.'); } };
+  let thrown;
+  try {
+    await completeWithRetry(quotaProvider, 'm', [{ role: 'user', content: 'hi' }], {}, 3);
+  } catch (e) { thrown = e; }
+  check('a quota refusal is attempted exactly ONCE (not retried)', calls === 1, `calls=${calls}`);
+  check('a quota refusal surfaces as QuotaExceededError', thrown instanceof QuotaExceededError, String(thrown?.name));
+  check('the quota error names the model and keeps the provider message',
+    /quota\/rate limit reached for m/.test(thrown.message) && /usage limit/i.test(thrown.message), thrown.message.slice(0, 90));
+
+  // An ordinary failure must still retry as before.
+  let calls2 = 0;
+  const flaky = { config: { type: 'ollama' }, serverId: 'ollama', listModels: async () => [], ping: async () => true,
+    complete: async () => { calls2++; throw new Error('connection reset'); } };
+  try { await completeWithRetry(flaky, 'm', [{ role: 'user', content: 'hi' }], {}, 3); } catch { /* expected */ }
+  check('a non-quota failure still uses all retries', calls2 === 3, `calls=${calls2}`);
+}
+
 console.log('▶ round-13b: grok fails closed, consensus mechanisms 11 & 12, fenced-JSON guard');
 {
   const { GrokCliProvider } = await import('../dist/providers/grok-cli.js');

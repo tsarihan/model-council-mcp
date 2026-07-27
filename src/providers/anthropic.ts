@@ -202,6 +202,11 @@ export class AnthropicProvider implements Provider {
     const body = {
       model,
       max_tokens: requested,
+      // Forwarded like every other API provider (ollama/openai-compatible both
+      // honour it). Dropping it silently ran judge calls at the API default
+      // instead of the deliberate low temperature the caller asked for — which
+      // matters for judge determinism.
+      ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
       ...(systemText ? { system: systemText } : {}),
       messages: userMessages,
     };

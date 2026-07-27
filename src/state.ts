@@ -121,7 +121,10 @@ export function saveState(
     const p = statePath();
     mkdirSync(dirname(p), { recursive: true });
     const tmp = `${p}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(next, null, 2));
+    // 0600: this file persists the resolved Ollama address, which may embed
+    // basic-auth credentials (kept RAW here deliberately — the SessionStart hook
+    // must actually connect with it). Default umask left it world-readable.
+    writeFileSync(tmp, JSON.stringify(next, null, 2), { mode: 0o600 });
     renameSync(tmp, p); // atomic within a filesystem
   } catch {
     /* best-effort */

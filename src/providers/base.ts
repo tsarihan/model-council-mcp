@@ -183,6 +183,25 @@ export class CappedBuffer {
 const REASON_TAG = 'think|thinking';
 export function stripThinkBlocks(text: string): string {
   if (!text) return text;
+  // If the reply is ALREADY a structured JSON object/array, leave it completely
+  // alone. The stripping below is a text heuristic with no notion of JSON
+  // structure: when the tags appear inside two DIFFERENT string VALUES — e.g. a
+  // judge summarising a council that discussed reasoning tags, which is exactly
+  // what happens when this very repo is under review — the non-greedy delete
+  // spans the structural JSON between them (quotes, field names, brackets) and
+  // destroys the object. Verified: it produces unparseable output, so a
+  // perfectly good judge answer is thrown away and the run is marked
+  // judgeDegraded (safe direction, but real data loss). A pure JSON reply has no
+  // chain-of-thought to strip in the first place — reasoning models emit CoT
+  // either outside the JSON (still handled, since that text doesn't parse) or in
+  // a separate field (Ollama's `message.thinking`, handled at that layer).
+  const trimmed = text.trim();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      const v = JSON.parse(trimmed);
+      if (v !== null && typeof v === 'object') return trimmed;
+    } catch { /* not valid JSON → fall through and strip as before */ }
+  }
   // Remove complete <tag>…</tag> blocks (tag name matched case-insensitively).
   let out = text.replace(new RegExp(`<(?:${REASON_TAG})>[\\s\\S]*?</(?:${REASON_TAG})>`, 'gi'), '');
   // Handle a dangling closing tag (chain-of-thought with no opening tag):

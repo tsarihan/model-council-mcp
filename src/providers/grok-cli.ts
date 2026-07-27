@@ -191,7 +191,11 @@ export class GrokCliProvider implements Provider {
     // Created INSIDE the try so the finally's rmSync always cleans up even if
     // the writeFileSync below throws after mkdtempSync succeeded.
     let promptDir: string | undefined;
+    // An EMPTY directory to run the child in, so it never inherits the server's
+    // own cwd as implicit project context (see run()'s cwd note).
+    let runDir: string | undefined;
     try {
+      runDir = mkdtempSync(join(tmpdir(), 'grok-council-cwd-'));
       // No images: write the (possibly large) flattened text prompt to a temp
       // file and pass --prompt-file, avoiding the argv-length limit entirely
       // for this — the dominant — case. With images: no documented file-based
@@ -231,7 +235,7 @@ export class GrokCliProvider implements Provider {
       // caller with a genuinely low REQUEST_TIMEOUT_MS now correctly has that
       // honoured here too, consistent with API providers.
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-      const { code, stdout, stderr } = await this.run(args, undefined, timeoutMs);
+      const { code, stdout, stderr } = await this.run(args, undefined, timeoutMs, runDir);
       if (code !== 0) {
         throw new Error(
           `grok CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || stdout.trim().slice(0, 500) || '(no output)'}`,
@@ -257,6 +261,9 @@ export class GrokCliProvider implements Provider {
       }
       return text;
     } finally {
+      if (runDir) {
+        try { rmSync(runDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      }
       if (promptDir) {
         try {
           rmSync(promptDir, { recursive: true, force: true });
@@ -271,6 +278,7 @@ export class GrokCliProvider implements Provider {
     args: string[],
     input: string | undefined,
     timeoutMs: number,
+    cwd?: string,
   ): Promise<RunResult> {
     return new Promise((resolve, reject) => {
       // Force subscription auth: the CLI accepts XAI_API_KEY as an alternate
@@ -284,6 +292,13 @@ export class GrokCliProvider implements Provider {
         stdio: ['pipe', 'pipe', 'pipe'],
         // Own process group so a timeout reaps any subprocesses grok spawns.
         detached: true,
+        // Explicit cwd (see complete()): without it the child inherits the
+        // SERVER's working directory — for a Claude Code plugin, the user's own
+        // project — and grok loads that directory's project context (AGENTS.md,
+        // Cursor/Claude rules) into every member. That silently contaminates a
+        // council member's answer with unrelated project instructions, and is the
+        // same class of implicit-scope leak that was fixed for claude-cli.
+        ...(cwd ? { cwd } : {}),
       });
 
       const stdout = new CappedBuffer();

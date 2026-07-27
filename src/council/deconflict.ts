@@ -408,7 +408,13 @@ export async function deconflict(
         judgeProvider,
         cc,
         runtime,
-        openConflicts.map(c => c.id),
+        // ALL ids issued so far, not just the still-open ones: the counter is
+        // seeded from max(id) downstream, so omitting already-RESOLVED ids lets it
+        // REGRESS once a high-numbered conflict resolves and re-issue that id to a
+        // brand-new conflict — breaking the cross-round id correlation this loop
+        // depends on (and making two different conflicts indistinguishable to a
+        // caller reading initialCategorization/rounds/unresolvedConflicts).
+        [...allResolved, ...openConflicts].map(c => c.id),
         openConflicts.map(c => c.topic),
       );
     } catch {

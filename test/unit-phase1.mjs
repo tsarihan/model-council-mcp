@@ -255,6 +255,24 @@ console.log('▶ stripThinkBlocks (reasoning-model <think> leakage)');
   check('paired <thinking>…</thinking> removed', stripThinkBlocks('<thinking>deliberating</thinking>The answer.') === 'The answer.');
   check('closing-only </thinking> → keep text after it', stripThinkBlocks('reasoning...\n</thinking>\nFinal answer.') === 'Final answer.');
   check('mixed: <thinking> block then plain text', stripThinkBlocks('<THINKING>x\ny</THINKING>Done') === 'Done');
+
+  // round-12: a JSON reply must be left STRUCTURALLY INTACT. The strip is a text
+  // heuristic with no JSON awareness, so tags inside two different string VALUES
+  // (a judge summarising a council that discussed reasoning tags — i.e. reviewing
+  // THIS repo) made the non-greedy delete span structural JSON and destroy the
+  // object, discarding a valid judge answer.
+  const judgeJson = '{"commonAgreement":"models used <think> tags","complementary":[],"conflicting":[{"topic":"whether </think> leaks","positions":[]}]}';
+  const kept = stripThinkBlocks(judgeJson);
+  check('judge JSON with tags inside string values survives intact (still parses)',
+    (() => { try { return Array.isArray(JSON.parse(kept).conflicting); } catch { return false; } })(), kept.slice(0, 120));
+  check('judge JSON is returned byte-identical (minus trim)', kept === judgeJson);
+  const danglerJson = '{"commonAgreement":"ok","conflicting":[{"topic":"a </thinking> b","positions":[]}]}';
+  check('dangling closer inside a JSON string value no longer truncates the object',
+    (() => { try { return JSON.parse(stripThinkBlocks(danglerJson)).commonAgreement === 'ok'; } catch { return false; } })());
+  // CoT OUTSIDE the JSON must still be stripped (that text doesn't parse, so the
+  // heuristic still runs and recovers the JSON).
+  check('reasoning preamble before a JSON reply is still stripped',
+    stripThinkBlocks('<think>let me categorize</think>{"conflicting":[]}') === '{"conflicting":[]}');
 }
 
 console.log('▶ sliceBalancedJson (judge JSON extraction robust to trailing prose with braces)');
@@ -276,6 +294,48 @@ console.log('▶ sliceBalancedJson (judge JSON extraction robust to trailing pro
     parse('{"s":"a \\" } b"}').s === 'a " } b');
   check('markdown-fence + trailing text still yields the object',
     JSON.parse(sliceBalancedJson('{"x":[1,2,3]}```\nsome note }')).x.length === 3);
+}
+
+console.log('▶ round-12 batch: state.json 0600, anthropic temperature, conflict-id seeding');
+{
+  // state.json persists the resolved (possibly credentialed) Ollama URL raw, so
+  // it must not be world-readable under the default umask.
+  const { saveState } = await import('../dist/state.js');
+  const { statSync } = await import('node:fs');
+  const sDir = mkdtempSync(join(tmpdir(), 'mc-mode-'));
+  const sFile = join(sDir, 'state.json');
+  const savedEnv = process.env.MODEL_COUNCIL_STATE;
+  try {
+    process.env.MODEL_COUNCIL_STATE = sFile;
+    saveState({ env: { ollamaAddress: 'http://u:p@host:11434' } });
+    const mode = statSync(sFile).mode & 0o777;
+    check('state.json is written 0600 (not world-readable — holds a credentialed URL)', mode === 0o600, mode.toString(8));
+  } finally {
+    if (savedEnv === undefined) delete process.env.MODEL_COUNCIL_STATE; else process.env.MODEL_COUNCIL_STATE = savedEnv;
+    rmSync(sDir, { recursive: true, force: true });
+  }
+
+  // AnthropicProvider must forward opts.temperature like every other API provider.
+  const { AnthropicProvider } = await import('../dist/providers/anthropic.js');
+  const ap = new AnthropicProvider({ type: 'anthropic', apiKey: 'k' });
+  let body;
+  ap.client.messages.create = async (b) => { body = b; return { content: [{ type: 'text', text: 'ok' }] }; };
+  await ap.complete('claude-opus-4-5', [{ role: 'user', content: 'hi' }], { temperature: 0.2 });
+  check('anthropic: opts.temperature is forwarded (was silently dropped)', body?.temperature === 0.2, JSON.stringify(body?.temperature));
+  await ap.complete('claude-opus-4-5', [{ role: 'user', content: 'hi' }], {});
+  check('anthropic: temperature omitted when caller supplies none', body?.temperature === undefined);
+
+  // Conflict ids must never REGRESS: the counter is seeded from max(id), so
+  // already-resolved ids must be included or a new conflict re-uses a used id.
+  const { categorize } = await import('../dist/council/categorizer.js');
+  const jid = { provider: 'ollama', model: 'j' };
+  const fj = (json) => ({ config: { type: 'ollama' }, serverId: 'ollama', complete: async () => json, listModels: async () => [], ping: async () => true });
+  const r1 = [{ modelId: { provider: 'ollama', model: 'a' }, label: 'ollama:a', response: 'x', latencyMs: 1 }];
+  const withHigh = await categorize('q', r1, jid, fj('{"conflicting":[{"topic":"new","positions":[]}],"complementary":[]}'),
+    { maxTokens: 100, retries: 1, timeoutMs: 5000 }, { localConcurrency: 0, cloudConcurrency: 0 },
+    ['conflict-1', 'conflict-7']); // 7 = a RESOLVED conflict's id
+  check('conflict ids never collide with an already-issued higher id',
+    withHigh.conflicting[0].id === 'conflict-8', withHigh.conflicting[0].id);
 }
 
 console.log('▶ neutralizeFileMentions (@path client-side expansion bypasses the CLI tool lockdown — VERIFIED LIVE)');

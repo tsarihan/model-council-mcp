@@ -24598,7 +24598,7 @@ function saveState(patch) {
     const p2 = statePath();
     (0, import_node_fs2.mkdirSync)((0, import_node_path2.dirname)(p2), { recursive: true });
     const tmp = `${p2}.${process.pid}.tmp`;
-    (0, import_node_fs2.writeFileSync)(tmp, JSON.stringify(next, null, 2));
+    (0, import_node_fs2.writeFileSync)(tmp, JSON.stringify(next, null, 2), { mode: 384 });
     (0, import_node_fs2.renameSync)(tmp, p2);
   } catch {
   }
@@ -24918,6 +24918,14 @@ var CappedBuffer = class {
 var REASON_TAG = "think|thinking";
 function stripThinkBlocks(text) {
   if (!text) return text;
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      const v2 = JSON.parse(trimmed);
+      if (v2 !== null && typeof v2 === "object") return trimmed;
+    } catch {
+    }
+  }
   let out = text.replace(new RegExp(`<(?:${REASON_TAG})>[\\s\\S]*?</(?:${REASON_TAG})>`, "gi"), "");
   const m2 = out.match(new RegExp(`</(?:${REASON_TAG})>(?![\\s\\S]*</(?:${REASON_TAG})>)`, "i"));
   if (m2 && m2.index !== void 0) out = out.slice(m2.index + m2[0].length);
@@ -35180,6 +35188,11 @@ Respond with valid JSON only.`.trim() : systemParts || void 0;
     const body = {
       model,
       max_tokens: requested,
+      // Forwarded like every other API provider (ollama/openai-compatible both
+      // honour it). Dropping it silently ran judge calls at the API default
+      // instead of the deliberate low temperature the caller asked for — which
+      // matters for judge determinism.
+      ...opts.temperature !== void 0 ? { temperature: opts.temperature } : {},
       ...systemText ? { system: systemText } : {},
       messages: userMessages
     };
@@ -35750,7 +35763,9 @@ var GrokCliProvider = class {
       opts.jsonMode ? "Respond with valid JSON only." : ""
     ].filter(Boolean).join("\n\n");
     let promptDir;
+    let runDir;
     try {
+      runDir = (0, import_node_fs7.mkdtempSync)((0, import_node_path5.join)((0, import_node_os4.tmpdir)(), "grok-council-cwd-"));
       let promptArgs;
       if (images.length === 0) {
         promptDir = (0, import_node_fs7.mkdtempSync)((0, import_node_path5.join)((0, import_node_os4.tmpdir)(), "grok-council-prompt-"));
@@ -35783,7 +35798,7 @@ var GrokCliProvider = class {
         systemText
       ];
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS3;
-      const { code, stdout, stderr } = await this.run(args, void 0, timeoutMs);
+      const { code, stdout, stderr } = await this.run(args, void 0, timeoutMs, runDir);
       if (code !== 0) {
         throw new Error(
           `grok CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || stdout.trim().slice(0, 500) || "(no output)"}`
@@ -35806,6 +35821,12 @@ var GrokCliProvider = class {
       }
       return text;
     } finally {
+      if (runDir) {
+        try {
+          (0, import_node_fs7.rmSync)(runDir, { recursive: true, force: true });
+        } catch {
+        }
+      }
       if (promptDir) {
         try {
           (0, import_node_fs7.rmSync)(promptDir, { recursive: true, force: true });
@@ -35814,7 +35835,7 @@ var GrokCliProvider = class {
       }
     }
   }
-  run(args, input, timeoutMs) {
+  run(args, input, timeoutMs, cwd) {
     return new Promise((resolve4, reject) => {
       const env = { ...process.env };
       delete env.XAI_API_KEY;
@@ -35822,7 +35843,14 @@ var GrokCliProvider = class {
         env,
         stdio: ["pipe", "pipe", "pipe"],
         // Own process group so a timeout reaps any subprocesses grok spawns.
-        detached: true
+        detached: true,
+        // Explicit cwd (see complete()): without it the child inherits the
+        // SERVER's working directory — for a Claude Code plugin, the user's own
+        // project — and grok loads that directory's project context (AGENTS.md,
+        // Cursor/Claude rules) into every member. That silently contaminates a
+        // council member's answer with unrelated project instructions, and is the
+        // same class of implicit-scope leak that was fixed for claude-cli.
+        ...cwd ? { cwd } : {}
       });
       const stdout = new CappedBuffer();
       const stderr = new CappedBuffer();
@@ -36487,7 +36515,13 @@ async function deconflict(input) {
         judgeProvider,
         cc,
         runtime,
-        openConflicts.map((c2) => c2.id),
+        // ALL ids issued so far, not just the still-open ones: the counter is
+        // seeded from max(id) downstream, so omitting already-RESOLVED ids lets it
+        // REGRESS once a high-numbered conflict resolves and re-issue that id to a
+        // brand-new conflict — breaking the cross-round id correlation this loop
+        // depends on (and making two different conflicts indistinguishable to a
+        // caller reading initialCategorization/rounds/unresolvedConflicts).
+        [...allResolved, ...openConflicts].map((c2) => c2.id),
         openConflicts.map((c2) => c2.topic)
       );
     } catch {
@@ -37541,7 +37575,7 @@ async function filterNeutralizeEnv(repoPath) {
 async function emptyTreeHash(repoPath) {
   const cached3 = emptyTreeHashCache.get(repoPath);
   if (cached3) return cached3;
-  let hash = SHA1_EMPTY_TREE;
+  let hash;
   try {
     const { stdout } = await execFileAsync(
       "git",
@@ -37552,6 +37586,7 @@ async function emptyTreeHash(repoPath) {
     if (/^[0-9a-f]{40,64}$/.test(h2)) hash = h2;
   } catch {
   }
+  if (hash === void 0) return SHA1_EMPTY_TREE;
   emptyTreeHashCache.set(repoPath, hash);
   return hash;
 }
@@ -37985,6 +38020,7 @@ async function initCouncil() {
     const report = await detectEnvironment(registry2, appConfig.tiers, subs);
     if (orchestrator.getConfig().members.length > 0 || explicitlyConfigured) return;
     if (Array.isArray(loadState().members)) return;
+    if (!orchestrator.getConfig().autoCouncil) return;
     const labels = autoPopulatedMembers(report, appConfig.tiers, subs);
     if (labels.length) {
       orchestrator.updateConfig({ members: labelsToMembers(labels) });

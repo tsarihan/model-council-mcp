@@ -138,7 +138,7 @@ async function filterNeutralizeEnv(repoPath: string): Promise<Record<string, str
 async function emptyTreeHash(repoPath: string): Promise<string> {
   const cached = emptyTreeHashCache.get(repoPath);
   if (cached) return cached;
-  let hash = SHA1_EMPTY_TREE;
+  let hash: string | undefined;
   try {
     const { stdout } = await execFileAsync(
       'git', ['hash-object', '-t', 'tree', '/dev/null'],
@@ -147,8 +147,14 @@ async function emptyTreeHash(repoPath: string): Promise<string> {
     const h = stdout.trim();
     if (/^[0-9a-f]{40,64}$/.test(h)) hash = h;
   } catch {
-    /* keep the SHA-1 fallback */
+    /* transient (timeout / git hiccup) — fall back for THIS call only */
   }
+  // Cache ONLY a genuine resolution. Caching the SHA-1 fallback after a transient
+  // failure would pin a wrong hash for the whole process — and in a SHA-256 repo
+  // that value is an invalid object, so every later git_ref diff for that repo
+  // would carry a bad GIT_ATTR_SOURCE. Same cache-only-on-success discipline as
+  // the Ollama /api/show and openai-compatible max_model_len caches.
+  if (hash === undefined) return SHA1_EMPTY_TREE;
   emptyTreeHashCache.set(repoPath, hash);
   return hash;
 }

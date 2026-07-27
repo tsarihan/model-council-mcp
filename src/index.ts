@@ -282,6 +282,13 @@ async function initCouncil(): Promise<void> {
     // all three guards before clobbering.
     if (orchestrator.getConfig().members.length > 0 || explicitlyConfigured) return;
     if (Array.isArray(loadState().members)) return;
+    // AUTO_COUNCIL=false is an explicit "do not build a council for me". It used
+    // to gate ONLY the ask-time zero-config Ollama fallback
+    // (orchestrator.ask → autoDiscoverCouncil), not this boot path — which is the
+    // one that actually adds PAID subscription members (claude-cli/codex-cli/
+    // grok-cli) and then PERSISTS them to state.json, so the opt-out was both
+    // ignored and made sticky across restarts.
+    if (!orchestrator.getConfig().autoCouncil) return;
     const labels = autoPopulatedMembers(report, appConfig.tiers, subs);
     if (labels.length) {
       orchestrator.updateConfig({ members: labelsToMembers(labels) });

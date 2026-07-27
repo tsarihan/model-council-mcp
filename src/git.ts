@@ -114,7 +114,14 @@ async function filterNeutralizeEnv(repoPath: string): Promise<Record<string, str
   for (const rec of stdout.split('\0')) {
     if (!rec) continue;
     const key = rec.split('\n', 1)[0];
-    if (/^filter\..+\.(clean|smudge|process)$/.test(key)) keys.push(key);
+    // MUST mirror git's own pattern above (`.*`, not `.+`). They disagreed on
+    // exactly one input: a filter with an EMPTY subsection name. `[filter ""]`
+    // yields the canonical key `filter..clean` — git returns it, a `.+` check
+    // rejects it, so no override was emitted and the driver stayed LIVE for the
+    // working-tree conversion. Verified live: a repo with `[filter ""] clean =
+    // touch /tmp/X && cat` plus `* filter=` in .git/info/attributes executed the
+    // command during an ordinary `git_ref:'unstaged'` diff.
+    if (/^filter\..*\.(clean|smudge|process)$/.test(key)) keys.push(key);
   }
   if (!keys.length) return {};
   const env: Record<string, string> = { GIT_CONFIG_COUNT: String(keys.length) };

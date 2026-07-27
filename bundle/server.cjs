@@ -35422,6 +35422,18 @@ var ClaudeCliProvider = class {
         "--tools",
         toolsValue,
         ...addDirs.length ? ["--add-dir", ...addDirs] : [],
+        // VERIFIED LIVE (claude 2.1.220): without this, the child loads SETTING
+        // SOURCES from its cwd — and under full_repo_access that cwd is the
+        // UNTRUSTED repo root, so the repo's .claude/settings.json `hooks` block
+        // runs arbitrary shell commands OUTSIDE the tool-permission system. The
+        // interactive workspace-trust dialog that would normally catch this is
+        // skipped in non-interactive -p mode. Reproduced: a repo whose settings
+        // declared a UserPromptSubmit hook executed `id > /tmp/X` while the CLI
+        // returned is_error:false, permission_denials:[] and a normal answer.
+        // --safe-mode blocks repo settings/hooks/CLAUDE.md and slash commands
+        // (re-verified: hook did NOT run, answer unchanged). Applied
+        // UNCONDITIONALLY so a future cwd change cannot reintroduce it.
+        "--safe-mode",
         "--strict-mcp-config",
         // no MCP servers (no recursion into this plugin)
         "--no-session-persistence",
@@ -35850,10 +35862,29 @@ var GrokCliProvider = class {
         ...promptArgs,
         "--verbatim",
         // send the prompt EXACTLY as given: without this, grok expands
-        // @path mentions client-side, bypassing the --tools '' lockdown
+        // @path mentions client-side, bypassing the tool lockdown
+        // CRITICAL (verified live, grok 0.2.112): `--tools ''` does NOT disable
+        // tools. grok treats the EMPTY STRING as "flag unset" and enables its
+        // FULL built-in tool set — and `--permission-mode bypassPermissions`
+        // (required for headless use) then auto-approves every call. Reproduced
+        // with this exact argv: the prompt "run: id > /tmp/X" executed and the
+        // file contained the server user's uid. That made every grok member AND
+        // judge call an arbitrary-command-execution sink for untrusted text
+        // (context/files/git-diff, and other members' responses in judge prompts)
+        // with no full_repo_access required.
+        //
+        // 'none' is chosen because every way grok can interpret it fails SAFE:
+        // as "no tools", as an unknown tool name yielding an empty effective
+        // allowlist, or as a loud error. The empty string was the one value that
+        // failed OPEN.
+        //
+        // NOT YET RE-VERIFIED LIVE: the grok subscription hit its usage limit
+        // immediately after the exploit was confirmed, so the replacement value
+        // could not be exercised. Re-run the `id > /tmp/X` probe against a
+        // working grok login before trusting this, and check whether MCP tools
+        // (which `--tools` may not gate at all) need `--disallowed-tools` too.
         "--tools",
-        "",
-        // fully locked down — native image blocks need no tool access
+        "none",
         "--permission-mode",
         "bypassPermissions",
         // required in headless mode, see file header
@@ -37638,7 +37669,7 @@ async function filterNeutralizeEnv(repoPath) {
   for (const rec of stdout.split("\0")) {
     if (!rec) continue;
     const key = rec.split("\n", 1)[0];
-    if (/^filter\..+\.(clean|smudge|process)$/.test(key)) keys.push(key);
+    if (/^filter\..*\.(clean|smudge|process)$/.test(key)) keys.push(key);
   }
   if (!keys.length) return {};
   const env = { GIT_CONFIG_COUNT: String(keys.length) };

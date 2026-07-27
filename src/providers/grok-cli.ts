@@ -7,7 +7,9 @@
  * subscription. It is the sanctioned first-party surface for subscription use;
  * it is NOT the (prohibited) reuse of a subscription token against the raw API.
  *
- * The nested call is locked down: all tools disabled (`--tools ''`), no MCP
+ * The nested call is locked down: tools restricted (`--tools none` — NOT the
+ * empty string, which grok treats as "unset" and which therefore enabled the
+ * FULL tool set including a shell; see the CRITICAL note at the args array), no MCP
  * servers configured for this call, no session persistence needed (each call
  * is a fresh `-p`/`--prompt-json` single-turn), and — crucially —
  * XAI_API_KEY is stripped from the child environment, because the CLI accepts
@@ -47,10 +49,12 @@
  * exhaustion; confirm live before relying on it.
  *
  * No MCP-recursion-prevention flag was found for this CLI (no `claude-cli`-style
- * `--strict-mcp-config` equivalent). Mitigated in practice by `--tools ''`
- * disabling all tool execution, and by `grok mcp` requiring an explicit,
- * deliberate `add` step — nothing is auto-discovered from project files the
- * way Claude Code's `.mcp.json` is.
+ * `--strict-mcp-config` equivalent). The previous claim that `--tools ''`
+ * mitigated this was WRONG twice over: the empty string disabled nothing, and
+ * `--tools` may not gate MCP tools at all. `grok mcp` needing an explicit `add`
+ * does NOT cover user-level PLUGIN MCP servers, which are auto-loaded — so a
+ * grok member may still see this plugin's own tools (recursion + quota burn).
+ * UNRESOLVED: evaluate `--disallowed-tools`/`--deny` for the MCP surface.
  */
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -224,8 +228,28 @@ export class GrokCliProvider implements Provider {
         '--output-format', 'json',
         ...promptArgs,
         '--verbatim', // send the prompt EXACTLY as given: without this, grok expands
-                      // @path mentions client-side, bypassing the --tools '' lockdown
-        '--tools', '', // fully locked down — native image blocks need no tool access
+                      // @path mentions client-side, bypassing the tool lockdown
+        // CRITICAL (verified live, grok 0.2.112): `--tools ''` does NOT disable
+        // tools. grok treats the EMPTY STRING as "flag unset" and enables its
+        // FULL built-in tool set — and `--permission-mode bypassPermissions`
+        // (required for headless use) then auto-approves every call. Reproduced
+        // with this exact argv: the prompt "run: id > /tmp/X" executed and the
+        // file contained the server user's uid. That made every grok member AND
+        // judge call an arbitrary-command-execution sink for untrusted text
+        // (context/files/git-diff, and other members' responses in judge prompts)
+        // with no full_repo_access required.
+        //
+        // 'none' is chosen because every way grok can interpret it fails SAFE:
+        // as "no tools", as an unknown tool name yielding an empty effective
+        // allowlist, or as a loud error. The empty string was the one value that
+        // failed OPEN.
+        //
+        // NOT YET RE-VERIFIED LIVE: the grok subscription hit its usage limit
+        // immediately after the exploit was confirmed, so the replacement value
+        // could not be exercised. Re-run the `id > /tmp/X` probe against a
+        // working grok login before trusting this, and check whether MCP tools
+        // (which `--tools` may not gate at all) need `--disallowed-tools` too.
+        '--tools', 'none',
         '--permission-mode', 'bypassPermissions', // required in headless mode, see file header
         '--system-prompt-override', systemText,
       ];

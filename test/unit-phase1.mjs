@@ -326,6 +326,35 @@ console.log('▶ round-12 batch 3: pooled partial outage, dossier notice placeme
     `notice@${dossier.indexOf('analysis only')} option@${dossier.indexOf('OptionAlpha')}`);
 }
 
+console.log('▶ round-13 CRITICALs: argv lockdown flags + empty-named git filter');
+{
+  // claude-cli must pass --safe-mode UNCONDITIONALLY: without it the child loads
+  // setting sources from its cwd, and under full_repo_access that cwd is the
+  // UNTRUSTED repo — whose .claude/settings.json hooks then run arbitrary shell
+  // OUTSIDE the permission system (verified live: hook executed, CLI reported
+  // is_error:false, permission_denials:[]).
+  const { ClaudeCliProvider } = await import('../dist/providers/claude-cli.js');
+  for (const opts of [{}, { fullRepoAccess: '/tmp/x' }]) {
+    const p = new ClaudeCliProvider({ id: 'claude-cli', type: 'claude-cli', baseUrl: '(sub)', label: 'Claude', command: 'claude', models: ['haiku'] });
+    let argv;
+    p.run = async (args) => { argv = args; return { code: 0, stdout: JSON.stringify({ result: 'ok', is_error: false }), stderr: '' }; };
+    await p.complete('haiku', [{ role: 'user', content: 'hi' }], opts);
+    check(`claude-cli passes --safe-mode (${opts.fullRepoAccess ? 'full_repo_access' : 'plain'})`, argv.includes('--safe-mode'), JSON.stringify(argv.slice(0, 12)));
+  }
+
+  // grok-cli must NOT pass the empty string: grok reads '' as "flag unset" and
+  // enables its FULL tool set (verified live: `id > /tmp/X` executed).
+  const { GrokCliProvider } = await import('../dist/providers/grok-cli.js');
+  const g = new GrokCliProvider({ id: 'grok-cli', type: 'grok-cli', baseUrl: '(sub)', label: 'Grok', command: 'grok', models: ['grok-4.5'] });
+  let gargv;
+  g.run = async (args) => { gargv = args; return { code: 0, stdout: JSON.stringify({ text: 'ok', stopReason: 'EndTurn' }), stderr: '' }; };
+  await g.complete('grok-4.5', [{ role: 'user', content: 'hi' }], {});
+  const ti = gargv.indexOf('--tools');
+  check('grok-cli --tools is NOT the empty string (empty = tools ENABLED)', gargv[ti + 1] !== '', JSON.stringify(gargv[ti + 1]));
+  check('grok-cli --tools is a non-empty lockdown value', typeof gargv[ti + 1] === 'string' && gargv[ti + 1].length > 0);
+  check('grok-cli still passes --verbatim', gargv.includes('--verbatim'));
+}
+
 console.log('▶ round-13: judgeFailed vs judgeDegraded, mention coverage, dangling-closer, schema-echo');
 {
   const { stripThinkBlocks, parseJudgeJson, neutralizeFileMentions } = await import('../dist/providers/base.js');

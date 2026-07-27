@@ -75,7 +75,10 @@ if (textBlock?.text?.startsWith(CHALLENGE_PROMPT) && imageBlocks.length) {
   }
 }
 
-const toolsOff = toolsValue === '';
+// 'none' is the locked-down value. The EMPTY string is NOT: grok reads '' as
+// "flag unset" and enables its full tool set (verified live — it ran a shell
+// command), so an empty value must NOT report as "off" here either.
+const toolsOff = toolsValue === 'none';
 const result =
   `mock-grok model=${model ?? '?'} xkey=${xkey} tools=${toolsOff ? 'off' : toolsValue} ` +
   `perm=${permMode ?? 'default'} sys=${sysOverride ? 'override' : 'default'} images=${imageBlocks.length} ` +

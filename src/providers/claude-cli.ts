@@ -365,6 +365,18 @@ export class ClaudeCliProvider implements Provider {
         '--output-format', 'json',
         '--tools', toolsValue,
         ...(addDirs.length ? ['--add-dir', ...addDirs] : []),
+        // VERIFIED LIVE (claude 2.1.220): without this, the child loads SETTING
+        // SOURCES from its cwd — and under full_repo_access that cwd is the
+        // UNTRUSTED repo root, so the repo's .claude/settings.json `hooks` block
+        // runs arbitrary shell commands OUTSIDE the tool-permission system. The
+        // interactive workspace-trust dialog that would normally catch this is
+        // skipped in non-interactive -p mode. Reproduced: a repo whose settings
+        // declared a UserPromptSubmit hook executed `id > /tmp/X` while the CLI
+        // returned is_error:false, permission_denials:[] and a normal answer.
+        // --safe-mode blocks repo settings/hooks/CLAUDE.md and slash commands
+        // (re-verified: hook did NOT run, answer unchanged). Applied
+        // UNCONDITIONALLY so a future cwd change cannot reintroduce it.
+        '--safe-mode',
         '--strict-mcp-config',    // no MCP servers (no recursion into this plugin)
         '--no-session-persistence',
         '--system-prompt', systemText, // replace the default coding-agent persona

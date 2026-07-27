@@ -377,6 +377,33 @@ console.log('▶ quota/rate-limit handling (real-world: a subscription runs out 
   check('a non-quota failure still uses all retries', calls2 === 3, `calls=${calls2}`);
 }
 
+console.log('▶ PooledResult exposes top-level judgeDegraded (mode-uniform trustworthiness)');
+{
+  const { runPooled } = await import('../dist/council/pool.js');
+  const stub = (fn) => ({ config: { type: 'ollama' }, serverId: 'ollama', listModels: async () => [], ping: async () => true, complete: fn });
+  const runtime = { maxTokens: 100, retries: 1, requestTimeoutMs: 5000, localConcurrency: 0, cloudConcurrency: 0, poolLimits: { local: 0, 'ollama-cloud': 0 } };
+  const members = [
+    { modelId: { provider: 'ollama', model: 'a' }, provider: stub(async () => 'Answer A') },
+    { modelId: { provider: 'ollama', model: 'b' }, provider: stub(async () => 'Answer B') },
+  ];
+  const initialResponses = [
+    { modelId: members[0].modelId, label: 'ollama:a', response: 'Answer A', latencyMs: 1 },
+    { modelId: members[1].modelId, label: 'ollama:b', response: 'Answer B', latencyMs: 1 },
+  ];
+  const baseInput = (judgeFn) => ({ question: 'q', initialResponses, members,
+    judgeModelId: { provider: 'ollama', model: 'j' }, judgeProvider: stub(judgeFn), runtime, verbose: false });
+
+  // A judge that fails BOTH digest steps → both PooledDigests degrade → the
+  // top-level flag must be set so a caller checking result.judgeDegraded (as they
+  // can for every other mode) sees it without reaching into initialPool/finalPool.
+  const res = await runPooled(baseInput(async () => 'not json at all'));
+  check('PooledResult has a top-level judgeDegraded when a digest degrades', res.judgeDegraded === true,
+    JSON.stringify({ top: res.judgeDegraded, ip: res.initialPool?.judgeDegraded, fp: res.finalPool?.judgeDegraded }));
+  // Healthy run → no top-level flag (must not over-set).
+  const ok = await runPooled(baseInput(async () => '{"options":[{"answer":"A","rationale":"r","models":["ollama:a"]}]}'));
+  check('a healthy pooled run has no top-level judgeDegraded', ok.judgeDegraded === undefined, JSON.stringify(ok.judgeDegraded));
+}
+
 console.log('▶ round-15: transient "quota" wording, extensionless secret filenames');
 {
   const { isQuotaError, isRateLimitError, neutralizeFileMentions } = await import('../dist/providers/base.js');

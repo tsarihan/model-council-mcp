@@ -284,6 +284,14 @@ export interface PooledResult {
   mode: 'pooled';
   question: string;
   judgeModel: string;     // label
+  /**
+   * True when EITHER digest step degraded — the judge produced no usable output
+   * for a pool, or a member outage meant a pool was distilled over an incomplete
+   * council. Aggregated to the top level so a caller can check trustworthiness
+   * uniformly across modes (CategorizedResult/DeconflictedResult/DialecticResult
+   * all expose it here) instead of having to reach into initialPool/finalPool.
+   */
+  judgeDegraded?: boolean;
   /** Neutral pool distilled from the initial (round-0) answers. */
   initialPool: PooledDigest;
   /** Each member's fresh answer after seeing the neutral pool. */

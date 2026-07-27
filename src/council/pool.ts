@@ -265,6 +265,8 @@ export async function runPooled(input: PooledInput): Promise<PooledResult> {
     initialPool,
     reconsidered,
     finalPool,
+    // Aggregate both digests' degradation to the top level (see PooledResult).
+    ...(initialPool.judgeDegraded || finalPool.judgeDegraded ? { judgeDegraded: true } : {}),
     ...(verbose ? { initialResponses } : {}),
   };
 }

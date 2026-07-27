@@ -36944,6 +36944,8 @@ async function runPooled(input) {
     initialPool,
     reconsidered,
     finalPool,
+    // Aggregate both digests' degradation to the top level (see PooledResult).
+    ...initialPool.judgeDegraded || finalPool.judgeDegraded ? { judgeDegraded: true } : {},
     ...verbose ? { initialResponses } : {}
   };
 }

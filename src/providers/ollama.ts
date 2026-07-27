@@ -211,7 +211,12 @@ export class OllamaProvider implements Provider {
 
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`Ollama complete failed (${res.status}): ${text}`);
+      // Attach the HTTP status: a plain Error hides it in the message, so
+      // status-based classification (429 throttling vs a permanent refusal)
+      // could not see it at all.
+      const err = new Error(`Ollama complete failed (${res.status}): ${text}`) as Error & { status?: number };
+      err.status = res.status;
+      throw err;
     }
 
     const data = (await res.json()) as OllamaChatResponse;

@@ -64,7 +64,7 @@ export function neutralizeFileMentions(text: string): string {
   // these matters because the CLI resolves a bare filename against its cwd, so
   // `@credentials.json` is a real read even with no slash in it.
   return text.replace(
-    /(?<![\w@])@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-]))/g,
+    /(?<![\w@])@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|go)\b)/g,
     '@​',
   );
 }
@@ -157,31 +157,49 @@ export class QuotaExceededError extends Error {
   }
 }
 
-/** Quota/rate-limit signatures across every provider surface used here. */
-const QUOTA_PATTERNS = [
-  /\busage limit\b/i,                 // grok ("reached your free Grok Build usage limit"), claude CLI
-  /\bquota\b/i,                       // OpenAI insufficient_quota, generic
-  /\brate[ _-]?limit/i,                // Anthropic rate_limit_error, OpenAI, Ollama cloud
+/**
+ * PERMANENT exhaustion signatures only — the plan/credits are used up and the
+ * same call will fail identically for the rest of the session.
+ *
+ * Deliberately EXCLUDES a bare HTTP 429 / "rate limit" / "too many requests":
+ * those are TRANSIENT throttling that a backoff retry is expected to clear, and
+ * treating them as permanent (the first version of this did) silently disables
+ * legitimate retries — turning a momentary slow-down into a failed member. Note
+ * OpenAI's `insufficient_quota` arrives AS a 429 but says "quota" in the body,
+ * so the message patterns still classify it correctly as permanent.
+ */
+const QUOTA_EXHAUSTED_PATTERNS = [
+  /\busage limit\b/i,                 // grok "reached your free Grok Build usage limit", claude CLI
+  /\bquota\b/i,                       // OpenAI insufficient_quota / "exceeded your current quota"
   /\bcredit balance is too low\b/i,   // Anthropic billing
   /\bout of credits?\b/i,
   /\bbilling\b.*\b(hard limit|required)\b/i,
-  /\btoo many requests\b/i,           // 429 text form
   /\bplan limit\b|\bupgrade to\b.*\b(continue|higher)\b/i,
 ];
 
 /**
- * Is this failure a quota/rate-limit refusal? Checks an HTTP 429 status and the
- * provider-specific message shapes above. Deliberately message-based as well as
- * status-based: the CLI providers return their refusal as ordinary JSON/stderr
- * text with no status code at all.
+ * Is this a PERMANENT quota/credit exhaustion (as opposed to transient
+ * throttling)? Message-based rather than status-based, because the CLI
+ * providers return their refusal as ordinary JSON/stderr text with no status
+ * code at all — and because the status alone (429) cannot distinguish
+ * "slow down" from "you are out of credits".
  */
 export function isQuotaError(err: unknown): boolean {
   if (!err) return false;
   if (err instanceof QuotaExceededError) return true;
   const e = err as { status?: number; message?: string };
+  return QUOTA_EXHAUSTED_PATTERNS.some(re => re.test(String(e.message ?? err)));
+}
+
+/**
+ * Transient throttling: retry with backoff (the default path already does).
+ * Exposed so a provider/caller can tell the two apart when reporting.
+ */
+export function isRateLimitError(err: unknown): boolean {
+  if (!err || isQuotaError(err)) return false;
+  const e = err as { status?: number; message?: string };
   if (e.status === 429) return true;
-  const msg = String(e.message ?? err);
-  return QUOTA_PATTERNS.some(re => re.test(msg));
+  return /\brate[ _-]?limit|\btoo many requests\b|(?<!\d)429(?!\d)/i.test(String(e.message ?? err));
 }
 
 /** Ceiling for a single CLI subprocess's accumulated stdout/stderr — see CappedBuffer. */

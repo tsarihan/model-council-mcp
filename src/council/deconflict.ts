@@ -213,6 +213,15 @@ export function detectResolutions(
       matchedNewIdx.add(updatedIdx);
     } else if (topicStillReported) {
       remaining.push(prev);
+    } else if ((prev.positions ?? []).every(p => (p.models ?? []).length === 0)) {
+      // A conflict with NO party attached (the judge emitted a topic but no
+      // positions, or positions with empty models) cannot be SHOWN to have
+      // resolved: there is nobody whose changed stance could demonstrate it, and
+      // the party-outage guard below has nothing to match either. Treating the
+      // topic's absence as resolution turns a degenerate judge entry into a
+      // clean 100. Carry it forward and mark the run degraded instead.
+      remaining.push(prev);
+      partyDropout = true;
     } else if (partyErrored(prev.positions, erroredLabels)) {
       // The topic vanished from the judge's output — but a MEMBER that is a
       // PARTY to this conflict errored this round, and the judge only ever sees

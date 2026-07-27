@@ -24887,7 +24887,7 @@ var PROBE_IMAGE_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAGyklEQV
 function neutralizeFileMentions(text) {
   if (!text) return text;
   return text.replace(
-    /(?<![\w@])@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-]))/g,
+    /(?<![\w@])@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|go)\b)/g,
     "@\u200B"
   );
 }
@@ -24904,28 +24904,22 @@ var QuotaExceededError = class extends Error {
     this.name = "QuotaExceededError";
   }
 };
-var QUOTA_PATTERNS = [
+var QUOTA_EXHAUSTED_PATTERNS = [
   /\busage limit\b/i,
-  // grok ("reached your free Grok Build usage limit"), claude CLI
+  // grok "reached your free Grok Build usage limit", claude CLI
   /\bquota\b/i,
-  // OpenAI insufficient_quota, generic
-  /\brate[ _-]?limit/i,
-  // Anthropic rate_limit_error, OpenAI, Ollama cloud
+  // OpenAI insufficient_quota / "exceeded your current quota"
   /\bcredit balance is too low\b/i,
   // Anthropic billing
   /\bout of credits?\b/i,
   /\bbilling\b.*\b(hard limit|required)\b/i,
-  /\btoo many requests\b/i,
-  // 429 text form
   /\bplan limit\b|\bupgrade to\b.*\b(continue|higher)\b/i
 ];
 function isQuotaError(err) {
   if (!err) return false;
   if (err instanceof QuotaExceededError) return true;
   const e2 = err;
-  if (e2.status === 429) return true;
-  const msg = String(e2.message ?? err);
-  return QUOTA_PATTERNS.some((re2) => re2.test(msg));
+  return QUOTA_EXHAUSTED_PATTERNS.some((re2) => re2.test(String(e2.message ?? err)));
 }
 var MAX_CLI_OUTPUT_BYTES = 8 * 1024 * 1024;
 var CappedBuffer = class {
@@ -25373,7 +25367,9 @@ var OllamaProvider = class {
     });
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`Ollama complete failed (${res.status}): ${text}`);
+      const err = new Error(`Ollama complete failed (${res.status}): ${text}`);
+      err.status = res.status;
+      throw err;
     }
     const data = await res.json();
     return stripThinkBlocks(data?.message?.content ?? "");
@@ -36552,6 +36548,9 @@ function detectResolutions(previous, newCateg, erroredLabels = /* @__PURE__ */ n
       matchedNewIdx.add(updatedIdx);
     } else if (topicStillReported) {
       remaining.push(prev);
+    } else if ((prev.positions ?? []).every((p2) => (p2.models ?? []).length === 0)) {
+      remaining.push(prev);
+      partyDropout = true;
     } else if (partyErrored(prev.positions, erroredLabels)) {
       remaining.push(prev);
       partyDropout = true;

@@ -331,7 +331,7 @@ console.log('▶ round-12 batch 3: pooled partial outage, dossier notice placeme
 
 console.log('▶ quota/rate-limit handling (real-world: a subscription runs out mid-council)');
 {
-  const { isQuotaError, QuotaExceededError } = await import('../dist/providers/base.js');
+  const { isQuotaError, isRateLimitError, QuotaExceededError } = await import('../dist/providers/base.js');
   const { completeWithRetry } = await import('../dist/council/query.js');
 
   // Real messages observed from the actual providers.
@@ -339,11 +339,17 @@ console.log('▶ quota/rate-limit handling (real-world: a subscription runs out 
     ['grok', 'You\u2019ve reached your free Grok Build usage limit for now. Get SuperGrok for much higher limits.'],
     ['openai', '429 You exceeded your current quota, please check your plan and billing details.'],
     ['anthropic', 'Your credit balance is too low to access the Anthropic API.'],
-    ['generic 429', 'Too Many Requests'],
     ['claude cli', 'Claude usage limit reached. Your limit will reset at 3pm.'],
   ];
   for (const [who, msg] of REAL) check(`isQuotaError detects the real ${who} refusal`, isQuotaError(new Error(msg)), msg.slice(0, 50));
-  check('isQuotaError detects an HTTP 429 status with no message', isQuotaError({ status: 429 }));
+  // Round 14 correction: a BARE 429 is TRANSIENT throttling, not exhaustion.
+  // Treating it as permanent silently disabled legitimate backoff retries.
+  check('a bare 429 is NOT permanent exhaustion (it is transient throttling)', !isQuotaError({ status: 429, message: 'Too Many Requests' }));
+  check('a bare 429 IS classified as a rate limit', isRateLimitError({ status: 429, message: 'Too Many Requests' }));
+  check('OpenAI insufficient_quota arrives as 429 but is PERMANENT (message wins)',
+    isQuotaError({ status: 429, message: 'You exceeded your current quota' }) && !isRateLimitError({ status: 429, message: 'You exceeded your current quota' }));
+  check('an Ollama 429 embedded in the message is seen as a rate limit', isRateLimitError(new Error('Ollama complete failed (429): busy')));
+  check('an unrelated number is not mistaken for 429', !isRateLimitError(new Error('token count 4290 exceeded')));
   // Must NOT fire on ordinary failures — a false positive would silently stop retrying.
   check('isQuotaError ignores a timeout', !isQuotaError(new Error('claude CLI timed out after 900000ms')));
   check('isQuotaError ignores a parse failure', !isQuotaError(new Error('claude CLI returned non-JSON output: <html>')));
@@ -369,6 +375,29 @@ console.log('▶ quota/rate-limit handling (real-world: a subscription runs out 
     complete: async () => { calls2++; throw new Error('connection reset'); } };
   try { await completeWithRetry(flaky, 'm', [{ role: 'user', content: 'hi' }], {}, 3); } catch { /* expected */ }
   check('a non-quota failure still uses all retries', calls2 === 3, `calls=${calls2}`);
+}
+
+console.log('▶ round-14: degenerate conflict + extensionless mentions');
+{
+  const { detectResolutions } = await import('../dist/council/deconflict.js');
+  const { neutralizeFileMentions } = await import('../dist/providers/base.js');
+  // 13th mechanism: a conflict with NO party attached cannot be SHOWN to have
+  // resolved — nobody's changed stance could demonstrate it, and the outage
+  // guard has nothing to match. Treating its absence as resolution turns a
+  // degenerate judge entry into a clean 100.
+  const degenerate = detectResolutions([{ id: 'c1', topic: 'X', positions: [] }], { conflicting: [], commonAgreement: 'Converged.' });
+  check('positionless conflict is NOT resolved (13th fabrication mechanism)', degenerate.resolved.length === 0, JSON.stringify(degenerate.resolved));
+  check('positionless conflict marks the run degraded', degenerate.partyDropout === true);
+  const emptyModels = detectResolutions([{ id: 'c2', topic: 'Y', positions: [{ models: [], position: 'p' }] }], { conflicting: [], commonAgreement: 'ok' });
+  check('positions with empty models[] are treated the same way', emptyModels.resolved.length === 0);
+  const real = detectResolutions([{ id: 'c3', topic: 'Z', positions: [{ models: ['a'], position: 'p' }] }], { conflicting: [], commonAgreement: 'ok' });
+  check('a REAL conflict still resolves normally (no over-correction)', real.resolved.length === 1);
+
+  // Extensionless filenames resolve against cwd exactly like any other mention.
+  for (const f of ['Makefile', 'Dockerfile', 'LICENSE']) {
+    check(`extensionless @${f} is neutralized`, neutralizeFileMentions(`read @${f}`) !== `read @${f}`);
+  }
+  check('an email is still untouched by the widened pattern', neutralizeFileMentions('bob@example.com') === 'bob@example.com');
 }
 
 console.log('▶ round-13b: grok fails closed, consensus mechanisms 11 & 12, fenced-JSON guard');

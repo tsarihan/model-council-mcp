@@ -256,7 +256,12 @@ export class GrokCliProvider implements Provider {
         throw new Error(`grok CLI reported an error: ${String(parsed.message ?? '(no detail)').slice(0, 300)}`);
       }
       const text = typeof parsed.text === 'string' ? parsed.text : '';
-      if (parsed.stopReason !== 'EndTurn' && !text) {
+      // An abnormal stopReason means the turn did NOT finish — 'Cancelled' (the
+      // documented headless failure mode), a max-tokens stop, or a refusal. The
+      // old guard only fired when the text was ALSO empty, so a partial answer
+      // from a cancelled/truncated turn was returned as if it were complete,
+      // silently feeding a truncated position into the council.
+      if (parsed.stopReason !== 'EndTurn') {
         throw new Error(`grok CLI did not complete the turn (stopReason: ${String(parsed.stopReason)})`);
       }
       return text;

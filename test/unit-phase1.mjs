@@ -296,6 +296,36 @@ console.log('▶ sliceBalancedJson (judge JSON extraction robust to trailing pro
     JSON.parse(sliceBalancedJson('{"x":[1,2,3]}```\nsome note }')).x.length === 3);
 }
 
+console.log('▶ round-12 batch 3: pooled partial outage, dossier notice placement, JUDGE_MODEL warning');
+{
+  const { poolResponses } = await import('../dist/council/pool.js');
+  const { buildDossierPrompt } = await import('../dist/council/dialectic.js');
+  const jid = { provider: 'ollama', model: 'j' };
+  const cc = { maxTokens: 100, retries: 1, timeoutMs: 5000 };
+  const rt = { localConcurrency: 0, cloudConcurrency: 0 };
+  const fj = (json) => ({ config: { type: 'ollama' }, serverId: 'ollama', complete: async () => json, listModels: async () => [], ping: async () => true });
+
+  // A pool distilled while some members are missing may look unanimous only
+  // because its dissenters never answered — same class as categorize()'s.
+  const partial = [
+    { modelId: { provider: 'ollama', model: 'a' }, label: 'ollama:a', response: 'Rust', latencyMs: 1 },
+    { modelId: { provider: 'ollama', model: 'b' }, label: 'ollama:b', response: '', error: 'timeout', latencyMs: 1 },
+  ];
+  const pPartial = await poolResponses('q', partial, jid, fj('{"options":[{"answer":"Rust","rationale":"r","models":["ollama:a"]}]}'), cc, rt);
+  check('pooled: PARTIAL outage → judgeDegraded (apparent unanimity may just be missing dissenters)',
+    pPartial.judgeDegraded === true, JSON.stringify(pPartial));
+  const pHealthy = await poolResponses('q', [partial[0]], jid, fj('{"options":[{"answer":"Rust","rationale":"r","models":["ollama:a"]}]}'), cc, rt);
+  check('pooled: healthy council → judgeDegraded NOT set', pHealthy.judgeDegraded === undefined);
+
+  // Member-derived option text must sit BELOW the untrusted-content notice,
+  // which scopes itself to what follows it.
+  const dossier = buildDossierPrompt('q',
+    { options: [{ answer: 'OptionAlpha', rationale: 'r', models: ['a'] }] }, [], []);
+  check('dossier prompt: untrusted-content notice precedes the member-derived option list',
+    dossier.indexOf('analysis only') < dossier.indexOf('OptionAlpha'),
+    `notice@${dossier.indexOf('analysis only')} option@${dossier.indexOf('OptionAlpha')}`);
+}
+
 console.log('▶ round-12 batch: state.json 0600, anthropic temperature, conflict-id seeding');
 {
   // state.json persists the resolved (possibly credentialed) Ollama URL raw, so
@@ -1950,6 +1980,15 @@ console.log('▶ loadConfig: strictParseInt rejects a numeric PREFIX with traili
       vllmCred?.baseUrl.includes('s3cr3t'), vllmCred?.baseUrl);
     delete process.env.VLLM_SERVERS;
 
+    // A typo'd JUDGE_MODEL must warn, not silently become "auto".
+    process.env.JUDGE_MODEL = 'claud:opus';
+    const cfgBadJudge = loadConfig();
+    check('unparseable JUDGE_MODEL surfaces a boot warning (was silently = auto)',
+      cfgBadJudge.warnings.some(w => /JUDGE_MODEL/.test(w) && /claud:opus/.test(w)), JSON.stringify(cfgBadJudge.warnings));
+    process.env.JUDGE_MODEL = 'ollama:llama3';
+    check('a VALID JUDGE_MODEL produces no warning', !loadConfig().warnings.some(w => /JUDGE_MODEL/.test(w)));
+    delete process.env.JUDGE_MODEL;
+
     // MAX_TOKENS is configurable higher for longer answers on large-context models.
     process.env.MAX_TOKENS = '65536';
     check('MAX_TOKENS: a higher explicit value is honoured (longer answers on big-context models)',
@@ -2146,6 +2185,19 @@ console.log('▶ Ollama-harness member: the documented "claude-cli/claude-cli-ol
     grok: { installed: true, usable: true },
   };
   const auto = autoPopulatedMembers(report, { chatgpt: 'plus', claude: 'pro', grok: 'heavy', ollama: 'max' }, subs);
+  // round-12: a provider narrowed via CLAUDE_CLI_MODELS must contribute ONLY the
+  // configured models — the reference catalogue was used verbatim, silently
+  // re-adding paid members the user had explicitly excluded.
+  const narrowed = autoPopulatedMembers(
+    report, { chatgpt: 'plus', claude: 'pro', grok: 'heavy', ollama: 'max' }, subs,
+    [{ type: 'claude-cli', models: ['opus'] }],
+  );
+  const claudeMembers = narrowed.filter(m => m.startsWith('claude-cli:'));
+  check('autoPopulatedMembers honours the models a CLI server was configured with',
+    claudeMembers.length === 1 && claudeMembers[0] === 'claude-cli:opus', JSON.stringify(claudeMembers));
+  check('autoPopulatedMembers falls back to the catalogue when a server lists no models',
+    autoPopulatedMembers(report, { chatgpt: 'plus', claude: 'pro', grok: 'heavy', ollama: 'max' }, subs, [{ type: 'claude-cli' }])
+      .filter(m => m.startsWith('claude-cli:')).length === auto.filter(m => m.startsWith('claude-cli:')).length);
   check('autoPopulatedMembers: never emits a claude-cli-ollama reference, even with Claude usable',
     !auto.some(m => m.includes('claude-cli-ollama')), JSON.stringify(auto));
   check('autoPopulatedMembers: does emit bare claude-cli:<model> entries for the real subscription server',

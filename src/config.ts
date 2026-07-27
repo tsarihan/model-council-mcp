@@ -429,6 +429,15 @@ export function loadConfig(): AppConfig {
 
   // ── Judge model ───────────────────────────────────────────────────────────
   const judgeStr = envClean('JUDGE_MODEL');
+  if (judgeStr && judgeStr !== 'auto' && !parseModelId(judgeStr)) {
+    // Silently mapping a typo to `undefined` makes it indistinguishable from an
+    // intentional "auto" — the user believes they pinned a judge and never finds
+    // out otherwise. Every other malformed env var here surfaces a boot warning.
+    warnings.push(
+      `JUDGE_MODEL="${judgeStr}" is not a valid model id (expected "provider:model" or ` +
+      `"provider/serverId:model") — falling back to automatic judge selection.`,
+    );
+  }
   const judgeModelId =
     judgeStr && judgeStr !== 'auto'
       ? (parseModelId(judgeStr) ?? undefined)

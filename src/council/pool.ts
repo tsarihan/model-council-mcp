@@ -97,6 +97,14 @@ export async function poolResponses(
     return { options: [], judgeDegraded: true };
   }
 
+  // PARTIAL outage: buildPoolPrompt filters errored responses out, so the digest
+  // is distilled over an INCOMPLETE council and the missing members are exactly
+  // the ones that might have offered a distinct option. A pool that looks
+  // unanimous may simply be missing its dissenters — the same
+  // fabricated-convergence class the all-errored guard above prevents, and the
+  // same flag categorize() now sets for its partial case.
+  const partialOutage = responses.some(r => r.error);
+
   const prompt = buildPoolPrompt(question, responses);
 
   let rawJson: string;
@@ -136,6 +144,7 @@ export async function poolResponses(
         models: Array.isArray(o?.models) ? o.models : [],
       }))
       .filter(o => o.answer),
+    ...(partialOutage ? { judgeDegraded: true } : {}),
   };
 }
 

@@ -289,7 +289,7 @@ async function initCouncil(): Promise<void> {
     // grok-cli) and then PERSISTS them to state.json, so the opt-out was both
     // ignored and made sticky across restarts.
     if (!orchestrator.getConfig().autoCouncil) return;
-    const labels = autoPopulatedMembers(report, appConfig.tiers, subs);
+    const labels = autoPopulatedMembers(report, appConfig.tiers, subs, appConfig.servers);
     if (labels.length) {
       orchestrator.updateConfig({ members: labelsToMembers(labels) });
       // Persist only members here — never overwrite the user's tier choices.
@@ -1360,7 +1360,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
 
         // Re-detect + re-populate from currently-registered providers.
         const report = await detectEnvironment(registry, tiers, subs);
-        const labels = autoPopulatedMembers(report, tiers, subs);
+        const labels = autoPopulatedMembers(report, tiers, subs, appConfig.servers);
         orchestrator.updateConfig({ members: labelsToMembers(labels) });
         // (explicitlyConfigured was already set at the top of this handler.)
         // Only PERSIST a non-empty result — matching initCouncil()'s own

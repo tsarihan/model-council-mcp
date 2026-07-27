@@ -92,10 +92,10 @@ Question:
 ${question}
 """
 
+${UNTRUSTED_CONTENT_NOTICE}
+
 The distinct options under debate:
 ${optionList || '(none)'}
-
-${UNTRUSTED_CONTENT_NOTICE}
 
 [INITIAL ANSWERS — theses]
 ${initialBlock}

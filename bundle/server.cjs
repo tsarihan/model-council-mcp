@@ -24833,6 +24833,11 @@ function loadConfig() {
     );
   }
   const judgeStr = envClean("JUDGE_MODEL");
+  if (judgeStr && judgeStr !== "auto" && !parseModelId(judgeStr)) {
+    warnings.push(
+      `JUDGE_MODEL="${judgeStr}" is not a valid model id (expected "provider:model" or "provider/serverId:model") \u2014 falling back to automatic judge selection.`
+    );
+  }
   const judgeModelId = judgeStr && judgeStr !== "auto" ? parseModelId(judgeStr) ?? void 0 : void 0;
   const modeRaw = envClean("RESPONSE_MODE");
   const responseMode = modeRaw === "individual" || modeRaw === "categorized" || modeRaw === "deconflicted" || modeRaw === "pooled" || modeRaw === "dialectic" ? modeRaw : "categorized";
@@ -35816,7 +35821,7 @@ var GrokCliProvider = class {
         throw new Error(`grok CLI reported an error: ${String(parsed.message ?? "(no detail)").slice(0, 300)}`);
       }
       const text = typeof parsed.text === "string" ? parsed.text : "";
-      if (parsed.stopReason !== "EndTurn" && !text) {
+      if (parsed.stopReason !== "EndTurn") {
         throw new Error(`grok CLI did not complete the turn (stopReason: ${String(parsed.stopReason)})`);
       }
       return text;
@@ -36690,6 +36695,7 @@ async function poolResponses(question, responses, judgeModelId, judgeProvider, c
   if (responses.length === 0 || responses.every((r2) => r2.error)) {
     return { options: [], judgeDegraded: true };
   }
+  const partialOutage = responses.some((r2) => r2.error);
   const prompt = buildPoolPrompt(question, responses);
   let rawJson;
   try {
@@ -36717,7 +36723,8 @@ async function poolResponses(question, responses, judgeModelId, judgeProvider, c
       answer: String(o2?.answer ?? "").trim(),
       rationale: String(o2?.rationale ?? "").trim(),
       models: Array.isArray(o2?.models) ? o2.models : []
-    })).filter((o2) => o2.answer)
+    })).filter((o2) => o2.answer),
+    ...partialOutage ? { judgeDegraded: true } : {}
   };
 }
 function shuffled(items) {
@@ -36830,10 +36837,10 @@ Question:
 ${question}
 """
 
+${UNTRUSTED_CONTENT_NOTICE}
+
 The distinct options under debate:
 ${optionList || "(none)"}
-
-${UNTRUSTED_CONTENT_NOTICE}
 
 [INITIAL ANSWERS \u2014 theses]
 ${initialBlock}
@@ -37499,20 +37506,24 @@ async function detectEnvironment(registry3, tiers, subs) {
   ]);
   return { ollama, claude, codex, grok };
 }
-function autoPopulatedMembers(report, tiers, subs) {
+function autoPopulatedMembers(report, tiers, subs, servers) {
+  const configured = (type, fallback) => {
+    const s2 = servers?.find((x2) => x2.type === type);
+    return s2?.models?.length ? s2.models : fallback ?? [];
+  };
   const out = [];
   for (const m2 of report.ollama.localModels) out.push(`ollama:${m2}`);
   if (report.ollama.cloud === "ok") {
     for (const m2 of subs.curatedCloudModels) out.push(`ollama:${m2}`);
   }
   if (report.claude.usable && tierAllowsCloud("claude", tiers.claude, subs)) {
-    for (const m2 of subs.providers.claude.models ?? []) out.push(`claude-cli:${m2}`);
+    for (const m2 of configured("claude-cli", subs.providers.claude.models)) out.push(`claude-cli:${m2}`);
   }
   if (report.codex.usable && tierAllowsCloud("chatgpt", tiers.chatgpt, subs)) {
-    for (const m2 of subs.providers.chatgpt.models ?? []) out.push(`codex-cli:${m2}`);
+    for (const m2 of configured("codex-cli", subs.providers.chatgpt.models)) out.push(`codex-cli:${m2}`);
   }
   if (report.grok.usable && tierAllowsCloud("grok", tiers.grok, subs)) {
-    for (const m2 of subs.providers.grok.models ?? []) out.push(`grok-cli:${m2}`);
+    for (const m2 of configured("grok-cli", subs.providers.grok.models)) out.push(`grok-cli:${m2}`);
   }
   return [...new Set(out)];
 }
@@ -38021,7 +38032,7 @@ async function initCouncil() {
     if (orchestrator.getConfig().members.length > 0 || explicitlyConfigured) return;
     if (Array.isArray(loadState().members)) return;
     if (!orchestrator.getConfig().autoCouncil) return;
-    const labels = autoPopulatedMembers(report, appConfig.tiers, subs);
+    const labels = autoPopulatedMembers(report, appConfig.tiers, subs, appConfig.servers);
     if (labels.length) {
       orchestrator.updateConfig({ members: labelsToMembers(labels) });
       saveState({ members: labels, welcomedVersion: subs.version });
@@ -38724,7 +38735,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
           saveState((current) => ({ tiers: { ...current.tiers ?? {}, ...applied } }));
         }
         const report = await detectEnvironment(registry2, tiers, subs);
-        const labels = autoPopulatedMembers(report, tiers, subs);
+        const labels = autoPopulatedMembers(report, tiers, subs, appConfig.servers);
         orchestrator.updateConfig({ members: labelsToMembers(labels) });
         if (labels.length > 0) {
           saveState({ members: labels });

@@ -269,20 +269,33 @@ export function autoPopulatedMembers(
   report: EnvReport,
   tiers: SubscriptionTiers,
   subs: Subscriptions,
+  /**
+   * The registered servers, so each CLI provider contributes the models it was
+   * ACTUALLY configured with. Without this the reference-data list is used
+   * verbatim, so a user who narrowed a provider via CLAUDE_CLI_MODELS /
+   * CODEX_CLI_MODELS / GROK_CLI_MODELS still had every catalogue model added —
+   * silently re-adding paid members they had explicitly excluded. Optional so
+   * existing callers/tests keep working (falls back to the reference data).
+   */
+  servers?: Array<{ type: string; models?: string[] }>,
 ): string[] {
+  const configured = (type: string, fallback: string[] | undefined): string[] => {
+    const s = servers?.find(x => x.type === type);
+    return s?.models?.length ? s.models : (fallback ?? []);
+  };
   const out: string[] = [];
   for (const m of report.ollama.localModels) out.push(`ollama:${m}`);
   if (report.ollama.cloud === 'ok') {
     for (const m of subs.curatedCloudModels) out.push(`ollama:${m}`);
   }
   if (report.claude.usable && tierAllowsCloud('claude', tiers.claude, subs)) {
-    for (const m of subs.providers.claude.models ?? []) out.push(`claude-cli:${m}`);
+    for (const m of configured('claude-cli', subs.providers.claude.models)) out.push(`claude-cli:${m}`);
   }
   if (report.codex.usable && tierAllowsCloud('chatgpt', tiers.chatgpt, subs)) {
-    for (const m of subs.providers.chatgpt.models ?? []) out.push(`codex-cli:${m}`);
+    for (const m of configured('codex-cli', subs.providers.chatgpt.models)) out.push(`codex-cli:${m}`);
   }
   if (report.grok.usable && tierAllowsCloud('grok', tiers.grok, subs)) {
-    for (const m of subs.providers.grok.models ?? []) out.push(`grok-cli:${m}`);
+    for (const m of configured('grok-cli', subs.providers.grok.models)) out.push(`grok-cli:${m}`);
   }
   return [...new Set(out)];
 }

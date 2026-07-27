@@ -137,20 +137,36 @@ function mergePositionsByModel(
  */
 /**
  * A position is "unattributed" when it carries no usable party label: no
- * `models` array, an empty one, OR one whose entries are all empty/whitespace.
- * The categorization schema requires `models` to be an array of strings but
- * sets no minItems and no non-empty constraint, so a judge can emit `models:
- * [""]` (or `["", "  "]`) — schema-valid under constrained decoding. Treating
- * such a position as ATTRIBUTED (array length 1) defeated both the
- * all-unattributed guard (`.every(length === 0)`) and the mixed-attribution
- * guard (`.some(length === 0)`): a single `[""]`-party conflict whose
- * (unlabelled) member errored was falsely RESOLVED, because `partyErrored`
- * skips empty strings too — nothing matched, so it fell to the resolved
- * branch. This helper is the single notion of "has a real party label" shared
- * by both carry-forward guards, so `[""]` is handled identically to `[]`.
+ * `models` array, an empty one, OR one whose entries are all empty/whitespace
+ * OR NON-STRING. The categorization schema requires `models` to be an array
+ * of strings but sets no minItems and no non-empty constraint, so a judge can
+ * emit `models: [""]` (or `["", "  "]`) — schema-valid under constrained
+ * decoding. Treating such a position as ATTRIBUTED (array length 1) defeated
+ * both the all-unattributed guard (`.every(length === 0)`) and the
+ * mixed-attribution guard (`.some(length === 0)`): a single `[""]`-party
+ * conflict whose (unlabelled) member errored was falsely RESOLVED, because
+ * `partyErrored` skips empty strings too — nothing matched, so it fell to the
+ * resolved branch. This helper is the single notion of "has a real party
+ * label" shared by both carry-forward guards, so `[""]` is handled identically
+ * to `[]`.
+ *
+ * Round-18 mechanism 17 (codex + kimi): the guard must require a STRING label,
+ * not merely a non-empty one. `String(0)` is `"0"` and `String(false)` is
+ * `"false"` — both non-empty — so the prior `!String(m ?? '').trim()` form
+ * treated `models: [0]` as ATTRIBUTED. Exploit: the judge mis-attributes a
+ * real member's stance to `[0]` instead of `["ollama:a"]`; that member then
+ * errors; the judge (which filters errored responses) reports `conflicting:
+ * []`; `noAttribution([0])` was false and `partyErrored` couldn't match `"0"`
+ * against the errored label, so the conflict fell to the RESOLVED branch — a
+ * fabricated `deconflictionScore: 100` with no `judgeDegraded`, even though
+ * the real party never participated. A model label is, by definition, a
+ * string; a non-string entry is a judge shape error, not an attribution, so
+ * it counts as no label. `["a", ""]` still counts as attributed (it has a real
+ * string label); `["a", 0]` is MIXED (some unattributed) and falls to the
+ * mixed guard.
  */
 function noAttribution(p: ConflictPosition): boolean {
-  return (p.models ?? []).every(m => !String(m ?? '').trim());
+  return (p.models ?? []).every(m => typeof m !== 'string' || !m.trim());
 }
 
 function partyErrored(positions: ConflictPosition[], erroredLabels: Set<string>): boolean {

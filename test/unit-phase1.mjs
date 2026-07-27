@@ -473,6 +473,49 @@ console.log('▶ round-16 (fable+codex+glm dialectic council): mechanism 14, dia
   check('models:["a",""] still counts as attributed (has a real label) → resolves when clean',
     gotMixedReal.resolved.length === 1 && gotMixedReal.partyDropout === false, JSON.stringify(gotMixedReal));
 
+  // Mechanism 17 (codex + kimi, round 18): a NON-STRING model label. The
+  // categorization schema says `models` items are strings but a judge is
+  // untrusted in shape, and the default CLI judges have no constrained schema,
+  // so it can emit `models: [0]` (or [false]/[1]). `String(0)` is "0" (non-
+  // empty), so the prior `!String(m ?? '').trim()` form treated [0] as
+  // ATTRIBUTED. Exploit: the judge mis-attributes a real member's stance to
+  // [0] instead of ["ollama:a"]; that member errors; the judge (filtering
+  // errored responses) reports conflicting:[]; noAttribution([0]) was false
+  // and partyErrored couldn't match "0" → the conflict fell to the RESOLVED
+  // branch → fabricated 100% with no judgeDegraded. Fix: require a STRING
+  // label; a non-string is a judge shape error, not an attribution.
+  const numLabel = [{ id: 'c7', topic: 'N', positions: [{ models: [0], position: 'p' }] }];
+  const gotNum = detectResolutions(numLabel, { conflicting: [], commonAgreement: 'ok' }, new Set(['ollama:a']));
+  check('models:[0] single-party conflict is carried forward when its real party errored (mechanism 17)',
+    gotNum.resolved.length === 0 && gotNum.remaining.length === 1 && gotNum.partyDropout === true,
+    JSON.stringify(gotNum));
+  const boolLabel = [{ id: 'c8', topic: 'B', positions: [{ models: [false], position: 'p' }] }];
+  const gotBool = detectResolutions(boolLabel, { conflicting: [], commonAgreement: 'ok' }, new Set(['ollama:a']));
+  check('models:[false] is treated as unattributed (non-string label)',
+    gotBool.resolved.length === 0 && gotBool.partyDropout === true, JSON.stringify(gotBool));
+  // [0] is degenerate (no string label) → carried forward even with no error, like [].
+  const gotNumClean = detectResolutions(numLabel, { conflicting: [], commonAgreement: 'ok' }, new Set());
+  check('models:[0] is degenerate: carried forward even with NO error',
+    gotNumClean.resolved.length === 0 && gotNumClean.partyDropout === true, JSON.stringify(gotNumClean));
+  // ["a", 0] WITHIN ONE position is ATTRIBUTED — it has a real string label
+  // "a"; the non-string 0 is a judge shape error, ignored (the position behaves
+  // like ["a"]). With an UNRELATED member error, it resolves honestly (the real
+  // party "a" didn't error and the topic vanished).
+  const withinMix = [{ id: 'c9', topic: 'M', positions: [{ models: ['a', 0], position: 'p' }] }];
+  const gotWithinMix = detectResolutions(withinMix, { conflicting: [], commonAgreement: 'ok' }, new Set(['b']));
+  check('models:["a",0] within one position is attributed → resolves with an unrelated error',
+    gotWithinMix.resolved.length === 1 && gotWithinMix.partyDropout === false, JSON.stringify(gotWithinMix));
+  // The mixed guard (branch 4) catches mixed ACROSS positions: one attributed
+  // position + one unattributed ([0]) position, with ANY member errored.
+  const acrossMix = [{ id: 'c10', topic: 'A', positions: [{ models: ['a'], position: 'p1' }, { models: [0], position: 'p2' }] }];
+  const gotAcrossMix = detectResolutions(acrossMix, { conflicting: [], commonAgreement: 'ok' }, new Set(['b']));
+  check('mixed across positions (["a"] + [0]) carried forward when ANY member errored',
+    gotAcrossMix.resolved.length === 0 && gotAcrossMix.partyDropout === true, JSON.stringify(gotAcrossMix));
+  // ["a", 0] with NO error still resolves — it has a real string label "a".
+  const gotMixNonClean = detectResolutions(withinMix, { conflicting: [], commonAgreement: 'ok' }, new Set());
+  check('models:["a",0] resolves when clean (has a real string label)',
+    gotMixNonClean.resolved.length === 1 && gotMixNonClean.partyDropout === false, JSON.stringify(gotMixNonClean));
+
   // Dialectic defense-round outage: buildProsCons filters errored defenses out
   // of its prompt but never sets judgeDegraded for it -- an incomplete
   // antithesis produced an apparently-complete dossier with no degradation

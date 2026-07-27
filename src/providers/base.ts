@@ -64,7 +64,7 @@ export function neutralizeFileMentions(text: string): string {
   // these matters because the CLI resolves a bare filename against its cwd, so
   // `@credentials.json` is a real read even with no slash in it.
   return text.replace(
-    /(?<![\w@])@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|go)\b)/g,
+    /(?<![\w@])@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|go)\b|[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@))/g,
     '@​',
   );
 }
@@ -188,7 +188,16 @@ export function isQuotaError(err: unknown): boolean {
   if (!err) return false;
   if (err instanceof QuotaExceededError) return true;
   const e = err as { status?: number; message?: string };
-  return QUOTA_EXHAUSTED_PATTERNS.some(re => re.test(String(e.message ?? err)));
+  const msg = String(e.message ?? err);
+  // Several APIs (Google/Gemini among them) use the word "quota" for a
+  // PER-MINUTE throttle — "Quota exceeded for quota metric … per minute, retry
+  // after 30s". That is transient, so an unrestricted /\bquota\b/ classified it
+  // permanent and killed the retries that would have cleared it. Anything that
+  // tells the caller to wait or names a time window is throttling, not exhaustion.
+  if (/\bper[- ]?(minute|second|hour|day)\b|\bretry after\b|\btry again\b|\btemporarily\b|\bslow down\b/i.test(msg)) {
+    return false;
+  }
+  return QUOTA_EXHAUSTED_PATTERNS.some(re => re.test(msg));
 }
 
 /**

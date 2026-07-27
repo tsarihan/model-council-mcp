@@ -24887,7 +24887,7 @@ var PROBE_IMAGE_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAGyklEQV
 function neutralizeFileMentions(text) {
   if (!text) return text;
   return text.replace(
-    /(?<![\w@])@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|go)\b)/g,
+    /(?<![\w@])@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|go)\b|[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@))/g,
     "@\u200B"
   );
 }
@@ -24919,7 +24919,11 @@ function isQuotaError(err) {
   if (!err) return false;
   if (err instanceof QuotaExceededError) return true;
   const e2 = err;
-  return QUOTA_EXHAUSTED_PATTERNS.some((re2) => re2.test(String(e2.message ?? err)));
+  const msg = String(e2.message ?? err);
+  if (/\bper[- ]?(minute|second|hour|day)\b|\bretry after\b|\btry again\b|\btemporarily\b|\bslow down\b/i.test(msg)) {
+    return false;
+  }
+  return QUOTA_EXHAUSTED_PATTERNS.some((re2) => re2.test(msg));
 }
 var MAX_CLI_OUTPUT_BYTES = 8 * 1024 * 1024;
 var CappedBuffer = class {

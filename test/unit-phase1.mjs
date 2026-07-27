@@ -377,6 +377,37 @@ console.log('▶ quota/rate-limit handling (real-world: a subscription runs out 
   check('a non-quota failure still uses all retries', calls2 === 3, `calls=${calls2}`);
 }
 
+console.log('▶ round-15: transient "quota" wording, extensionless secret filenames');
+{
+  const { isQuotaError, isRateLimitError, neutralizeFileMentions } = await import('../dist/providers/base.js');
+  // Several APIs use "quota" for a PER-MINUTE throttle. An unrestricted
+  // /\bquota\b/ read those as permanent and killed the retries that would have
+  // cleared them — the same over-broadening as the round-14 bare-429 bug, one
+  // level down.
+  const transient = [
+    'Quota exceeded for quota metric per minute. Retry after 30s',
+    'Resource has been exhausted (e.g. check quota). Please try again later.',
+    'quota temporarily exceeded, slow down',
+  ];
+  for (const m of transient) check(`transient "quota" wording is NOT permanent: ${m.slice(0, 34)}…`, !isQuotaError(new Error(m)));
+  // Genuine exhaustion must still classify permanent.
+  for (const m of ['You exceeded your current quota, check your plan and billing',
+                   'reached your free Grok Build usage limit',
+                   'Your credit balance is too low']) {
+    check(`genuine exhaustion still permanent: ${m.slice(0, 34)}…`, isQuotaError(new Error(m)));
+  }
+
+  // @id_rsa / @known_hosts are the canonical exfiltration targets and have no
+  // extension, so the round-14 name whitelist missed them entirely.
+  for (const f of ['id_rsa', 'known_hosts', 'authorized_keys', 'docker-compose']) {
+    check(`extensionless @${f} is neutralized`, neutralizeFileMentions(`read @${f}`) !== `read @${f}`);
+  }
+  // …without eating ordinary handles or addresses.
+  for (const t of ['ask @tom', 'use @Override', 'mail bob@example.com', 'cc @jane-doe@corp.com']) {
+    check(`left untouched: ${t}`, neutralizeFileMentions(t) === t);
+  }
+}
+
 console.log('▶ round-14: degenerate conflict + extensionless mentions');
 {
   const { detectResolutions } = await import('../dist/council/deconflict.js');

@@ -8,6 +8,17 @@
  * it is NOT the (prohibited) reuse of a subscription OAuth token against the raw
  * API.
  *
+ * IMPORTANT CAVEAT to the lockdown below — `@path` FILE MENTIONS: the CLI
+ * expands `@<path>` in the prompt CLIENT-SIDE, before and outside the
+ * tool-permission system, so `--tools ""`/`--add-dir` do NOT cover them.
+ * Verified live: with all tools disabled and no `--add-dir`, a prompt containing
+ * `@/tmp/x/secret.txt` returned that file's contents with
+ * `permission_denials: []`. Since untrusted text reaches these prompts (member
+ * responses in judge prompts, context/files/git-diff, repo content under
+ * full_repo_access), every prompt and system prompt is passed through
+ * neutralizeFileMentions() (see providers/base.ts) first. Re-verified after the
+ * fix: the same attack returns "NOFILE".
+ *
  * The nested call is locked down: all tools are disabled by default (`--tools
  * ""`), MCP is restricted (`--strict-mcp-config` with no config, avoiding
  * recursion back into this plugin), sessions aren't persisted, and —
@@ -78,7 +89,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CappedBuffer, ChatImage, ChatMessage, CompletionOptions, Provider } from './base.js';
+import { CappedBuffer, ChatImage, ChatMessage, CompletionOptions, Provider, neutralizeFileMentions } from './base.js';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
 import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
 import { redactUrlUserinfo } from '../config.js';
@@ -347,7 +358,7 @@ export class ClaudeCliProvider implements Provider {
         ...(addDirs.length ? ['--add-dir', ...addDirs] : []),
         '--strict-mcp-config',    // no MCP servers (no recursion into this plugin)
         '--no-session-persistence',
-        '--system-prompt', systemText, // replace the default coding-agent persona
+        '--system-prompt', neutralizeFileMentions(systemText), // replace default persona; @-mentions neutralized
       ];
 
       // Respect an explicit opts.timeoutMs verbatim (matches every other
@@ -367,9 +378,15 @@ export class ClaudeCliProvider implements Provider {
       // git_repo points elsewhere). Pin cwd to one of the already-granted
       // directories so the process's own directory never adds scope beyond
       // what --add-dir explicitly lists.
+      // Neutralize @path file mentions: the CLI expands them CLIENT-SIDE, before
+      // the tool-permission system, so they bypass --tools ''/--add-dir entirely
+      // (verified live). Untrusted text reaches this prompt (member responses in
+      // judge prompts, context/files/git-diff, repo content under
+      // full_repo_access), so this must happen for every call.
+      const safePrompt = neutralizeFileMentions(prompt);
       const { code, stdout, stderr } = await this.run(
         args,
-        prompt,
+        safePrompt,
         timeoutMs,
         addDirs[addDirs.length - 1],
       );

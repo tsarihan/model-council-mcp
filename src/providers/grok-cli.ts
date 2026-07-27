@@ -56,7 +56,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CappedBuffer, ChatImage, ChatMessage, CompletionOptions, Provider } from './base.js';
+import { CappedBuffer, ChatImage, ChatMessage, CompletionOptions, Provider , neutralizeFileMentions } from './base.js';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
 import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
 
@@ -201,11 +201,11 @@ export class GrokCliProvider implements Provider {
       if (images.length === 0) {
         promptDir = mkdtempSync(join(tmpdir(), 'grok-council-prompt-'));
         const promptFile = join(promptDir, 'prompt.txt');
-        writeFileSync(promptFile, convo, 'utf8');
+        writeFileSync(promptFile, neutralizeFileMentions(convo), 'utf8');
         promptArgs = ['--prompt-file', promptFile];
       } else {
         const blocks: ContentBlock[] = [
-          { type: 'text', text: convo },
+          { type: 'text', text: neutralizeFileMentions(convo) },
           ...images.map(img => ({ type: 'image' as const, data: img.base64, mimeType: img.mimeType })),
         ];
         promptArgs = ['--prompt-json', JSON.stringify(blocks)];
@@ -215,6 +215,8 @@ export class GrokCliProvider implements Provider {
         '-m', model,
         '--output-format', 'json',
         ...promptArgs,
+        '--verbatim', // send the prompt EXACTLY as given: without this, grok expands
+                      // @path mentions client-side, bypassing the --tools '' lockdown
         '--tools', '', // fully locked down — native image blocks need no tool access
         '--permission-mode', 'bypassPermissions', // required in headless mode, see file header
         '--system-prompt-override', systemText,

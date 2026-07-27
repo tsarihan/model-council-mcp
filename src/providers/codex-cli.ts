@@ -47,7 +47,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CappedBuffer, ChatImage, ChatMessage, CompletionOptions, Provider } from './base.js';
+import { CappedBuffer, ChatImage, ChatMessage, CompletionOptions, Provider , neutralizeFileMentions } from './base.js';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
 import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
 
@@ -224,7 +224,9 @@ export class CodexCliProvider implements Provider {
       // a caller with a genuinely low REQUEST_TIMEOUT_MS now correctly has
       // that honoured here too, consistent with API providers.
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-      const { code, stderr } = await this.run(args, prompt, timeoutMs);
+      // Defensive: codex's @-mention handling is unverified, and the claude/grok
+      // CLIs both expand mentions client-side (verified) — cheap to neutralize.
+      const { code, stderr } = await this.run(args, neutralizeFileMentions(prompt), timeoutMs);
       if (code !== 0) {
         throw new Error(
           `codex CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || '(no stderr)'}`,

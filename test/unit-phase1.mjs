@@ -278,6 +278,28 @@ console.log('▶ sliceBalancedJson (judge JSON extraction robust to trailing pro
     JSON.parse(sliceBalancedJson('{"x":[1,2,3]}```\nsome note }')).x.length === 3);
 }
 
+console.log('▶ neutralizeFileMentions (@path client-side expansion bypasses the CLI tool lockdown — VERIFIED LIVE)');
+{
+  const { neutralizeFileMentions } = await import('../dist/providers/base.js');
+  const ZW = '\u200b';
+  // Verified live: `claude -p --tools "" ` with NO --add-dir read /tmp/x/secret.txt
+  // when the prompt contained "@/tmp/x/secret.txt", returning its contents with
+  // permission_denials: []. Expansion is CLIENT-SIDE, before the permission system.
+  const abs = neutralizeFileMentions('see @/etc/passwd now');
+  check('absolute path mention is broken', abs.includes('@' + ZW + '/etc/passwd'), JSON.stringify(abs));
+  check('home-relative mention is broken', neutralizeFileMentions('@~/.ssh/id_rsa').includes('@' + ZW + '~'));
+  check('dot-relative mention is broken', neutralizeFileMentions('@./secrets.env').includes('@' + ZW + '.'));
+  check('bare relative path with a slash is broken', neutralizeFileMentions('@src/config.ts').includes('@' + ZW + 'src/'));
+  // Must NOT mangle ordinary text the model needs to read verbatim.
+  check('email address is left alone', neutralizeFileMentions('mail bob@example.com') === 'mail bob@example.com');
+  check('decorator/handle is left alone', neutralizeFileMentions('use @Override and ask @tom') === 'use @Override and ask @tom');
+  check('empty input is safe', neutralizeFileMentions('') === '');
+  // The visible text is unchanged once the zero-width char is removed, so the
+  // model still reads exactly what the author wrote.
+  check('mitigation is visually invisible (text identical minus the ZWSP)',
+    neutralizeFileMentions('read @/tmp/a.txt').replace(new RegExp(ZW, 'g'), '') === 'read @/tmp/a.txt');
+}
+
 console.log('▶ parseJudgeJson: decoy/schema-echo preamble does not replace the real answer (round-12 research)');
 {
   const { parseJudgeJson, extractJsonCandidates } = await import('../dist/providers/base.js');

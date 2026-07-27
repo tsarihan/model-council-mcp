@@ -388,7 +388,21 @@ export async function runDialectic(input: DialecticInput): Promise<DialecticResu
   // apparently-complete dossier with no degradation signal, mirroring the same
   // partial-outage gap categorize()/poolResponses() were fixed for.
   const defenseOutage = defenses.some(r => r.error);
-  const judgeDegraded = digest.judgeDegraded || prosConsResult.judgeDegraded || defenseOutage;
+  // The SELECTION round (step 4) is the dialectic's actual convergence output:
+  // each member's final ranked pick after weighing the pros/cons. A member that
+  // errors HERE is absent from `selections` — the council's final position is
+  // incomplete — yet none of the three existing judgeDegraded sources see it
+  // (digest covers the round-0 thesis, prosConsResult covers the judge dossier
+  // call, defenseOutage covers step 2). Reproduced: 3 members, one errors in
+  // the selection round → selections holds 2 picks + 1 error, judgeDegraded
+  // stays undefined, and a caller trusting the top-level flag reads an
+  // incomplete convergence as clean. Symmetric to defenseOutage; same class
+  // of partial-outage gap. The top-level judgeDegraded is the uniform "don't
+  // trust this as clean convergence" signal across every mode, so a selection-
+  // round outage must elevate it just as a defense-round outage does.
+  const selectionOutage = selections.some(r => r.error);
+  const judgeDegraded =
+    digest.judgeDegraded || prosConsResult.judgeDegraded || defenseOutage || selectionOutage;
 
   return {
     mode: 'dialectic',

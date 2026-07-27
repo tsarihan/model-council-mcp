@@ -63,8 +63,24 @@ export function neutralizeFileMentions(text: string): string {
   // containing a POSIX or Windows separator, AND a bare `name.ext` — the last of
   // these matters because the CLI resolves a bare filename against its cwd, so
   // `@credentials.json` is a real read even with no slash in it.
+  //
+  // DOUBLE-@ (`@@/path`): the lookbehind previously also excluded `@`
+  // (`(?<![\w@])`) to avoid neutralizing the second `@` of a `@@` pair. But
+  // that left `@@/path` wholly un-neutralized: the first `@`'s lookahead saw
+  // `@`, not a path shape, so it did not match; and the second `@` was then
+  // blocked by the lookbehind — so a live `@/path` mention survived inside
+  // `@@/path`. (Any `@@path` where the first `@` is preceded by a word char
+  // — `foo@@bar.txt` — was already a bypass for the same reason.) The fix has
+  // two halves: (1) the lookahead now ALSO accepts `@` followed by any of the
+  // same path shapes (`@[~./\\]`, `@[\w.\-:]*[/\\]`, …) so the first `@` of a
+  // `@@/path` pair matches; (2) the lookbehind is narrowed to `(?<!\w)` (no
+  // `@`), so the second `@` — now preceded by the first `@`, not a word char —
+  // matches the ORDINARY path alternation on the same pass. Both `@`s end up
+  // broken. A `@@` NOT followed by a path shape (`@@channel`) still matches
+  // neither the `@`-prefixed nor the ordinary path alts, so it is left
+  // untouched; and an email's `@` is still blocked by the word char before it.
   return text.replace(
-    /(?<![\w@])@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|go)\b|[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@))/g,
+    /(?<!\w)@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|go)\b|[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@)|@[~./\\]|@[\w.\-:]*[/\\]|@[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|@(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|go)\b|@[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@))/g,
     '@​',
   );
 }

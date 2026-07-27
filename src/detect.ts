@@ -9,6 +9,9 @@
  * degrade to "not usable" rather than throwing.
  */
 import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { ProviderRegistry } from './providers/registry.js';
 import { isEmbeddingModel } from './council/orchestrator.js';
 import { Subscriptions, tierAllowsCloud } from './subscriptions.js';
@@ -36,7 +39,7 @@ interface CliResult { code: number; stdout: string; stderr: string; }
 function runCli(
   command: string,
   args: string[],
-  opts: { timeoutMs: number; input?: string; stripKeys?: 'anthropic' | 'openai' | 'xai' } = { timeoutMs: 8000 },
+  opts: { timeoutMs: number; input?: string; stripKeys?: 'anthropic' | 'openai' | 'xai'; cwd?: string } = { timeoutMs: 8000 },
 ): Promise<CliResult> {
   return new Promise(resolve => {
     const env = { ...process.env };
@@ -58,7 +61,12 @@ function runCli(
       // timeout reaps any subprocesses the probed CLI itself spawns, not just
       // the direct child — otherwise a hung probe can leave descendants
       // running after `council_status` gives up on it.
-      child = spawn(command, args, { env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+      // cwd: when set, pins the child's working directory so a probed CLI that
+      // reads project-context files from its own cwd (AGENTS.md, .cursorrules, …)
+      // finds nothing but an empty temp dir there — matching the real provider's
+      // cwd pinning. Unset → inherits this server's cwd (the legacy default,
+      // fine for `--version`/`login status` which read no project context).
+      child = spawn(command, args, { env, stdio: ['pipe', 'pipe', 'pipe'], detached: true, ...(opts.cwd ? { cwd: opts.cwd } : {}) });
     } catch {
       resolve({ code: 127, stdout: '', stderr: 'spawn failed' });
       return;
@@ -200,41 +208,54 @@ async function detectGrok(tiers: SubscriptionTiers, subs: Subscriptions): Promis
   const cmd = cliPath('GROK_CLI_PATH', 'grok');
   const installed = (await runCli(cmd, ['--version'], { timeoutMs: 8000 })).code === 0;
   if (!installed) return { installed: false, usable: false };
-  // Unlike Claude/ChatGPT (which default to a paid tier — the user already
-  // opted in just by installing), Grok defaults to 'free' precisely so a user
-  // who already has the CLI installed and logged in isn't unexpectedly charged
-  // against their X.AI quota by this new provider. The login probe below is a
-  // REAL completion call (no free "login status" subcommand exists for this
-  // CLI) — so it must not run at all until the same opt-in gate that governs
-  // registration (config.ts) also allows cloud, or a "free" user pays for a
-  // probe they never asked for just by running council_status.
-  // KNOWN, DEFERRED (round 7): the legacy GROK_CLI=true escape hatch gates
-  // THIS probe (spending real quota on a free tier), but autoPopulatedMembers
-  // and quotaWarning gate on tierAllowsCloud alone — a GROK_CLI=true user at
-  // the default free tier pays for this probe on every detection yet never
-  // gets grok-cli members auto-added, and council_status's hint still tells
-  // them to set a tier as if nothing had run. Low severity (legacy env var,
-  // no data-safety impact) but genuinely ambiguous which behavior is
-  // "correct" — fixing only one of the three gates (this probe,
-  // autoPopulatedMembers, quotaWarning) would just move the inconsistency
-  // rather than resolve it.
-  if (!tierAllowsCloud('grok', tiers.grok, subs) && !envBool('GROK_CLI', false)) {
+  // grok-cli is DISABLED by default (src/providers/grok-cli.ts: its `--tools`
+  // lockdown was proven not to work — both `--tools ''` and `--tools none`
+  // leave the full built-in tool set enabled, and `--permission-mode
+  // bypassPermissions` auto-approves every tool call, so any completion is an
+  // arbitrary-command-execution surface). The provider's complete() refuses to
+  // run unless GROK_CLI_UNSAFE_ACCEPT_RCE=true. The detection probe below is a
+  // REAL completion call with that same argv shape, so it has the SAME RCE
+  // surface — it must NOT run for a user who never opted into that risk.
+  //
+  // Round-17 finding (kimi): the probe previously gated on TIER alone (or the
+  // legacy GROK_CLI=true), so a user who set a paid Grok tier got the RCE-argv
+  // probe on every council_status/boot WITHOUT ever setting the RCE opt-in —
+  // bypassing the disabled-provider mitigation at the detection path. The RCE
+  // flag is now REQUIRED (a paid tier is a quota opt-in, NOT an RCE opt-in).
+  //
+  // The tier/GROK_CLI gate is KEPT as a SECOND, independent gate for the
+  // separate quota concern: a free-tier user must not spend a real
+  // quota-metered probe just by running council_status. BOTH gates must pass:
+  //   - no RCE flag  → no probe (grok disabled, matching the provider).
+  //   - RCE flag + free tier (and no GROK_CLI) → no probe (no quota opt-in).
+  //   - RCE flag + paid tier (or GROK_CLI) → probe runs, cwd-pinned, --tools none.
+  // This resolves the round-7 deferred ambiguity: the RCE flag is the single
+  // gate for grok's RCE surface; the tier gate remains for the quota concern.
+  const quotaOptIn = tierAllowsCloud('grok', tiers.grok, subs) || envBool('GROK_CLI', false);
+  if (process.env.GROK_CLI_UNSAFE_ACCEPT_RCE !== 'true' || !quotaOptIn) {
     return { installed: true, usable: false };
   }
-  // No dedicated "login status" subcommand exists for this CLI (unlike codex),
-  // and `grok login` itself would trigger a real OAuth/device-code flow rather
-  // than just reporting state — so, like detectClaude, this is a real minimal
-  // completion probe: only a genuinely logged-in, working CLI returns a
-  // completed turn. Locked down the same way the real completion path is
-  // (src/providers/grok-cli.ts): no tools, bypassPermissions (required in
-  // headless mode or the call silently cancels), subscription auth forced by
-  // stripping XAI_API_KEY.
-  const probe = await runCli(
-    cmd,
-    ['-p', 'Reply with the single word READY', '--output-format', 'json',
-      '--tools', '', '--permission-mode', 'bypassPermissions'],
-    { timeoutMs: 20000, stripKeys: 'xai' },
-  );
+  // Both opt-ins present. Pin the probe's cwd to a fresh empty temp dir (like
+  // the real provider) so the grok CLI does not inherit this server's project
+  // cwd, where project-context files (AGENTS.md, .cursorrules, …) could steer
+  // the model during the probe. Use `--tools none` to match the provider's
+  // current argv (both shapes are RCE — the opt-in flag is the real mitigation,
+  // not the --tools value — but consistency with the provider keeps the two
+  // paths from drifting apart). bypassPermissions is required in headless mode
+  // or the call silently cancels; subscription auth is forced by stripping
+  // XAI_API_KEY.
+  const probeDir = mkdtempSync(join(tmpdir(), 'grok-detect-cwd-'));
+  let probe: CliResult;
+  try {
+    probe = await runCli(
+      cmd,
+      ['-p', 'Reply with the single word READY', '--output-format', 'json',
+        '--tools', 'none', '--permission-mode', 'bypassPermissions'],
+      { timeoutMs: 20000, stripKeys: 'xai', cwd: probeDir },
+    );
+  } finally {
+    try { rmSync(probeDir, { recursive: true, force: true }); } catch { /* already gone */ }
+  }
   if (probe.code !== 0) return { installed: true, usable: false };
   try {
     const parsed = JSON.parse(probe.stdout) as { text?: unknown; stopReason?: unknown };

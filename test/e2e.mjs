@@ -1298,6 +1298,32 @@ async function main() {
 
     await detectClient.close();
 
+    // Round-17 (kimi): the detection probe uses grok's proven-RCE argv, so it
+    // must NOT run unless the user opted in via GROK_CLI_UNSAFE_ACCEPT_RCE. A
+    // PAID Grok tier is a quota opt-in, NOT an RCE opt-in — so a supergrok user
+    // who never set the RCE flag must get grok usable:false (no probe, no RCE
+    // surface), matching the disabled provider. If the gate failed, the mock
+    // grok probe would return stopReason EndTurn → usable:true.
+    const { GROK_CLI_UNSAFE_ACCEPT_RCE: _omit, ...noRceEnv } = process.env;
+    const noRceStateDir = mkdtempSync(join(tmpdir(), 'mc-e2e-norce-'));
+    const noRceTransport = new StdioClientTransport({
+      command: 'node', args: [serverEntry],
+      env: { ...noRceEnv, GROK_TIER: 'supergrok', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: join(noRceStateDir, 'state.json') },
+    });
+    const noRceClient = new Client({ name: 'norce-e2e', version: '1.0.0' }, { capabilities: {} });
+    await noRceClient.connect(noRceTransport);
+    try {
+      const noRceSt = parseToolResult(await noRceClient.callTool({ name: 'council_status', arguments: {} }));
+      check('round-17: paid grok tier WITHOUT the RCE opt-in is NOT probed (usable:false, no RCE surface)',
+        noRceSt.detected?.grok?.installed === true && noRceSt.detected?.grok?.usable === false,
+        JSON.stringify(noRceSt.detected?.grok));
+      check('round-17: paid grok tier without RCE opt-in adds no grok-cli members',
+        !(noRceSt.council?.members ?? []).some(l => l.startsWith('grok-cli:')),
+        (noRceSt.council?.members ?? []).join(','));
+    } finally {
+      await noRceClient.close();
+    }
+
     // Reboot against the SAME state file → the reduced council must be honoured
     // (initCouncil applies persisted members, does NOT re-auto-populate the deletion).
     const rebootTransport = new StdioClientTransport({

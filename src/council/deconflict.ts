@@ -135,6 +135,24 @@ function mergePositionsByModel(
  * MATCH is merely pessimistic (a conflict is carried forward), while a false
  * MISS fabricates consensus — so lean toward matching.
  */
+/**
+ * A position is "unattributed" when it carries no usable party label: no
+ * `models` array, an empty one, OR one whose entries are all empty/whitespace.
+ * The categorization schema requires `models` to be an array of strings but
+ * sets no minItems and no non-empty constraint, so a judge can emit `models:
+ * [""]` (or `["", "  "]`) — schema-valid under constrained decoding. Treating
+ * such a position as ATTRIBUTED (array length 1) defeated both the
+ * all-unattributed guard (`.every(length === 0)`) and the mixed-attribution
+ * guard (`.some(length === 0)`): a single `[""]`-party conflict whose
+ * (unlabelled) member errored was falsely RESOLVED, because `partyErrored`
+ * skips empty strings too — nothing matched, so it fell to the resolved
+ * branch. This helper is the single notion of "has a real party label" shared
+ * by both carry-forward guards, so `[""]` is handled identically to `[]`.
+ */
+function noAttribution(p: ConflictPosition): boolean {
+  return (p.models ?? []).every(m => !String(m ?? '').trim());
+}
+
 function partyErrored(positions: ConflictPosition[], erroredLabels: Set<string>): boolean {
   if (erroredLabels.size === 0) return false;
   const errored = [...erroredLabels];
@@ -213,9 +231,10 @@ export function detectResolutions(
       matchedNewIdx.add(updatedIdx);
     } else if (topicStillReported) {
       remaining.push(prev);
-    } else if ((prev.positions ?? []).every(p => (p.models ?? []).length === 0)) {
+    } else if ((prev.positions ?? []).every(p => noAttribution(p))) {
       // A conflict with NO party attached (the judge emitted a topic but no
-      // positions, or positions with empty models) cannot be SHOWN to have
+      // positions, or positions with empty/whitespace-only models — see
+      // noAttribution for the `[""]` edge) cannot be SHOWN to have
       // resolved: there is nobody whose changed stance could demonstrate it, and
       // the party-outage guard below has nothing to match either. Treating the
       // topic's absence as resolution turns a degenerate judge entry into a
@@ -224,12 +243,14 @@ export function detectResolutions(
       partyDropout = true;
     } else if (
       erroredLabels.size > 0 &&
-      (prev.positions ?? []).some(p => (p.models ?? []).length === 0)
+      (prev.positions ?? []).some(p => noAttribution(p))
     ) {
       // MIXED attribution: not every position is unlabeled (the branch above
       // would have caught that), but AT LEAST ONE is — a real, live gap in the
       // categorization schema, which requires `models` to be an array but sets
-      // no minItems, so a judge emitting `models: []` for a position it
+      // no minItems (and no non-empty constraint — a `[""]` position counts
+      // here too via noAttribution), so a judge emitting `models: []` (or
+      // `[""]`) for a position it
       // couldn't confidently attribute is schema-valid even under constrained
       // decoding. partyErrored can only match an errored label against a
       // position that NAMES a model; it has nothing to compare an unattributed
@@ -621,19 +642,30 @@ export async function deconflict(
     // some of what looks "unresolved" may only look that way because a party
     // was absent when the judge assessed it, so the score is a lower bound.
     // (If everything resolved, all resolutions happened in dropout-free rounds
-    // — a dropout only ever carries forward — so the result is trustworthy.)
+    // — a dropout only ever CARRIES FORWARD, never resolves — so a run that
+    // reached a clean 100% did so in rounds where the party was present, and
+    // the result is trustworthy; the dropout only deferred, it did not
+    // fabricate. Conditioning partyDropoutDegraded on `openConflicts.length`
+    // below makes the code match that reasoning. Three independent council
+    // members (codex/kimi/deepseek, round 17) flagged the prior unconditional
+    // OR as flag fatigue: a single early-round dropout permanently tainted a
+    // run that went on to fully resolve everything with complete participation.)
     // ALSO propagate an already-degraded INITIAL categorization: `totalConflicts`
     // (the score's denominator) is fixed from it, so if that measurement was
     // taken over an incomplete council or a failed judge, every score derived
     // from it is likewise unreliable — even when the loop itself ran cleanly and
-    // resolved everything. Without this the flag was silently dropped for any
-    // run that found at least one conflict.
+    // resolved everything. This one IS unconditional: the denominator itself is
+    // suspect, so even a 100% over a degraded initial count is not a clean
+    // measurement (unlike partyDropoutDegraded, which only ever defers a
+    // resolution that later clean rounds can genuinely complete).
     // `partyDropoutDegraded` is set only when an outage-driven ambiguity
     // demonstrably prevented a conflict from resolving/discarding cleanly (see
     // detectResolutions) — NOT merely because some round had a member error.
     // (A round with an unrelated member error but no affected conflict sets
     // `hadRecoveredMemberOutage` below instead, without elevating this flag.)
-    ...(midLoopJudgeFailure || input.judgeDegraded || partyDropoutDegraded
+    ...(midLoopJudgeFailure
+        || input.judgeDegraded
+        || (partyDropoutDegraded && openConflicts.length > 0)
       ? { judgeDegraded: true }
       : {}),
     ...(hadRecoveredMemberOutage ? { hadRecoveredMemberOutage: true } : {}),

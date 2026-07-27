@@ -432,6 +432,47 @@ console.log('▶ round-16 (fable+codex+glm dialectic council): mechanism 14, dia
   const gotFull = detectResolutions(fullyAttributed, { conflicting: [], commonAgreement: 'ok' }, new Set(['z']));
   check('fully-attributed conflict with an unrelated error still resolves normally', gotFull.resolved.length === 1);
 
+  // Mechanism 16 (deepseek, round 17): `models: [""]` — an array whose only
+  // entry is an empty string. Schema-valid (items are strings), so a judge
+  // under constrained decoding can emit it. `length === 0` is FALSE (length 1),
+  // so the all-unattributed guard (.every) and the mixed guard (.some) both
+  // missed it, and partyErrored skips empty strings — so a single `[""]`-party
+  // conflict whose (unlabelled) member errored was falsely RESOLVED. noAttribution
+  // now treats `[""]` like `[]`.
+  const emptyStr = [{ id: 'c3', topic: 'Z', positions: [{ models: [''], position: 'p' }] }];
+  const gotEmpty = detectResolutions(emptyStr, { conflicting: [], commonAgreement: 'ok' }, new Set(['a']));
+  check('models:[""] single-party conflict is carried forward when its member errored (mechanism 16)',
+    gotEmpty.resolved.length === 0 && gotEmpty.remaining.length === 1 && gotEmpty.partyDropout === true,
+    JSON.stringify(gotEmpty));
+  const emptyStrMixed = [{ id: 'c4', topic: 'W', positions: [{ models: ['a'], position: 'p1' }, { models: [''], position: 'p2' }] }];
+  const gotEmptyMix = detectResolutions(emptyStrMixed, { conflicting: [], commonAgreement: 'ok' }, new Set(['b']));
+  check('models:[""] mixed-attribution conflict is carried forward when ANY member errored',
+    gotEmptyMix.resolved.length === 0 && gotEmptyMix.remaining.length === 1 && gotEmptyMix.partyDropout === true,
+    JSON.stringify(gotEmptyMix));
+  const emptyStrClean = detectResolutions(emptyStr, { conflicting: [], commonAgreement: 'ok' }, new Set());
+  // A `[""]`-ONLY conflict is degenerate (no attributable party), so — like a
+  // `[]`-only conflict — branch 3 carries it forward EVEN with no error: the
+  // topic's absence can't be shown to be a resolution when no party's stance
+  // is on the record. The no-over-correction case is the MIXED shape below.
+  check('models:[""] single-party conflict is degenerate: carried forward even with NO error',
+    emptyStrClean.resolved.length === 0 && emptyStrClean.remaining.length === 1 && emptyStrClean.partyDropout === true,
+    JSON.stringify(emptyStrClean));
+  const emptyStrMixedClean = detectResolutions(emptyStrMixed, { conflicting: [], commonAgreement: 'ok' }, new Set());
+  check('models:[""] MIXED conflict resolves normally when NOTHING errored (no over-correction)',
+    emptyStrMixedClean.resolved.length === 1 && emptyStrMixedClean.partyDropout === false,
+    JSON.stringify(emptyStrMixedClean));
+  // whitespace-only labels are also unattributed; a real label alongside "" is attributed.
+  const wsOnly = [{ id: 'c5', topic: 'V', positions: [{ models: ['  '], position: 'p' }] }];
+  check('models:["  "] (whitespace-only) is treated as unattributed',
+    detectResolutions(wsOnly, { conflicting: [], commonAgreement: 'ok' }, new Set(['a'])).partyDropout === true);
+  const mixedReal = [{ id: 'c6', topic: 'U', positions: [{ models: ['a', ''], position: 'p' }] }];
+  // ["a",""] has a REAL label alongside "" → attributed. With no member errored
+  // and the topic gone, it resolves (branch 6). If noAttribution misclassified
+  // this as unattributed, branch 3 would carry it forward instead.
+  const gotMixedReal = detectResolutions(mixedReal, { conflicting: [], commonAgreement: 'ok' }, new Set());
+  check('models:["a",""] still counts as attributed (has a real label) → resolves when clean',
+    gotMixedReal.resolved.length === 1 && gotMixedReal.partyDropout === false, JSON.stringify(gotMixedReal));
+
   // Dialectic defense-round outage: buildProsCons filters errored defenses out
   // of its prompt but never sets judgeDegraded for it -- an incomplete
   // antithesis produced an apparently-complete dossier with no degradation
@@ -456,6 +497,25 @@ console.log('▶ round-16 (fable+codex+glm dialectic council): mechanism 14, dia
   ];
   const healthy = await runDialectic({ question: 'q', judgeQuestion: 'q', initialResponses, members: healthyMembers, judgeModelId: { provider: 'ollama', model: 'j' }, judgeProvider: judge, runtime, verbose: false });
   check('dialectic: a healthy defense round has no judgeDegraded', healthy.judgeDegraded === undefined);
+
+  // Dialectic SELECTION-round outage (the 15th mechanism, found this round):
+  // step 4 is the dialectic's actual convergence output (each member's final
+  // ranked pick). A member that errors HERE is absent from `selections`, yet
+  // none of the three existing judgeDegraded sources see it (digest covers the
+  // round-0 thesis, prosConsResult covers the dossier judge call, defenseOutage
+  // covers step 2). Reproduced: judgeDegraded stayed undefined while selections
+  // held an error → an incomplete convergence read as clean. Symmetric to the
+  // defenseOutage guard; same partial-outage class.
+  let selN = 0;
+  const selOutageMembers = [
+    // member a: defense succeeds (call 1), selection errors (call 2)
+    { modelId: { provider: 'ollama', model: 'a' }, provider: stub(async () => { selN++; if (selN === 2) throw new Error('selection-timeout'); return 'defense A'; }) },
+    { modelId: { provider: 'ollama', model: 'b' }, provider: stub(async () => 'B') },
+  ];
+  const selOutage = await runDialectic({ question: 'q', judgeQuestion: 'q', initialResponses, members: selOutageMembers, judgeModelId: { provider: 'ollama', model: 'j' }, judgeProvider: judge, runtime, verbose: false });
+  check('dialectic: a selection-round outage sets judgeDegraded (mechanism 15)',
+    selOutage.selections.some(r => r.error) && selOutage.defenses.every(r => !r.error) && selOutage.judgeDegraded === true,
+    JSON.stringify({ selErr: selOutage.selections.some(r => r.error), defClean: selOutage.defenses.every(r => !r.error), jd: selOutage.judgeDegraded }));
 
   // Un-sticky partyDropoutDegraded: BOTH codex and glm independently
   // recommended the same fix -- an unrelated, un-affecting member outage must
@@ -494,6 +554,33 @@ console.log('▶ round-16 (fable+codex+glm dialectic council): mechanism 14, dia
     members: affectedMembers, judgeModelId: { provider: 'ollama', model: 'j' }, judgeProvider: deconflictJudge, runtime, maxRounds: 1, verbose: false,
   });
   check('a party-affecting outage still sets judgeDegraded (no over-correction)', affectedResult.judgeDegraded === true);
+
+  // Round-17 sticky-tail fix (codex+kimi+deepseek): partyDropoutDegraded was
+  // never cleared, so a party dropout in round 1 that FORCED a carry-forward
+  // permanently tainted a run that went on to fully resolve everything with
+  // complete participation in every later round — contradicting the comment
+  // ("if everything resolved ... the result is trustworthy"). A dropout only
+  // ever carries forward; if the conflict later resolved, that resolution
+  // happened in a dropout-free round, so a final 100% is genuine. The flag now
+  // elevates ONLY when open conflicts remain.
+  let stickyN = 0;
+  const stickyMembers = [
+    // member a: errors round 1 (party dropout → carry-forward), recovers round 2
+    { modelId: { provider: 'ollama', model: 'a' }, provider: stub(async () => { stickyN++; if (stickyN === 1) throw new Error('transient'); return 'stance A revised'; }) },
+    { modelId: { provider: 'ollama', model: 'b' }, provider: stub(async () => 'stance B') },
+  ];
+  const stickyResult = await deconflict({
+    question: 'q', judgeQuestion: 'q', commonAgreement: null, complementary: [],
+    initialConflicts: [{ id: 'conflict-1', topic: 'X', positions: [{ models: ['ollama:a'], position: 'p1' }, { models: ['ollama:b'], position: 'p2' }] }],
+    initialResponses: [
+      { modelId: { provider: 'ollama', model: 'a' }, label: 'ollama:a', response: 'stance A', latencyMs: 1 },
+      { modelId: { provider: 'ollama', model: 'b' }, label: 'ollama:b', response: 'stance B', latencyMs: 1 },
+    ],
+    members: stickyMembers, judgeModelId: { provider: 'ollama', model: 'j' }, judgeProvider: deconflictJudge, runtime, maxRounds: 2, verbose: false,
+  });
+  check('sticky-tail: a dropout that later fully resolves is TRUSTWORTHY (score 100, no judgeDegraded)',
+    stickyResult.deconflictionScore === 100 && stickyResult.judgeDegraded === undefined,
+    JSON.stringify({ score: stickyResult.deconflictionScore, jd: stickyResult.judgeDegraded }));
 }
 
 console.log('▶ round-15: transient "quota" wording, extensionless secret filenames');
@@ -709,6 +796,25 @@ console.log('▶ neutralizeFileMentions (@path client-side expansion bypasses th
   check('email address is left alone', neutralizeFileMentions('mail bob@example.com') === 'mail bob@example.com');
   check('decorator/handle is left alone', neutralizeFileMentions('use @Override and ask @tom') === 'use @Override and ask @tom');
   check('empty input is safe', neutralizeFileMentions('') === '');
+  // Round 17 (kimi+deepseek independently): @@ double-@ bypass. The lookbehind
+  // blocks the SECOND @, but the FIRST @ of a @@ pair had no path-shaped
+  // lookahead (it sees @), so @@/path passed through wholly un-neutralized.
+  // Now the first @ matches an @-prefixed path alt; the second @ then matches
+  // the ordinary path alt on the same pass. Both @s end up broken.
+  const dbl = neutralizeFileMentions('see @@/etc/passwd now');
+  check('double-@ absolute path has BOTH @s neutralized (@@/etc/passwd)',
+    dbl.includes('@' + ZW + '@' + ZW + '/etc/passwd'), JSON.stringify(dbl));
+  check('double-@ extensionless secret is neutralized (@@id_rsa)',
+    neutralizeFileMentions('@@id_rsa') !== '@@id_rsa' &&
+    neutralizeFileMentions('@@id_rsa').includes(ZW));
+  check('double-@ bare name.ext is neutralized (@@creds.json)',
+    neutralizeFileMentions('read @@creds.json') !== 'read @@creds.json');
+  // A @@ NOT followed by a path shape (a chat-style @@channel handle) must stay
+  // untouched — the fix targets @-prefixed PATHS, not every @@ in prose.
+  check('double-@ non-path handle is left alone (@@channel)',
+    neutralizeFileMentions('ping @@channel') === 'ping @@channel');
+  check('triple-@ path is neutralized on its path-bearing @s (@@@/etc/passwd)',
+    neutralizeFileMentions('@@@/etc/passwd').includes(ZW + '/etc/passwd'));
   // The visible text is unchanged once the zero-width char is removed, so the
   // model still reads exactly what the author wrote.
   // Only UNTRUSTED input is neutralized. Our own scaffolding — notably the

@@ -516,6 +516,50 @@ console.log('▶ round-16 (fable+codex+glm dialectic council): mechanism 14, dia
   check('models:["a",0] resolves when clean (has a real string label)',
     gotMixNonClean.resolved.length === 1 && gotMixNonClean.partyDropout === false, JSON.stringify(gotMixNonClean));
 
+  // Mechanism 18 (codex + independent audit, round 19): judge mis-attribution
+  // with VALID string labels. The judge labels a stance with a label that isn't
+  // the real party (a phantom naming no member, OR a duplicate of another
+  // position's label). The real party then errors; the judge (filtering errored
+  // responses) reports conflicting:[]; partyErrored can't match the errored
+  // member against the wrong label → the conflict fell to the RESOLVED branch →
+  // fabricated 100%. Fix: attributionUnreliable (phantom OR duplicate) + an
+  // errored member → carry forward. The 4th arg is the real member-label set.
+  const memberLabels = new Set(['ollama:a', 'ollama:b', 'ollama:c']);
+  // 18a: phantom string label "unknown" (names no member); real party ollama:a errored.
+  const phantom = [{ id: 'c11', topic: 'P', positions: [{ models: ['unknown'], position: 'Use retries.' }] }];
+  const gotPhantom = detectResolutions(phantom, { conflicting: [], commonAgreement: 'ok' }, new Set(['ollama:a']), memberLabels);
+  check('mechanism 18a: phantom string label + real party errored → carried forward (not fabricated 100)',
+    gotPhantom.resolved.length === 0 && gotPhantom.remaining.length === 1 && gotPhantom.partyDropout === true,
+    JSON.stringify(gotPhantom));
+  // 18b (codex): duplicate label "A" on two positions; the real party of the
+  // second (B) errored. "A" and "B" are real member labels here, so the phantom
+  // check passes — the DUPLICATE is what makes the attribution unreliable.
+  const memberAB = new Set(['A', 'B']);
+  const dup = [{ id: 'c12', topic: 'D', positions: [{ models: ['A'], position: 'p1' }, { models: ['A'], position: 'p2' }] }];
+  const gotDup = detectResolutions(dup, { conflicting: [], commonAgreement: 'ok' }, new Set(['B']), memberAB);
+  check('mechanism 18b: duplicate label across positions + real party errored → carried forward',
+    gotDup.resolved.length === 0 && gotDup.remaining.length === 1 && gotDup.partyDropout === true,
+    JSON.stringify(gotDup));
+  // No over-flagging on CLEAN runs: a phantom/duplicate attribution with NO
+  // error resolves honestly (everyone was heard) — the new branch needs erroredLabels > 0.
+  const gotPhantomClean = detectResolutions(phantom, { conflicting: [], commonAgreement: 'ok' }, new Set(), memberLabels);
+  check('mechanism 18: phantom with NO error still resolves (no over-flagging on clean runs)',
+    gotPhantomClean.resolved.length === 1 && gotPhantomClean.partyDropout === false, JSON.stringify(gotPhantomClean));
+  const gotDupClean = detectResolutions(dup, { conflicting: [], commonAgreement: 'ok' }, new Set(), memberAB);
+  check('mechanism 18: duplicate with NO error still resolves (no over-flagging on clean runs)',
+    gotDupClean.resolved.length === 1 && gotDupClean.partyDropout === false, JSON.stringify(gotDupClean));
+  // No over-flagging for RELIABLE attribution: correct, distinct, member-matching
+  // labels + an UNRELATED error → resolves (the new branch must not fire).
+  const reliable = [{ id: 'c13', topic: 'R', positions: [{ models: ['ollama:a'], position: 'p1' }, { models: ['ollama:b'], position: 'p2' }] }];
+  const gotReliable = detectResolutions(reliable, { conflicting: [], commonAgreement: 'ok' }, new Set(['ollama:c']), memberLabels);
+  check('mechanism 18: reliable attribution + unrelated error → resolves (no over-flag)',
+    gotReliable.resolved.length === 1 && gotReliable.partyDropout === false, JSON.stringify(gotReliable));
+  // 3-arg call (no memberLabels) → attributionUnreliable returns false → behavior
+  // unchanged (backward compat for existing callers/tests).
+  const gotLegacy = detectResolutions(phantom, { conflicting: [], commonAgreement: 'ok' }, new Set(['ollama:a']));
+  check('mechanism 18: 3-arg call (no memberLabels) leaves the phantom path unchanged (backward compat)',
+    gotLegacy.resolved.length === 1 && gotLegacy.partyDropout === false, JSON.stringify(gotLegacy));
+
   // Dialectic defense-round outage: buildProsCons filters errored defenses out
   // of its prompt but never sets judgeDegraded for it -- an incomplete
   // antithesis produced an apparently-complete dossier with no degradation
@@ -563,18 +607,22 @@ console.log('▶ round-16 (fable+codex+glm dialectic council): mechanism 14, dia
   // Un-sticky partyDropoutDegraded: BOTH codex and glm independently
   // recommended the same fix -- an unrelated, un-affecting member outage must
   // not taint the whole run's judgeDegraded, but should stay visible
-  // diagnostically.
+  // diagnostically. Three members: the conflict is between a and b (real
+  // members, so mechanism-18's attribution check sees them as credible), and c
+  // errors UNRELATED to that conflict.
   const unrelatedMembers = [
-    { modelId: { provider: 'ollama', model: 'a' }, provider: stub(async () => { throw new Error('transient'); }) },
+    { modelId: { provider: 'ollama', model: 'a' }, provider: stub(async () => 'stance A') },
     { modelId: { provider: 'ollama', model: 'b' }, provider: stub(async () => 'stance B') },
+    { modelId: { provider: 'ollama', model: 'c' }, provider: stub(async () => { throw new Error('transient'); }) },
   ];
   const deconflictJudge = stub(async () => JSON.stringify({ conflicting: [], complementary: [], commonAgreement: 'Converged.' }));
   const unrelatedResult = await deconflict({
     question: 'q', judgeQuestion: 'q', commonAgreement: null, complementary: [],
-    initialConflicts: [{ id: 'conflict-1', topic: 'X', positions: [{ models: ['ollama:c'], position: 'p1' }, { models: ['ollama:d'], position: 'p2' }] }],
+    initialConflicts: [{ id: 'conflict-1', topic: 'X', positions: [{ models: ['ollama:a'], position: 'p1' }, { models: ['ollama:b'], position: 'p2' }] }],
     initialResponses: [
       { modelId: { provider: 'ollama', model: 'a' }, label: 'ollama:a', response: 'stance A', latencyMs: 1 },
       { modelId: { provider: 'ollama', model: 'b' }, label: 'ollama:b', response: 'stance B', latencyMs: 1 },
+      { modelId: { provider: 'ollama', model: 'c' }, label: 'ollama:c', response: 'stance C', latencyMs: 1 },
     ],
     members: unrelatedMembers, judgeModelId: { provider: 'ollama', model: 'j' }, judgeProvider: deconflictJudge, runtime, maxRounds: 2, verbose: false,
   });
@@ -624,6 +672,46 @@ console.log('▶ round-16 (fable+codex+glm dialectic council): mechanism 14, dia
   check('sticky-tail: a dropout that later fully resolves is TRUSTWORTHY (score 100, no judgeDegraded)',
     stickyResult.deconflictionScore === 100 && stickyResult.judgeDegraded === undefined,
     JSON.stringify({ score: stickyResult.deconflictionScore, jd: stickyResult.judgeDegraded }));
+
+  // Round-19 (kimi): the final synthesis step swallowed a judge failure and
+  // returned a placeholder with NO signal. A clean loop reaching 100% whose
+  // final synthesize() then timed out / hit quota reported deconflictionScore:
+  // 100 with judgeDegraded undefined and a placeholder finalSynthesis — a caller
+  // trusting the top-level flag had no idea the judge never produced the
+  // synthesis. Fix: synthesize returns {text, failed}; failed is OR'd into
+  // judgeDegraded. Exercised via the totalConflicts===0 early-return path, where
+  // a single synthesize call is the only judge call.
+  const deadJudge = stub(async () => { throw new Error('synthesis-down'); });
+  const synthFail = await deconflict({
+    question: 'q', judgeQuestion: 'q', commonAgreement: null, complementary: [],
+    initialConflicts: [],
+    initialResponses: [
+      { modelId: { provider: 'ollama', model: 'a' }, label: 'ollama:a', response: 'A', latencyMs: 1 },
+      { modelId: { provider: 'ollama', model: 'b' }, label: 'ollama:b', response: 'B', latencyMs: 1 },
+    ],
+    members: [
+      { modelId: { provider: 'ollama', model: 'a' }, provider: stub(async () => 'A') },
+      { modelId: { provider: 'ollama', model: 'b' }, provider: stub(async () => 'B') },
+    ],
+    judgeModelId: { provider: 'ollama', model: 'j' }, judgeProvider: deadJudge, runtime, maxRounds: 1, verbose: false,
+  });
+  check('round-19: a failed final synthesis sets judgeDegraded (no silent placeholder)',
+    synthFail.judgeDegraded === true && synthFail.finalSynthesis === '(The judge model returned no final synthesis.)',
+    JSON.stringify({ jd: synthFail.judgeDegraded, fs: synthFail.finalSynthesis }));
+  // And a healthy synthesis on the same path does NOT set judgeDegraded.
+  const liveJudge = stub(async () => 'Council agreed.');
+  const synthOk = await deconflict({
+    question: 'q', judgeQuestion: 'q', commonAgreement: null, complementary: [],
+    initialConflicts: [],
+    initialResponses: [
+      { modelId: { provider: 'ollama', model: 'a' }, label: 'ollama:a', response: 'A', latencyMs: 1 },
+    ],
+    members: [{ modelId: { provider: 'ollama', model: 'a' }, provider: stub(async () => 'A') }],
+    judgeModelId: { provider: 'ollama', model: 'j' }, judgeProvider: liveJudge, runtime, maxRounds: 1, verbose: false,
+  });
+  check('round-19: a healthy final synthesis does NOT set judgeDegraded',
+    synthOk.judgeDegraded === undefined && synthOk.deconflictionScore === 100,
+    JSON.stringify({ jd: synthOk.judgeDegraded, score: synthOk.deconflictionScore }));
 }
 
 console.log('▶ round-15: transient "quota" wording, extensionless secret filenames');

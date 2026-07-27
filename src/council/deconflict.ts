@@ -169,28 +169,89 @@ function noAttribution(p: ConflictPosition): boolean {
   return (p.models ?? []).every(m => typeof m !== 'string' || !m.trim());
 }
 
+/**
+ * Does a judge-written model `label` tolerantly match ANY label in `known` (real
+ * member labels)? Same matching the old partyErrored inlined: exact → case-
+ * insensitive → containment either way with a length-3 floor (so a 1-char token
+ * can't match everything). The two label sources are NOT the same trust level:
+ * `known` are REAL member labels, while `positions[].models` is whatever the
+ * JUDGE wrote — untrusted text that may abbreviate ("a" for "ollama:a"), change
+ * case, or add adornment. An exact `Set.has` therefore silently misses a dropped
+ * party whenever the judge didn't echo the label verbatim. A false MATCH is
+ * merely pessimistic (a conflict is carried forward), while a false MISS
+ * fabricates consensus — so lean toward matching. Extracted so noAttribution's
+ * credibility check and partyErrored's dropout check share ONE matching notion
+ * (round-19 codex flagged the prior disagreement, where partyErrored coerced
+ * non-strings via String() while noAttribution required typeof string).
+ */
+function labelMatchesAny(label: string, known: Set<string>): boolean {
+  if (!label) return false;
+  if (known.has(label)) return true;
+  const lm = label.toLowerCase();
+  for (const e of known) {
+    const le = e.toLowerCase();
+    if (le === lm) return true;
+    if (lm.length >= 3 && le.length >= 3 && (le.includes(lm) || lm.includes(le))) return true;
+  }
+  return false;
+}
+
 function partyErrored(positions: ConflictPosition[], erroredLabels: Set<string>): boolean {
   if (erroredLabels.size === 0) return false;
-  const errored = [...erroredLabels];
+  // A non-string entry can't be a real party label (a member label is, by
+  // definition, a string) — skip it rather than coercing via String(), which
+  // disagreed with noAttribution's typeof guard (round-19 codex finding).
   return positions.some(p =>
-    (p.models ?? []).some(raw => {
-      const m = String(raw ?? '').trim();
-      if (!m) return false;
-      if (erroredLabels.has(m)) return true;
-      const lm = m.toLowerCase();
-      return errored.some(e => {
-        const le = e.toLowerCase();
-        if (le === lm) return true;
-        return lm.length >= 3 && le.length >= 3 && (le.includes(lm) || lm.includes(le));
-      });
-    }),
+    (p.models ?? []).some(raw => typeof raw === 'string' && labelMatchesAny(raw.trim(), erroredLabels)),
   );
+}
+
+/**
+ * A position is CREDIBLY attributed if at least one of its labels is a non-empty
+ * string that tolerantly matches a KNOWN council member. A label that is a valid
+ * string but names no real member is a judge mis-attribution (a "phantom") — the
+ * code can't tie the stance to a party whose dropout it could detect. Used by
+ * attributionUnreliable (mechanism 18).
+ */
+function crediblyAttributed(p: ConflictPosition, memberLabels: Set<string>): boolean {
+  return (p.models ?? []).some(m => typeof m === 'string' && labelMatchesAny(m.trim(), memberLabels));
+}
+
+/**
+ * The judge's attribution for a conflict is UNRELIABLE when:
+ *   - a DUPLICATE label appears across positions (the same label on two
+ *     contradictory stances — a member can't champion both, so this is a judge
+ *     double-count), OR
+ *   - some position names NO real member (a phantom label — a valid string that
+ *     matches no known member, e.g. "unknown" or the schema/position text echoed
+ *     as a "label").
+ * In either case the real party behind a stance may be invisible to
+ * partyErrored, so an errored member could be a HIDDEN party behind a
+ * mis-attributed position. The conflict then can't be safely resolved by
+ * topic-absence while a member is absent (mechanism 18, codex + independent
+ * audit, round 19). Only consulted when a member errored this round — a clean
+ * round heard everyone, so even an unreliable attribution resolves honestly.
+ */
+function attributionUnreliable(positions: ConflictPosition[], memberLabels: Set<string>): boolean {
+  if (memberLabels.size === 0) return false; // can't validate against an unknown council → don't flag
+  const seen = new Set<string>();
+  for (const p of positions ?? []) {
+    for (const m of (p.models ?? [])) {
+      if (typeof m !== 'string') continue;
+      const s = m.trim().toLowerCase();
+      if (!s) continue;
+      if (seen.has(s)) return true; // duplicate label across positions → judge double-count
+      seen.add(s);
+    }
+  }
+  return (positions ?? []).some(p => !crediblyAttributed(p, memberLabels));
 }
 
 export function detectResolutions(
   previous: ConflictItem[],
   newCateg: Awaited<ReturnType<typeof categorize>>,
   erroredLabels: Set<string> = new Set(),
+  memberLabels: Set<string> = new Set(),
 ): { resolved: ConflictItem[]; remaining: ConflictItem[]; partyDropout: boolean } {
   // Coerce every topic to a string (a judge can emit a non-string topic) and
   // normalize case/whitespace so trivial formatting differences (not actual
@@ -292,6 +353,27 @@ export function detectResolutions(
       // the caller can mark the score a pessimistic lower bound.
       remaining.push(prev);
       partyDropout = true;
+    } else if (erroredLabels.size > 0 && attributionUnreliable(prev.positions, memberLabels)) {
+      // Mechanism 18 (codex + independent audit, round 19): the judge's
+      // attribution is UNRELIABLE — a PHANTOM label (a valid string naming no
+      // real member, e.g. "unknown" or echoed position text) or a DUPLICATE
+      // label across positions (the same label on two contradictory stances,
+      // which a member can't hold — a judge double-count). The errored member is
+      // NOT named in any position (partyErrored above was false), but it may be
+      // the HIDDEN party behind a mis-attributed stance: the judge filtered the
+      // errored response, saw no one arguing the topic, and reported
+      // conflicting:[]. With a reliable attribution that absence would prove
+      // resolution; with an unreliable one it can't — the topic may have
+      // vanished only because the real (mis-attributed) party was silent this
+      // round. Reproduced (two ways): a position labelled "unknown" whose real
+      // party errored → resolved; two positions both labelled "A" where the
+      // real party of the second (B) errored → resolved. Both yielded a
+      // fabricated deconflictionScore: 100 with no judgeDegraded. Carry forward
+      // + flag, as for any dropout ambiguity. (Only with an errored member: a
+      // clean round heard everyone, so even a phantom/duplicate attribution
+      // resolves honestly — no over-flagging on clean runs.)
+      remaining.push(prev);
+      partyDropout = true;
     } else {
       resolved.push({
         ...prev,
@@ -321,19 +403,27 @@ async function synthesize(
   judgeModelId: ModelId,
   prompt: string,
   runtime: RuntimeConfig,
-): Promise<string> {
+): Promise<{ text: string; failed: boolean }> {
   try {
-    return await pooledComplete(
+    const text = await pooledComplete(
       { modelId: judgeModelId, provider: judgeProvider },
       [{ role: 'user', content: prompt }],
       { temperature: 0.3, maxTokens: runtime.maxTokens, timeoutMs: runtime.requestTimeoutMs },
       runtime.retries,
       runtime,
     );
+    return { text, failed: false };
   } catch {
     // Judge could not synthesize (empty or error after retries) — return the
-    // fully computed deconfliction result rather than failing the whole request.
-    return '(The judge model returned no final synthesis.)';
+    // fully computed deconfliction result rather than failing the whole request,
+    // but flag the failure. Round-19 (kimi): a clean loop that reaches 100%
+    // convergence and then a failed final synthesis used to report
+    // deconflictionScore: 100 with judgeDegraded undefined and a placeholder
+    // finalSynthesis — a caller trusting the top-level flag had no signal the
+    // judge never produced the synthesis. The score itself is still accurate
+    // (the loop resolved everything); the missing piece is the synthesis TEXT,
+    // which is a judge failure affecting the run, so elevate judgeDegraded.
+    return { text: '(The judge model returned no final synthesis.)', failed: true };
   }
 }
 
@@ -441,16 +531,23 @@ export async function deconflict(
       deconflictionScore: input.judgeDegraded ? null : 100,
       resolved: 0,
       totalConflicts: 0,
-      finalSynthesis: synthesis,
+      finalSynthesis: synthesis.text,
       unresolvedConflicts: [],
       roundHistory: [],
       judgeModel: judgeLabel,
-      ...(input.judgeDegraded ? { judgeDegraded: true } : {}),
+      ...(input.judgeDegraded || synthesis.failed ? { judgeDegraded: true } : {}),
       ...verboseFields,
     };
   }
 
   let openConflicts = [...initialConflicts];
+  // The REAL member labels, for mechanism-18's attributionUnreliable check: a
+  // judge-written label that matches no known member (a phantom) or is duplicated
+  // across positions makes a dropout of the real (mis-attributed) party
+  // invisible to partyErrored. Built once from the member modelIds (stable across
+  // rounds) using the same modelIdLabel the categorization prompt shows the judge,
+  // so judge-written `models` entries are directly comparable to these.
+  const memberLabels = new Set(members.map(m => modelIdLabel(m.modelId)));
   const allResolved: ConflictItem[] = [];
   const roundHistory: RoundSummary[] = [];
   const roundDetails: DeconflictRoundDetail[] = [];
@@ -563,7 +660,7 @@ export async function deconflict(
     // A degraded-but-usable round (e.g. partial member outage) does NOT stop the
     // loop, but the run is no longer a clean measurement.
     const erroredLabels = new Set(roundResponses.filter(r => r.error).map(r => r.label));
-    const { resolved, remaining, partyDropout } = detectResolutions(openConflicts, newCateg, erroredLabels);
+    const { resolved, remaining, partyDropout } = detectResolutions(openConflicts, newCateg, erroredLabels, memberLabels);
     if (partyDropout) {
       // detectResolutions ONLY sets this when an outage-related ambiguity
       // actually prevented a conflict from being silently resolved/discarded —
@@ -649,7 +746,7 @@ export async function deconflict(
     deconflictionScore: score,
     resolved: resolvedCount,
     totalConflicts,
-    finalSynthesis: synthesis,
+    finalSynthesis: synthesis.text,
     unresolvedConflicts: openConflicts,
     roundHistory,
     judgeModel: judgeLabel,
@@ -682,6 +779,7 @@ export async function deconflict(
     ...(midLoopJudgeFailure
         || input.judgeDegraded
         || (partyDropoutDegraded && openConflicts.length > 0)
+        || synthesis.failed
       ? { judgeDegraded: true }
       : {}),
     ...(hadRecoveredMemberOutage ? { hadRecoveredMemberOutage: true } : {}),

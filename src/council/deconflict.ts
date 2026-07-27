@@ -186,6 +186,15 @@ export function detectResolutions(
       (c, i) => !matchedNewIdx.has(i) && norm(c.topic) === prevTopic,
     );
     const updated = updatedIdx >= 0 ? newCateg.conflicting[updatedIdx] : undefined;
+    // The judge DID still report this topic, but the only entry for it was
+    // already consumed by an earlier previous-conflict with the same normalized
+    // topic. Round 12 added the skip to stop ONE new conflict being duplicated
+    // across two previous ones — but "no unconsumed match" then fell through to
+    // the resolved branch, so the second conflict was declared RESOLVED even
+    // though the judge never said it had gone away. That is a fabricated
+    // resolution; carry it forward instead (pessimistic and honest).
+    const topicStillReported =
+      updated === undefined && newCateg.conflicting.some(c => norm(c.topic) === prevTopic);
 
     if (updated) {
       // Keep the ORIGINAL id stable across rounds (a fresh id from this
@@ -202,6 +211,8 @@ export function detectResolutions(
       // Union by model label so the party set only ever grows.
       remaining.push({ ...updated, id: prev.id, positions: mergePositionsByModel(prev.positions, updated.positions) });
       matchedNewIdx.add(updatedIdx);
+    } else if (topicStillReported) {
+      remaining.push(prev);
     } else if (partyErrored(prev.positions, erroredLabels)) {
       // The topic vanished from the judge's output — but a MEMBER that is a
       // PARTY to this conflict errored this round, and the judge only ever sees
@@ -568,7 +579,12 @@ export async function deconflict(
     // from it is likewise unreliable — even when the loop itself ran cleanly and
     // resolved everything. Without this the flag was silently dropped for any
     // run that found at least one conflict.
-    ...(midLoopJudgeFailure || input.judgeDegraded || (partyDropoutDegraded && openConflicts.length > 0)
+    // `partyDropoutDegraded` is now also set when a round ran with SOME members
+    // errored (categorize flags that). Those resolutions were judged over an
+    // incomplete council, so gating the flag on `openConflicts.length > 0` threw
+    // it away in exactly the case that reads best — a clean 100% — when the
+    // absent member was never heard on any of the conflicts declared resolved.
+    ...(midLoopJudgeFailure || input.judgeDegraded || partyDropoutDegraded
       ? { judgeDegraded: true }
       : {}),
     ...(verbose

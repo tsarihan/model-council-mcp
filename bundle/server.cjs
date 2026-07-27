@@ -24927,9 +24927,11 @@ var REASON_TAG = "think|thinking";
 function stripThinkBlocks(text) {
   if (!text) return text;
   const trimmed = text.trim();
-  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+  const unfenced = trimmed.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  for (const candidate of [trimmed, unfenced]) {
+    if (!candidate.startsWith("{") && !candidate.startsWith("[")) continue;
     try {
-      const v2 = JSON.parse(trimmed);
+      const v2 = JSON.parse(candidate);
       if (v2 !== null && typeof v2 === "object") return trimmed;
     } catch {
     }
@@ -35824,6 +35826,11 @@ var GrokCliProvider = class {
     }
   }
   async complete(model, messages, opts = {}) {
+    if (process.env.GROK_CLI_UNSAFE_ACCEPT_RCE !== "true") {
+      throw new Error(
+        `grok-cli members are disabled: grok's --tools lockdown does not work (verified arbitrary command execution with both "" and "none"), and no replacement has been verified. Untrusted council text reaching a grok member or judge would be executed as your user. Use another provider, or set GROK_CLI_UNSAFE_ACCEPT_RCE=true only if you understand the risk.`
+      );
+    }
     const systemParts = neutralizeFileMentions(
       messages.filter((m2) => m2.role === "system").map((m2) => m2.content).join("\n\n")
     );
@@ -36504,9 +36511,12 @@ function detectResolutions(previous, newCateg, erroredLabels = /* @__PURE__ */ n
       (c2, i2) => !matchedNewIdx.has(i2) && norm(c2.topic) === prevTopic
     );
     const updated = updatedIdx >= 0 ? newCateg.conflicting[updatedIdx] : void 0;
+    const topicStillReported = updated === void 0 && newCateg.conflicting.some((c2) => norm(c2.topic) === prevTopic);
     if (updated) {
       remaining.push({ ...updated, id: prev.id, positions: mergePositionsByModel(prev.positions, updated.positions) });
       matchedNewIdx.add(updatedIdx);
+    } else if (topicStillReported) {
+      remaining.push(prev);
     } else if (partyErrored(prev.positions, erroredLabels)) {
       remaining.push(prev);
       partyDropout = true;
@@ -36732,7 +36742,12 @@ async function deconflict(input) {
     // from it is likewise unreliable — even when the loop itself ran cleanly and
     // resolved everything. Without this the flag was silently dropped for any
     // run that found at least one conflict.
-    ...midLoopJudgeFailure || input.judgeDegraded || partyDropoutDegraded && openConflicts.length > 0 ? { judgeDegraded: true } : {},
+    // `partyDropoutDegraded` is now also set when a round ran with SOME members
+    // errored (categorize flags that). Those resolutions were judged over an
+    // incomplete council, so gating the flag on `openConflicts.length > 0` threw
+    // it away in exactly the case that reads best — a clean 100% — when the
+    // absent member was never heard on any of the conflicts declared resolved.
+    ...midLoopJudgeFailure || input.judgeDegraded || partyDropoutDegraded ? { judgeDegraded: true } : {},
     ...verbose ? {
       initialResponses: input.initialResponses,
       initialCategorization: {

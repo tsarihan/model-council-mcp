@@ -207,12 +207,22 @@ export function stripThinkBlocks(text: string): string {
   // chain-of-thought to strip in the first place — reasoning models emit CoT
   // either outside the JSON (still handled, since that text doesn't parse) or in
   // a separate field (Ollama's `message.thinking`, handled at that layer).
+  // Check the fence-stripped text too: a judge commonly wraps its JSON in
+  // ```json … ```, and a guard that only looks at a RAW leading brace missed
+  // that entirely — so a fenced reply whose string VALUES mention reasoning tags
+  // was still spliced apart. Return the ORIGINAL text (fences and all) when the
+  // payload is structured JSON; the judge parsers strip fences themselves.
   const trimmed = text.trim();
-  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+  const unfenced = trimmed
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  for (const candidate of [trimmed, unfenced]) {
+    if (!candidate.startsWith('{') && !candidate.startsWith('[')) continue;
     try {
-      const v = JSON.parse(trimmed);
+      const v = JSON.parse(candidate);
       if (v !== null && typeof v === 'object') return trimmed;
-    } catch { /* not valid JSON → fall through and strip as before */ }
+    } catch { /* not valid JSON → try the next form, then strip as before */ }
   }
   // Remove complete <tag>…</tag> blocks (tag name matched case-insensitively).
   let out = text.replace(new RegExp(`<(?:${REASON_TAG})>[\\s\\S]*?</(?:${REASON_TAG})>`, 'gi'), '');

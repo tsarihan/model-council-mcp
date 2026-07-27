@@ -1,3 +1,4 @@
+process.env.GROK_CLI_UNSAFE_ACCEPT_RCE = 'true';
 /**
  * End-to-end test: spawn the built MCP server over stdio (pointed at the mock
  * backend) and drive all 4 tools + 3 response modes via the MCP protocol.
@@ -44,7 +45,7 @@ function parseToolResult(result) {
 async function main() {
   // ── 1. Start mock backend ──────────────────────────────────────────────────
   const mock = spawn('node', ['test/mock-backend.mjs'], {
-    env: { ...process.env, MOCK_PORT: String(MOCK_PORT) },
+    env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', MOCK_PORT: String(MOCK_PORT) },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   mock.stdout.on('data', d => process.stdout.write(`[mock] ${d}`));
@@ -1301,7 +1302,7 @@ async function main() {
     // (initCouncil applies persisted members, does NOT re-auto-populate the deletion).
     const rebootTransport = new StdioClientTransport({
       command: 'node', args: [serverEntry],
-      env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: stateFile },
+      env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: stateFile },
     });
     rebootClient = new Client({ name: 'reboot-e2e', version: '1.0.0' }, { capabilities: {} });
     await rebootClient.connect(rebootTransport);
@@ -1342,7 +1343,7 @@ async function main() {
       await resetMock();
       const ttlTransport = new StdioClientTransport({
         command: 'node', args: [serverEntry],
-        env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: stateFile },
+        env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: stateFile },
       });
       const ttlClient = new Client({ name: 'ttl-e2e', version: '1.0.0' }, { capabilities: {} });
       await ttlClient.connect(ttlTransport);
@@ -1371,7 +1372,7 @@ async function main() {
       await resetMock();
       const skewTransport = new StdioClientTransport({
         command: 'node', args: [serverEntry],
-        env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: stateFile },
+        env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: stateFile },
       });
       const skewClient = new Client({ name: 'skew-e2e', version: '1.0.0' }, { capabilities: {} });
       await skewClient.connect(skewTransport);
@@ -1396,7 +1397,7 @@ async function main() {
       await resetMock();
       const shapeTransport = new StdioClientTransport({
         command: 'node', args: [serverEntry],
-        env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: stateFile },
+        env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: stateFile },
       });
       const shapeClient = new Client({ name: 'shape-e2e', version: '1.0.0' }, { capabilities: {} });
       await shapeClient.connect(shapeTransport);
@@ -1418,7 +1419,7 @@ async function main() {
       await resetMock();
       const launderTransport = new StdioClientTransport({
         command: 'node', args: [serverEntry],
-        env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: launderStateFile },
+        env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: launderStateFile },
       });
       const launderClient = new Client({ name: 'launder-e2e', version: '1.0.0' }, { capabilities: {} });
       await launderClient.connect(launderTransport);
@@ -1458,7 +1459,7 @@ async function main() {
       await resetMock();
       const launderRebootTransport = new StdioClientTransport({
         command: 'node', args: [serverEntry],
-        env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: launderStateFile },
+        env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: launderStateFile },
       });
       const launderRebootClient = new Client({ name: 'launder-reboot-e2e', version: '1.0.0' }, { capabilities: {} });
       await launderRebootClient.connect(launderRebootTransport);
@@ -1481,7 +1482,7 @@ async function main() {
       const cfgStateFile = join(cfgDir, 'state.json');
       const cfgTransport1 = new StdioClientTransport({
         command: 'node', args: [serverEntry],
-        env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: cfgStateFile },
+        env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: cfgStateFile },
       });
       const cfgClient1 = new Client({ name: 'cfgpersist-e2e-1', version: '1.0.0' }, { capabilities: {} });
       await cfgClient1.connect(cfgTransport1);
@@ -1500,7 +1501,7 @@ async function main() {
       // previously only `members` survived, these three silently reset).
       const cfgTransport2 = new StdioClientTransport({
         command: 'node', args: [serverEntry],
-        env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: cfgStateFile },
+        env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: cfgStateFile },
       });
       const cfgClient2 = new Client({ name: 'cfgpersist-e2e-2', version: '1.0.0' }, { capabilities: {} });
       await cfgClient2.connect(cfgTransport2);
@@ -1524,7 +1525,7 @@ async function main() {
 
       const cfgTransport3 = new StdioClientTransport({
         command: 'node', args: [serverEntry],
-        env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: cfgStateFile },
+        env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: cfgStateFile },
       });
       const cfgClient3 = new Client({ name: 'cfgpersist-e2e-3', version: '1.0.0' }, { capabilities: {} });
       await cfgClient3.connect(cfgTransport3);
@@ -1587,7 +1588,7 @@ async function main() {
     loDir = mkdtempSync(join(tmpdir(), 'mc-e2e-lo-'));
     const loTransport = new StdioClientTransport({
       command: 'node', args: [serverEntry],
-      env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, CODEX_MOCK_LOGGED_OUT: '1', MODEL_COUNCIL_STATE: join(loDir, 'state.json') },
+      env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, CODEX_MOCK_LOGGED_OUT: '1', MODEL_COUNCIL_STATE: join(loDir, 'state.json') },
     });
     loggedOutClient = new Client({ name: 'lo-e2e', version: '1.0.0' }, { capabilities: {} });
     await loggedOutClient.connect(loTransport);
@@ -1605,7 +1606,7 @@ async function main() {
     cfDir = mkdtempSync(join(tmpdir(), 'mc-e2e-cf-'));
     const cfTransport = new StdioClientTransport({
       command: 'node', args: [serverEntry],
-      env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, CLAUDE_TIER: 'free', MODEL_COUNCIL_STATE: join(cfDir, 'state.json') },
+      env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, CLAUDE_TIER: 'free', MODEL_COUNCIL_STATE: join(cfDir, 'state.json') },
     });
     claudeFreeClient = new Client({ name: 'cf-e2e', version: '1.0.0' }, { capabilities: {} });
     await claudeFreeClient.connect(cfTransport);
@@ -1658,7 +1659,7 @@ async function main() {
     writeFileSync(join(chainDir, 'state.json'), JSON.stringify({ version: 1, tiers: { claude: 'not-a-real-tier' } }));
     const chainTransport = new StdioClientTransport({
       command: 'node', args: [serverEntry],
-      env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, CLAUDE_TIER: 'max20x', MODEL_COUNCIL_STATE: join(chainDir, 'state.json') },
+      env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, CLAUDE_TIER: 'max20x', MODEL_COUNCIL_STATE: join(chainDir, 'state.json') },
     });
     const chainClient = new Client({ name: 'tierchain-e2e', version: '1.0.0' }, { capabilities: {} });
     await chainClient.connect(chainTransport);
@@ -1674,7 +1675,7 @@ async function main() {
     const badConcDir = mkdtempSync(join(tmpdir(), 'mc-e2e-badconc-'));
     const badConcTransport = new StdioClientTransport({
       command: 'node', args: [serverEntry],
-      env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, CLOUD_CONCURRENCY: 'three', MODEL_COUNCIL_STATE: join(badConcDir, 'state.json') },
+      env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, CLOUD_CONCURRENCY: 'three', MODEL_COUNCIL_STATE: join(badConcDir, 'state.json') },
     });
     const badConcClient = new Client({ name: 'badconc-e2e', version: '1.0.0' }, { capabilities: {} });
     await badConcClient.connect(badConcTransport);
@@ -1694,7 +1695,7 @@ async function main() {
     const prefixDir = mkdtempSync(join(tmpdir(), 'mc-e2e-prefixconc-'));
     const prefixTransport = new StdioClientTransport({
       command: 'node', args: [serverEntry],
-      env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, CLOUD_CONCURRENCY: '3oops', MODEL_COUNCIL_STATE: join(prefixDir, 'state.json') },
+      env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, CLOUD_CONCURRENCY: '3oops', MODEL_COUNCIL_STATE: join(prefixDir, 'state.json') },
     });
     const prefixClient = new Client({ name: 'prefixconc-e2e', version: '1.0.0' }, { capabilities: {} });
     await prefixClient.connect(prefixTransport);
@@ -1715,7 +1716,7 @@ async function main() {
     const raceDir = mkdtempSync(join(tmpdir(), 'mc-e2e-race-'));
     const raceTransport = new StdioClientTransport({
       command: 'node', args: [serverEntry],
-      env: { ...process.env, OLLAMA_ADDRESS: 'http://127.0.0.1:1', CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: join(raceDir, 'state.json') },
+      env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: 'http://127.0.0.1:1', CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: join(raceDir, 'state.json') },
     });
     const raceClient = new Client({ name: 'race-e2e', version: '1.0.0' }, { capabilities: {} });
     await raceClient.connect(raceTransport);
@@ -1746,7 +1747,7 @@ async function main() {
     const settingsOnlyDir = mkdtempSync(join(tmpdir(), 'mc-e2e-settingsonly-'));
     const settingsOnlyTransport = new StdioClientTransport({
       command: 'node', args: [serverEntry],
-      env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: join(settingsOnlyDir, 'state.json') },
+      env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: join(settingsOnlyDir, 'state.json') },
     });
     const settingsOnlyClient = new Client({ name: 'settingsonly-e2e', version: '1.0.0' }, { capabilities: {} });
     await settingsOnlyClient.connect(settingsOnlyTransport);
@@ -1782,7 +1783,7 @@ async function main() {
     writeFileSync(badJudgeStateFile, JSON.stringify({ version: 1, judgeModelId: { provider: 'not-a-real-provider', model: 'x' } }));
     const badJudgeTransport = new StdioClientTransport({
       command: 'node', args: [serverEntry],
-      env: { ...process.env, OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: badJudgeStateFile },
+      env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: badJudgeStateFile },
     });
     const badJudgeClient = new Client({ name: 'badjudge-e2e', version: '1.0.0' }, { capabilities: {} });
     await badJudgeClient.connect(badJudgeTransport);

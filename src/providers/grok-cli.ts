@@ -163,6 +163,37 @@ export class GrokCliProvider implements Provider {
     messages: ChatMessage[],
     opts: CompletionOptions = {},
   ): Promise<string> {
+    // FAIL CLOSED — unmitigated arbitrary command execution.
+    //
+    // grok's tool lockdown does not work and we have no verified replacement:
+    //   `--tools ''`   → VERIFIED RCE (empty string is read as "flag unset", the
+    //                    full built-in tool set incl. a shell is enabled, and
+    //                    `--permission-mode bypassPermissions` auto-approves).
+    //   `--tools none` → VERIFIED RCE as well (re-probed with a working login;
+    //                    the prompt "run: id > /tmp/X" executed as the OS user).
+    // Both were proven with a real proof-of-execution marker. Alternatives
+    // (`--tools read`, other permission modes) could NOT be tested — the grok
+    // subscription hit its usage limit — so nothing is known to hold.
+    //
+    // This matters because it is unconditional: every grok MEMBER and, worse,
+    // every grok JUDGE call is fed untrusted text (other members' responses,
+    // context/files/git-diff, repo content), so a single crafted line is remote
+    // code execution as the user. Shipping that in a widely-used tool on the
+    // strength of an unverified flag is not acceptable, so grok members are
+    // disabled until a mitigation is actually verified.
+    //
+    // To re-enable after verifying: run the `id > /tmp/X` probe with the exact
+    // production argv against a working grok login, and only then remove this
+    // guard. GROK_CLI_UNSAFE_ACCEPT_RCE=true bypasses it for that testing.
+    if (process.env.GROK_CLI_UNSAFE_ACCEPT_RCE !== 'true') {
+      throw new Error(
+        'grok-cli members are disabled: grok\'s --tools lockdown does not work ' +
+        '(verified arbitrary command execution with both "" and "none"), and no ' +
+        'replacement has been verified. Untrusted council text reaching a grok ' +
+        'member or judge would be executed as your user. Use another provider, or ' +
+        'set GROK_CLI_UNSAFE_ACCEPT_RCE=true only if you understand the risk.',
+      );
+    }
     // Untrusted caller-supplied system text — @-mentions neutralized (grok also
     // gets --verbatim below; this is defense in depth). Our own scaffolding is
     // composed after this and stays byte-exact.

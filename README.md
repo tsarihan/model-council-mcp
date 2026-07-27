@@ -203,6 +203,9 @@ Set `CODEX_CLI=true` to add a council member that runs through the locally-insta
 
 ### Grok via your subscription (first-party Grok Build CLI)
 
+> **⚠️ grok-cli members are currently DISABLED (v0.2.64).** grok's tool lockdown does not work: `--tools ''` is read by the CLI as *"flag unset"* and enables its full built-in tool set — including a shell — while `--permission-mode bypassPermissions` (required for headless use) auto-approves every call. This was verified live with a proof-of-execution marker, and `--tools none` was verified to fail the same way. Because a grok **judge** is fed every other member's untrusted text, a single crafted line was arbitrary command execution as your user. No replacement value has been verified yet, so the provider now fails closed with a clear error rather than shipping an unverified guard. `GROK_CLI_UNSAFE_ACCEPT_RCE=true` re-enables it for testing only.
+
+
 Set `GROK_CLI=true` (or a `GROK_TIER` above `free`) to add council members that run through xAI's locally-installed **Grok Build CLI** (`grok -p` / `--prompt-json`) instead of the X.AI API. Inference runs under whatever your `grok` CLI is logged in with — typically your own **SuperGrok / X Premium+ / Heavy subscription** — so these members don't consume API credits. They appear as `grok-cli:grok-4.5` (or `grok-cli:<model>`).
 
 **Behavior & requirements**

@@ -4,6 +4,9 @@
  * Runs against the built dist/ modules (pure functions — no server needed).
  */
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+// grok-cli fails closed by default (unmitigated RCE, see grok-cli.ts); tests
+// exercise the provider deliberately, so acknowledge it here.
+process.env.GROK_CLI_UNSAFE_ACCEPT_RCE = 'true';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -324,6 +327,39 @@ console.log('▶ round-12 batch 3: pooled partial outage, dossier notice placeme
   check('dossier prompt: untrusted-content notice precedes the member-derived option list',
     dossier.indexOf('analysis only') < dossier.indexOf('OptionAlpha'),
     `notice@${dossier.indexOf('analysis only')} option@${dossier.indexOf('OptionAlpha')}`);
+}
+
+console.log('▶ round-13b: grok fails closed, consensus mechanisms 11 & 12, fenced-JSON guard');
+{
+  const { GrokCliProvider } = await import('../dist/providers/grok-cli.js');
+  const { detectResolutions } = await import('../dist/council/deconflict.js');
+  const { stripThinkBlocks } = await import('../dist/providers/base.js');
+
+  // grok must refuse to run without the explicit risk acknowledgement: BOTH
+  // `--tools ''` and `--tools none` were verified to allow shell execution.
+  const saved = process.env.GROK_CLI_UNSAFE_ACCEPT_RCE;
+  delete process.env.GROK_CLI_UNSAFE_ACCEPT_RCE;
+  const g = new GrokCliProvider({ id: 'grok-cli', type: 'grok-cli', baseUrl: '(sub)', label: 'Grok', command: 'grok', models: ['grok-4.5'] });
+  g.run = async () => ({ code: 0, stdout: JSON.stringify({ text: 'ok', stopReason: 'EndTurn' }), stderr: '' });
+  let refused = false, msg = '';
+  try { await g.complete('grok-4.5', [{ role: 'user', content: 'hi' }], {}); } catch (e) { refused = true; msg = e.message; }
+  process.env.GROK_CLI_UNSAFE_ACCEPT_RCE = saved;
+  check('grok-cli fails CLOSED without an explicit risk acknowledgement', refused, msg.slice(0, 80));
+  check('grok refusal explains why and how to override', /arbitrary command execution|--tools/.test(msg) && /GROK_CLI_UNSAFE_ACCEPT_RCE/.test(msg));
+
+  // Mechanism 11: a topic the judge STILL reports, whose only entry was consumed
+  // by an earlier same-topic conflict, must carry forward — not be "resolved".
+  const two = detectResolutions(
+    [{ id: 'c1', topic: 'X', positions: [{ models: ['a'], position: 'p1' }] },
+     { id: 'c2', topic: 'X', positions: [{ models: ['b'], position: 'p2' }] }],
+    { conflicting: [{ topic: 'X', positions: [{ models: ['a'], position: 'p1' }] }], commonAgreement: 'Converged.' });
+  check('same-topic conflict whose match was consumed is NOT falsely resolved',
+    two.resolved.length === 0 && two.remaining.length === 2, JSON.stringify({ r: two.resolved.map(c => c.id), m: two.remaining.map(c => c.id) }));
+  check('…and it is not duplicated either', new Set(two.remaining.map(c => c.id)).size === two.remaining.length);
+
+  // Mechanism 12 guard: a FENCED judge JSON must survive intact.
+  const fenced = '```json\n{"commonAgreement":"used <think> tags","conflicting":[{"topic":"a </think> b","positions":[]}]}\n```';
+  check('fenced judge JSON with tags in string values survives intact', stripThinkBlocks(fenced) === fenced.trim());
 }
 
 console.log('▶ round-13 CRITICALs: argv lockdown flags + empty-named git filter');

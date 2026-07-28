@@ -149,6 +149,14 @@ export interface IndividualResult {
   /** Set when a reconciliation mode fell back to individual (e.g. the judge failed). */
   note?: string;
   visionRouting?: VisionRouting;
+  /**
+   * Labels of members whose completion was cut by the per-completion timeout,
+   * attached by the orchestrator from the raw responses it has in hand — so a
+   * timeout is surfaced even under `verbose: false`, where the per-round
+   * RawResponse[] fields that carry the error are omitted from the result.
+   * Read by index.ts to add the top-level `timeoutNotice`.
+   */
+  timedOutMembers?: string[];
 }
 
 export interface ComplementaryItem {
@@ -195,6 +203,14 @@ export interface CategorizedResult {
    */
   judgeFailed?: boolean;
   visionRouting?: VisionRouting;
+  /**
+   * Labels of members whose completion was cut by the per-completion timeout,
+   * attached by the orchestrator from the raw responses it has in hand — so a
+   * timeout is surfaced even under `verbose: false`, where the per-round
+   * RawResponse[] fields that carry the error are omitted from the result.
+   * Read by index.ts to add the top-level `timeoutNotice`.
+   */
+  timedOutMembers?: string[];
 }
 
 export interface RoundSummary {
@@ -271,6 +287,14 @@ export interface DeconflictedResult {
   /** Per-round detail: member responses and the judge's re-categorization. */
   rounds?: DeconflictRoundDetail[];
   visionRouting?: VisionRouting;
+  /**
+   * Labels of members whose completion was cut by the per-completion timeout,
+   * attached by the orchestrator from the raw responses it has in hand — so a
+   * timeout is surfaced even under `verbose: false`, where the per-round
+   * RawResponse[] fields that carry the error are omitted from the result.
+   * Read by index.ts to add the top-level `timeoutNotice`.
+   */
+  timedOutMembers?: string[];
 }
 
 // ─── Pooled (Delphi) result ───────────────────────────────────────────────────
@@ -321,6 +345,14 @@ export interface PooledResult {
   /** The initial fan-out responses from every council member. */
   initialResponses?: RawResponse[];
   visionRouting?: VisionRouting;
+  /**
+   * Labels of members whose completion was cut by the per-completion timeout,
+   * attached by the orchestrator from the raw responses it has in hand — so a
+   * timeout is surfaced even under `verbose: false`, where the per-round
+   * RawResponse[] fields that carry the error are omitted from the result.
+   * Read by index.ts to add the top-level `timeoutNotice`.
+   */
+  timedOutMembers?: string[];
 }
 
 // ─── Dialectic result (thesis → antithesis → synthesis) ───────────────────────
@@ -360,6 +392,14 @@ export interface DialecticResult {
   /** Thesis: the initial fan-out responses from every council member. */
   initialResponses?: RawResponse[];
   visionRouting?: VisionRouting;
+  /**
+   * Labels of members whose completion was cut by the per-completion timeout,
+   * attached by the orchestrator from the raw responses it has in hand — so a
+   * timeout is surfaced even under `verbose: false`, where the per-round
+   * RawResponse[] fields that carry the error are omitted from the result.
+   * Read by index.ts to add the top-level `timeoutNotice`.
+   */
+  timedOutMembers?: string[];
 }
 
 export type CouncilResult =

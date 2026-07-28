@@ -907,6 +907,23 @@ async function main() {
     check('result carries timeoutNotice', toRes.timeoutNotice === 'RESPONSE TIMED OUT, INCREASE TIMEOUT IF MESSAGE IS CUT', `got "${toRes.timeoutNotice}"`);
     check('timedOutMembers lists the cut label', Array.isArray(toRes.timedOutMembers) && toRes.timedOutMembers.includes('ollama:slow-timeout'), `got ${JSON.stringify(toRes.timedOutMembers)}`);
     check('non-timed member still answered', toRes.responses?.[1]?.response && !toRes.responses?.[1]?.error);
+    // A reconciliation mode (categorized) with NO verbose must still surface
+    // timedOutMembers — the orchestrator attaches it from the raw responses it
+    // has in hand, so a timeout is visible even when the per-round response
+    // arrays that carry the error are omitted under verbose:false.
+    await resetMock();
+    await client.callTool({
+      name: 'configure_council',
+      arguments: { models: ['ollama:slow-timeout', 'ollama:small-a', 'ollama:small-b'], judge_model: 'ollama:big-judge', response_mode: 'categorized' },
+    });
+    const catTo = parseToolResult(await client.callTool({
+      name: 'ask_council', arguments: { question: 'How to handle errors?', mode: 'categorized' },
+    }));
+    check('categorized (no verbose) surfaces timedOutMembers for the cut member',
+      Array.isArray(catTo.timedOutMembers) && catTo.timedOutMembers.includes('ollama:slow-timeout'),
+      `got ${JSON.stringify(catTo.timedOutMembers)}`);
+    check('categorized (no verbose) carries timeoutNotice',
+      catTo.timeoutNotice === 'RESPONSE TIMED OUT, INCREASE TIMEOUT IF MESSAGE IS CUT', `got "${catTo.timeoutNotice}"`);
     // council_status must surface the now-effective timeouts.
     const stStat = parseToolResult(await client.callTool({ name: 'council_status', arguments: {} }));
     check('council_status surfaces run timeout', stStat.timeouts?.run_ms === 1200, `got ${stStat.timeouts?.run_ms}`);

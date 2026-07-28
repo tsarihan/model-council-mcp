@@ -10,6 +10,7 @@ import {
   IndividualResult,
   ModelId,
   ModelInfo,
+  RawResponse,
   ResponseMode,
   RuntimeConfig,
   VisionRouting,
@@ -85,6 +86,46 @@ export function selectJudge(
   }
 
   return best;
+}
+
+const TIMEOUT_LABEL_RE = /\btimed out\b|\btimeout\b/i;
+
+/**
+ * Attach `timedOutMembers` to a council result from every RawResponse[] the
+ * orchestrator has in hand — the initial fan-out (`initialResponses`, always
+ * available regardless of verbose) plus any response arrays the mode result
+ * itself carries (rawResponses/reconsidered/defenses/selections/initialResponses,
+ * and the verbose `rounds[].responses`), merged with any `timedOutMembers` a
+ * mode function already attached from its own round responses (deconflict does
+ * this, so a round-2+ timeout surfaces even under verbose:false where `rounds`
+ * is omitted). This keeps timeout detection working under `verbose: false`,
+ * where the per-round responses that carry the error are otherwise dropped.
+ */
+function attachTimedOut<T extends object>(result: T, initialResponses: RawResponse[]): T {
+  const labels = new Set<string>();
+  const collect = (arr: unknown) => {
+    if (!Array.isArray(arr)) return;
+    for (const r of arr) {
+      if (r && typeof r === 'object' && typeof (r as { label?: unknown }).label === 'string') {
+        const rr = r as { label: string; error?: unknown };
+        if (rr.error && TIMEOUT_LABEL_RE.test(String(rr.error))) labels.add(rr.label);
+      }
+    }
+  };
+  collect(initialResponses);
+  const r = result as Record<string, unknown>;
+  collect(r.responses);
+  collect(r.rawResponses);
+  collect(r.reconsidered);
+  collect(r.defenses);
+  collect(r.selections);
+  collect(r.initialResponses);
+  if (Array.isArray(r.rounds)) for (const rd of r.rounds) if (rd && typeof rd === 'object') collect((rd as Record<string, unknown>).responses);
+  // Merge labels a mode function attached itself (e.g. deconflict from rounds).
+  const existing = (result as { timedOutMembers?: unknown }).timedOutMembers;
+  if (Array.isArray(existing)) for (const l of existing) if (typeof l === 'string') labels.add(l);
+  if (labels.size === 0) return result;
+  return { ...result, timedOutMembers: [...labels] } as T;
 }
 
 // ─── Main orchestrator ────────────────────────────────────────────────────────
@@ -394,19 +435,23 @@ export class CouncilOrchestrator {
 
     // ── Individual mode — done ─────────────────────────────────────────────
     if (mode === 'individual') {
-      return {
+      return attachTimedOut({
         mode: 'individual',
         question,
         responses,
         ...(visionRouting ? { visionRouting } : {}),
-      } satisfies IndividualResult;
+      } satisfies IndividualResult, responses);
     }
 
     // ── Find the judge ─────────────────────────────────────────────────────
     // Warm the model cache so auto-selection can read parameter sizes.
     // Without this, a fresh session silently falls back to the first member
-    // instead of picking the largest.
-    if (!this.config.judgeModelId && this.modelCache.length === 0) {
+    // instead of picking the largest. Use the snapshot (judgeModelIdPref), not
+    // a live this.config read — selectJudge below uses the snapshot, so the
+    // guard must decide on the same value or a concurrent configure_council
+    // could flip this.config.judgeModelId to explicit mid-call, skip the warm,
+    // and leave selectJudge's auto path with an empty cache (→ candidates[0]).
+    if (!judgeModelIdPref && this.modelCache.length === 0) {
       try {
         await this.listAllModels();
       } catch {
@@ -465,7 +510,7 @@ export class CouncilOrchestrator {
           verbose,
           images,
         });
-        return visionRouting ? { ...pooled, visionRouting } : pooled;
+        return attachTimedOut(visionRouting ? { ...pooled, visionRouting } : pooled, responses);
       }
 
       // ── Dialectic (thesis → antithesis → synthesis) ───────────────────────
@@ -482,7 +527,7 @@ export class CouncilOrchestrator {
           verbose,
           images,
         });
-        return visionRouting ? { ...dialectic, visionRouting } : dialectic;
+        return attachTimedOut(visionRouting ? { ...dialectic, visionRouting } : dialectic, responses);
       }
 
       // ── Categorize ──────────────────────────────────────────────────────
@@ -497,12 +542,12 @@ export class CouncilOrchestrator {
       );
 
       if (mode === 'categorized') {
-        return {
+        return attachTimedOut({
           mode: 'categorized',
           ...catResult,
           rawResponses: responses,
           ...(visionRouting ? { visionRouting } : {}),
-        } satisfies CategorizedResult;
+        } satisfies CategorizedResult, responses);
       }
 
       // ── Deconflicted ────────────────────────────────────────────────────
@@ -522,7 +567,7 @@ export class CouncilOrchestrator {
         judgeDegraded: catResult.judgeDegraded,
         images,
       })) as DeconflictedResult;
-      return visionRouting ? { ...dec, visionRouting } : dec;
+      return attachTimedOut(visionRouting ? { ...dec, visionRouting } : dec, responses);
     } catch (err) {
       // Degrade to individual so member work isn't discarded — but log the full
       // error to stderr so a genuine bug (not just a judge outage) stays visible
@@ -532,7 +577,7 @@ export class CouncilOrchestrator {
         `[model-council] ${mode} reconciliation failed; returning individual responses: ` +
         `${err instanceof Error ? err.stack ?? msg : msg}\n`,
       );
-      return {
+      return attachTimedOut({
         mode: 'individual',
         question,
         responses,
@@ -540,7 +585,7 @@ export class CouncilOrchestrator {
           `Reconciliation (${mode} mode, judge ${modelIdLabel(judgeModelId)}) failed — ${msg}. ` +
           `Returning the council's raw individual responses.`,
         ...(visionRouting ? { visionRouting } : {}),
-      } satisfies IndividualResult;
+      } satisfies IndividualResult, responses);
     }
   }
 }

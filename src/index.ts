@@ -199,9 +199,18 @@ function collectTimeoutLabels(result: unknown): string[] {
   return labels;
 }
 
-/** Attach the timeout notice to a completed result when any member was cut. */
+/** Attach the timeout notice to a completed result when any member was cut.
+ *  Prefers the `timedOutMembers` the orchestrator attached from the raw
+ *  responses (which works under verbose:false); falls back to scanning the
+ *  result's response fields for any mode that didn't pre-attach. */
 function withTimeoutNotice<T extends object>(result: T): T | (T & { timeoutNotice: string; timedOutMembers: string[] }) {
-  const timedOut = collectTimeoutLabels(result);
+  const attached = (result as { timedOutMembers?: unknown }).timedOutMembers;
+  let timedOut: string[];
+  if (Array.isArray(attached) && attached.length > 0 && attached.every(x => typeof x === 'string')) {
+    timedOut = attached as string[];
+  } else {
+    timedOut = collectTimeoutLabels(result);
+  }
   if (timedOut.length === 0) return result;
   return { ...result, timeoutNotice: TIMEOUT_NOTICE, timedOutMembers: timedOut };
 }
@@ -365,6 +374,12 @@ async function initCouncil(): Promise<void> {
       // MCP request, just to decide a one-time migration.
       let cliInstalled = false;
       try { cliInstalled = (await runCli(cmd, ['--version'], { timeoutMs: 8000 })).code === 0; } catch {}
+      // Re-check the guards AFTER the await: a configure_council/setup_council
+      // that landed while the probe was in flight MUST win (mirrors the
+      // detectEnvironment branch below). Without this, the migrated persisted
+      // list would clobber the user's just-set explicit config both in memory
+      // and in state.json.
+      if (orchestrator.getConfig().members.length > 0 || explicitlyConfigured) return;
       const migrated = migrateCloudToHarness(labels, subs.curatedCloudModels, cliInstalled);
       if (migrated !== labels) {
         labels = migrated;

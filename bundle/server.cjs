@@ -36662,6 +36662,7 @@ async function deconflict(input) {
       ),
       runtime
     );
+    const earlyTimedOut = input.initialResponses?.filter((r2) => r2.error && /\btimed out\b|\btimeout\b/i.test(String(r2.error))).map((r2) => r2.label) ?? [];
     return {
       mode: "deconflicted",
       question,
@@ -36675,6 +36676,7 @@ async function deconflict(input) {
       roundHistory: [],
       judgeModel: judgeLabel,
       ...input.judgeDegraded || synthesis2.failed ? { judgeDegraded: true } : {},
+      ...earlyTimedOut.length ? { timedOutMembers: earlyTimedOut } : {},
       ...verboseFields
     };
   }
@@ -36683,6 +36685,16 @@ async function deconflict(input) {
   const allResolved = [];
   const roundHistory = [];
   const roundDetails = [];
+  const timedOutMembers = [];
+  const pushTimeouts = (arr) => {
+    if (!arr) return;
+    for (const r2 of arr) {
+      if (r2.error && /\btimed out\b|\btimeout\b/i.test(String(r2.error)) && !timedOutMembers.includes(r2.label)) {
+        timedOutMembers.push(r2.label);
+      }
+    }
+  };
+  pushTimeouts(input.initialResponses);
   let midLoopJudgeFailure = false;
   let partyDropoutDegraded = false;
   let hadRecoveredMemberOutage = false;
@@ -36690,6 +36702,7 @@ async function deconflict(input) {
     const enteringCount = openConflicts.length;
     const roundPrompt = buildConflictRoundPrompt(question, openConflicts, round);
     const roundResponses = await queryMembers(roundPrompt, members, runtime, {}, images);
+    pushTimeouts(roundResponses);
     let newCateg;
     try {
       newCateg = await categorize(
@@ -36835,6 +36848,7 @@ async function deconflict(input) {
     // `hadRecoveredMemberOutage` below instead, without elevating this flag.)
     ...midLoopJudgeFailure || input.judgeDegraded || partyDropoutDegraded && openConflicts.length > 0 || synthesis.failed ? { judgeDegraded: true } : {},
     ...hadRecoveredMemberOutage ? { hadRecoveredMemberOutage: true } : {},
+    ...timedOutMembers.length ? { timedOutMembers } : {},
     ...verbose ? {
       initialResponses: input.initialResponses,
       initialCategorization: {
@@ -37273,6 +37287,36 @@ function selectJudge(judgeModelId, memberIds, allModels, erroredLabels = /* @__P
   }
   return best;
 }
+var TIMEOUT_LABEL_RE = /\btimed out\b|\btimeout\b/i;
+function attachTimedOut(result, initialResponses) {
+  const labels = /* @__PURE__ */ new Set();
+  const collect = (arr) => {
+    if (!Array.isArray(arr)) return;
+    for (const r3 of arr) {
+      if (r3 && typeof r3 === "object" && typeof r3.label === "string") {
+        const rr2 = r3;
+        if (rr2.error && TIMEOUT_LABEL_RE.test(String(rr2.error))) labels.add(rr2.label);
+      }
+    }
+  };
+  collect(initialResponses);
+  const r2 = result;
+  collect(r2.responses);
+  collect(r2.rawResponses);
+  collect(r2.reconsidered);
+  collect(r2.defenses);
+  collect(r2.selections);
+  collect(r2.initialResponses);
+  if (Array.isArray(r2.rounds)) {
+    for (const rd of r2.rounds) if (rd && typeof rd === "object") collect(rd.responses);
+  }
+  const existing = result.timedOutMembers;
+  if (Array.isArray(existing)) {
+    for (const l2 of existing) if (typeof l2 === "string") labels.add(l2);
+  }
+  if (labels.size === 0) return result;
+  return { ...result, timedOutMembers: [...labels] };
+}
 var CouncilOrchestrator = class {
   registry;
   config;
@@ -37418,14 +37462,14 @@ var CouncilOrchestrator = class {
     }
     const responses = await queryMembers(question, queryTargets, runtime, {}, images, onProgress);
     if (mode === "individual") {
-      return {
+      return attachTimedOut({
         mode: "individual",
         question,
         responses,
         ...visionRouting ? { visionRouting } : {}
-      };
+      }, responses);
     }
-    if (!this.config.judgeModelId && this.modelCache.length === 0) {
+    if (!judgeModelIdPref && this.modelCache.length === 0) {
       try {
         await this.listAllModels();
       } catch {
@@ -37470,7 +37514,7 @@ var CouncilOrchestrator = class {
           verbose,
           images
         });
-        return visionRouting ? { ...pooled2, visionRouting } : pooled2;
+        return attachTimedOut(visionRouting ? { ...pooled2, visionRouting } : pooled2, responses);
       }
       if (mode === "dialectic") {
         const dialectic = await runDialectic({
@@ -37484,7 +37528,7 @@ var CouncilOrchestrator = class {
           verbose,
           images
         });
-        return visionRouting ? { ...dialectic, visionRouting } : dialectic;
+        return attachTimedOut(visionRouting ? { ...dialectic, visionRouting } : dialectic, responses);
       }
       const catResult = await categorize(
         judgeQuestion,
@@ -37495,12 +37539,12 @@ var CouncilOrchestrator = class {
         runtime
       );
       if (mode === "categorized") {
-        return {
+        return attachTimedOut({
           mode: "categorized",
           ...catResult,
           rawResponses: responses,
           ...visionRouting ? { visionRouting } : {}
-        };
+        }, responses);
       }
       const dec = await deconflict({
         question,
@@ -37518,20 +37562,20 @@ var CouncilOrchestrator = class {
         judgeDegraded: catResult.judgeDegraded,
         images
       });
-      return visionRouting ? { ...dec, visionRouting } : dec;
+      return attachTimedOut(visionRouting ? { ...dec, visionRouting } : dec, responses);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(
         `[model-council] ${mode} reconciliation failed; returning individual responses: ${err instanceof Error ? err.stack ?? msg : msg}
 `
       );
-      return {
+      return attachTimedOut({
         mode: "individual",
         question,
         responses,
         note: `Reconciliation (${mode} mode, judge ${modelIdLabel(judgeModelId)}) failed \u2014 ${msg}. Returning the council's raw individual responses.`,
         ...visionRouting ? { visionRouting } : {}
-      };
+      }, responses);
     }
   }
 };
@@ -38244,7 +38288,13 @@ function collectTimeoutLabels(result) {
   return labels;
 }
 function withTimeoutNotice(result) {
-  const timedOut = collectTimeoutLabels(result);
+  const attached = result.timedOutMembers;
+  let timedOut;
+  if (Array.isArray(attached) && attached.length > 0 && attached.every((x2) => typeof x2 === "string")) {
+    timedOut = attached;
+  } else {
+    timedOut = collectTimeoutLabels(result);
+  }
   if (timedOut.length === 0) return result;
   return { ...result, timeoutNotice: TIMEOUT_NOTICE, timedOutMembers: timedOut };
 }
@@ -38327,6 +38377,7 @@ async function initCouncil() {
         cliInstalled = (await runCli(cmd, ["--version"], { timeoutMs: 8e3 })).code === 0;
       } catch {
       }
+      if (orchestrator.getConfig().members.length > 0 || explicitlyConfigured) return;
       const migrated = migrateCloudToHarness(labels, subs.curatedCloudModels, cliInstalled);
       if (migrated !== labels) {
         labels = migrated;

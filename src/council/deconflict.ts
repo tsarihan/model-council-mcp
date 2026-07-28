@@ -523,6 +523,9 @@ export async function deconflict(
       ),
       runtime,
     );
+    const earlyTimedOut = input.initialResponses
+      ?.filter(r => r.error && /\btimed out\b|\btimeout\b/i.test(String(r.error)))
+      .map(r => r.label) ?? [];
     return {
       mode: 'deconflicted',
       question,
@@ -536,6 +539,7 @@ export async function deconflict(
       roundHistory: [],
       judgeModel: judgeLabel,
       ...(input.judgeDegraded || synthesis.failed ? { judgeDegraded: true } : {}),
+      ...(earlyTimedOut.length ? { timedOutMembers: earlyTimedOut } : {}),
       ...verboseFields,
     };
   }
@@ -551,6 +555,20 @@ export async function deconflict(
   const allResolved: ConflictItem[] = [];
   const roundHistory: RoundSummary[] = [];
   const roundDetails: DeconflictRoundDetail[] = [];
+  // Accumulate members cut by the per-completion timeout across ALL rounds +
+  // the initial fan-out, so the orchestrator can surface a timeoutNotice even
+  // under verbose:false (where `rounds`/`initialResponses` are omitted from the
+  // result and the round responses that carry the error would otherwise vanish).
+  const timedOutMembers: string[] = [];
+  const pushTimeouts = (arr: RawResponse[] | undefined) => {
+    if (!arr) return;
+    for (const r of arr) {
+      if (r.error && /\btimed out\b|\btimeout\b/i.test(String(r.error)) && !timedOutMembers.includes(r.label)) {
+        timedOutMembers.push(r.label);
+      }
+    }
+  };
+  pushTimeouts(input.initialResponses);
   // Set when a round's judge output is missing/unparseable (thrown error OR
   // categorize()'s own graceful degrade). `resolved`/`totalConflicts`/score
   // still reflect a genuine measurement from whatever rounds DID succeed —
@@ -575,6 +593,7 @@ export async function deconflict(
     // ── Ask each council member about the open conflicts ──────────────────
     const roundPrompt = buildConflictRoundPrompt(question, openConflicts, round);
     const roundResponses = await queryMembers(roundPrompt, members, runtime, {}, images);
+    pushTimeouts(roundResponses);
 
     // ── Judge re-categorizes these round-specific responses ───────────────
     let newCateg: Awaited<ReturnType<typeof categorize>>;
@@ -783,6 +802,7 @@ export async function deconflict(
       ? { judgeDegraded: true }
       : {}),
     ...(hadRecoveredMemberOutage ? { hadRecoveredMemberOutage: true } : {}),
+    ...(timedOutMembers.length ? { timedOutMembers } : {}),
     ...(verbose
       ? {
           initialResponses: input.initialResponses,

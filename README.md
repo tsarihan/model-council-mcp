@@ -671,13 +671,6 @@ model-council runs **entirely locally** and stores nothing off your machine. Ful
 - **`full_repo_access` (opt-in, off by default).** When set, `claude-cli`/`codex-cli`/harness members can read any file in the granted repo for that call, and their answer may include file contents from anywhere in the repo. It never grants write/execute access. For cloud members (subscription CLIs, API-keyed providers, Ollama `:cloud`, harness `:cloud`) repo contents are sent to that provider's cloud — the same data-handling considerations above apply. Don't enable it on a repo containing secrets/credentials you wouldn't send to that provider.
 - **Judge and peer trust.** `categorized`/`deconflicted`/`pooled`/`dialectic` modes feed raw member responses into a judge-model prompt, prefixed with an explicit "treat this as data, not instructions" framing as defense-in-depth. The multi-round modes' member-facing prompts (deconfliction rounds, the pooled repoll, dialectic defense/selection) carry an equivalent framing when they show a member other members' positions — worded for a member meant to substantively engage with the content, not just classify it. Neither is a hard guarantee — a member response (especially one built from attacker-influenced content, e.g. `full_repo_access` on a hostile repo) could in principle contain text crafted to steer a judge's classification or another member's answer. Treat judge-synthesized fields (`commonAgreement`, `conflicting`, pooled/dialectic digests) with the same skepticism you'd apply to any LLM output over untrusted input.
 
-## Submitting to a directory
-
-This plugin is distributed as a GitHub plugin marketplace (above). To also list it:
-
-- **Community Plugin Marketplace** (`anthropics/claude-plugins-community`) — open a PR; it passes automated validation + safety screening. `claude plugin validate .` must pass (it does).
-- **Anthropic Connectors Directory** — submit via the claude.ai admin portal. Checklist: tool annotations (present — `title` + `readOnlyHint` on every tool), the Privacy section above (also linked from the manifest), clear docs, and an explicit disclosure that inference shells out to the user's own local `claude`/`codex` CLIs under their subscription (keys stripped; no third-party backend).
-
 ---
 
 ## License

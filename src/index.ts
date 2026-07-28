@@ -126,6 +126,18 @@ try {
   /* best-effort — a read-only state dir must not break boot */
 }
 
+/**
+ * Visible delimiters around a completed council answer, so the host/user can
+ * confirm a run both launched and finished cleanly (vs. silently cut off or
+ * timed out). Applied only to fully-completed answers — never to "still
+ * running", error, or job-list payloads, so the markers themselves are the
+ * completion signal. The JSON payload stays intact on its own lines between the
+ * markers, so anything that needs to parse it can strip the first/last line.
+ */
+const BEGIN_MARKER = '═══════ BEGINNING OF RESPONSE ═══════';
+const END_MARKER = '═══════ END OF RESPONSE ═══════';
+const withCompletionMarkers = (text: string): string => `${BEGIN_MARKER}\n${text}\n${END_MARKER}`;
+
 /** Compose context/files into the prompt and load any attached images, then run
  *  the council. Shared by the synchronous ask_council and the background
  *  ask_council_async — `onProgress` only makes sense for the synchronous path
@@ -1112,7 +1124,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
           content: [
             {
               type: 'text',
-              text: JSON.stringify(result, null, 2),
+              text: withCompletionMarkers(JSON.stringify(result, null, 2)),
             },
           ],
         };
@@ -1175,7 +1187,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
               ? { status: job.status, job_id: job.id, error: job.error }
               : { status: job.status, job_id: job.id, note: 'Still running — poll again shortly.' };
         return {
-          content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+          content: [{
+            type: 'text',
+            text: job.status === 'done'
+              ? withCompletionMarkers(JSON.stringify(payload, null, 2))
+              : JSON.stringify(payload, null, 2),
+          }],
         };
       }
 

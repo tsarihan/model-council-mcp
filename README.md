@@ -54,6 +54,8 @@ claude --plugin-dir /path/to/model-council-mcp
 
 ### Configurable options (prompted at install)
 
+These are all set from **`/plugin` → Configure** in Claude Code (or the equivalent env vars shown for standalone installs — e.g. `REQUEST_TIMEOUT_MS` for the timeout, `CLOUD_CONCURRENCY` for the cloud override). They persist across reloads.
+
 | Option | Purpose | Default |
 |---|---|---|
 | Ollama address | Base URL of your Ollama server | `http://localhost:11434` |
@@ -69,6 +71,7 @@ claude --plugin-dir /path/to/model-council-mcp
 | OpenAI / Anthropic / X.AI API key | Enable cloud models (stored in keychain) | — |
 | vLLM / TRT-LLM / SGLang servers | `name:host:port` entries | — |
 | Max response tokens | Tokens per completion | `16000` |
+| **Per-request timeout** | Wall-clock timeout (ms) for a single completion before the member is recorded as timed-out. Raise it for slow local models (large MLX/GGUF) or `full_repo_access` reviews — honoured verbatim by every provider, including the subscription CLIs (no 300s floor). Set via `REQUEST_TIMEOUT_MS`. | `120000` (2 min) |
 | Cloud concurrency (override) | Optional; caps all cloud pools, overriding the per-tier limits | *(unset → tiers)* |
 | Local concurrency | Simultaneous local requests (0 = unlimited) | `1` |
 | Completion retries | Retries on an empty/failed response | `3` |

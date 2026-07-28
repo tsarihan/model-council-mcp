@@ -36,9 +36,12 @@ async function resetMock() {
   await fetch(`${MOCK_URL}/reset`, { method: 'POST' });
 }
 
-// Parse the JSON text payload from a tool result
+// Parse the JSON text payload from a tool result. Completed council answers
+// are wrapped in BEGINNING/END OF RESPONSE markers (a completion signal for
+// the host); strip them before parsing.
 function parseToolResult(result) {
-  const text = result.content?.[0]?.text ?? '{}';
+  let text = result.content?.[0]?.text ?? '{}';
+  text = text.replace(/^═══════ BEGINNING OF RESPONSE ═══════\n/, '').replace(/\n═══════ END OF RESPONSE ═══════$/, '');
   return JSON.parse(text);
 }
 
@@ -118,10 +121,15 @@ async function main() {
     // ── Test: individual mode ─────────────────────────────────────────────────
     console.log('\n▶ ask_council (individual)');
     await resetMock();
-    const ind = parseToolResult(await client.callTool({
+    const indRaw = await client.callTool({
       name: 'ask_council',
       arguments: { question: 'How to handle errors?', mode: 'individual' },
-    }));
+    });
+    const indText = indRaw.content?.[0]?.text ?? '';
+    check('completed answers wrapped in BEGINNING/END OF RESPONSE markers',
+      indText.startsWith('═══════ BEGINNING OF RESPONSE ═══════') && indText.endsWith('═══════ END OF RESPONSE ═══════'),
+      `markers missing: ${indText.slice(0, 60)}…${indText.slice(-60)}`);
+    const ind = parseToolResult(indRaw);
     check('mode individual', ind.mode === 'individual');
     check('3 responses', ind.responses?.length === 3, `got ${ind.responses?.length}`);
     check('all responses non-empty', ind.responses?.every(r => r.response && !r.error));

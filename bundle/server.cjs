@@ -38182,6 +38182,11 @@ try {
   });
 } catch {
 }
+var BEGIN_MARKER = "\u2550\u2550\u2550\u2550\u2550\u2550\u2550 BEGINNING OF RESPONSE \u2550\u2550\u2550\u2550\u2550\u2550\u2550";
+var END_MARKER = "\u2550\u2550\u2550\u2550\u2550\u2550\u2550 END OF RESPONSE \u2550\u2550\u2550\u2550\u2550\u2550\u2550";
+var withCompletionMarkers = (text) => `${BEGIN_MARKER}
+${text}
+${END_MARKER}`;
 async function runCouncil(input, onProgress) {
   const question = await buildAugmentedQuestion(input.question, {
     context: input.context,
@@ -38772,7 +38777,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
           content: [
             {
               type: "text",
-              text: JSON.stringify(result, null, 2)
+              text: withCompletionMarkers(JSON.stringify(result, null, 2))
             }
           ]
         };
@@ -38823,7 +38828,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         }
         const payload = job.status === "done" ? { status: job.status, job_id: job.id, elapsedMs: (job.finishedAt ?? 0) - job.startedAt, result: job.result } : job.status === "error" ? { status: job.status, job_id: job.id, error: job.error } : { status: job.status, job_id: job.id, note: "Still running \u2014 poll again shortly." };
         return {
-          content: [{ type: "text", text: JSON.stringify(payload, null, 2) }]
+          content: [{
+            type: "text",
+            text: job.status === "done" ? withCompletionMarkers(JSON.stringify(payload, null, 2)) : JSON.stringify(payload, null, 2)
+          }]
         };
       }
       // ── get_council_config ───────────────────────────────────────────────

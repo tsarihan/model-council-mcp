@@ -37334,6 +37334,7 @@ var CouncilOrchestrator = class {
     const mode = modeOverride ?? this.config.responseMode;
     const maxRounds = maxRoundsOverride ?? this.config.maxDeconflictRounds;
     const verbose = verboseOverride ?? this.runtime.verbose;
+    const judgeModelIdPref = this.config.judgeModelId;
     const runtime = fullRepoAccessRepo ? { ...this.runtime, fullRepoAccess: fullRepoAccessRepo, requestTimeoutMs: this.runtime.repoRequestTimeoutMs } : this.runtime;
     let memberIds = this.config.members.map((m2) => m2.modelId);
     let autoUsed = false;
@@ -37432,7 +37433,7 @@ var CouncilOrchestrator = class {
     }
     const erroredLabels = new Set(responses.filter((r2) => r2.error).map((r2) => r2.label));
     const judgeModelId = selectJudge(
-      this.config.judgeModelId,
+      judgeModelIdPref,
       // queryTargets, not members: candidates must actually have a response
       // (when images filtered the council to a vision-capable subset, the
       // skipped members never ran and would otherwise be eligible for judge).
@@ -37761,11 +37762,13 @@ function migrateCloudToHarness(labels, curatedCloudModels, claudeInstalled) {
   if (!labels.some((l2) => l2.startsWith("ollama:") && cloudSet.has(l2.slice("ollama:".length)))) {
     return labels;
   }
-  return labels.map((l2) => {
+  const mapped = labels.map((l2) => {
     if (!l2.startsWith("ollama:")) return l2;
     const model = l2.slice("ollama:".length);
     return cloudSet.has(model) ? `claude-cli/claude-cli-ollama:${model}` : l2;
   });
+  const seen = /* @__PURE__ */ new Set();
+  return mapped.filter((l2) => seen.has(l2) ? false : (seen.add(l2), true));
 }
 function quotaWarning(report, tiers, subs) {
   const paid = [];
@@ -38140,7 +38143,6 @@ var JobStore = class {
 
 // src/index.ts
 var import_node_fs10 = require("node:fs");
-var import_node_child_process6 = require("node:child_process");
 var import_node_path10 = require("node:path");
 var import_meta2 = {};
 var MC_VERSION = (() => {
@@ -38232,12 +38234,11 @@ function collectTimeoutLabels(result) {
     visit(r2.responses);
     visit(r2.rawResponses);
     visit(r2.initialResponses);
-    visit(r2.thesis);
-    if (Array.isArray(r2.roundHistory)) {
-      for (const rd of r2.roundHistory) if (rd && typeof rd === "object") visit(rd.responses);
-    }
-    if (Array.isArray(r2.roundDetails)) {
-      for (const rd of r2.roundDetails) if (rd && typeof rd === "object") visit(rd.responses);
+    visit(r2.reconsidered);
+    visit(r2.defenses);
+    visit(r2.selections);
+    if (Array.isArray(r2.rounds)) {
+      for (const rd of r2.rounds) if (rd && typeof rd === "object") visit(rd.responses);
     }
   }
   return labels;
@@ -38323,7 +38324,7 @@ async function initCouncil() {
       const cmd = appConfig.servers.find((s2) => s2.id === "claude-cli-ollama")?.command ?? "claude";
       let cliInstalled = false;
       try {
-        cliInstalled = (0, import_node_child_process6.spawnSync)(cmd, ["--version"], { timeout: 8e3, stdio: "pipe" }).status === 0;
+        cliInstalled = (await runCli(cmd, ["--version"], { timeoutMs: 8e3 })).code === 0;
       } catch {
       }
       const migrated = migrateCloudToHarness(labels, subs.curatedCloudModels, cliInstalled);
@@ -39109,7 +39110,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
           external_exports.object({
             run_timeout_ms: external_exports.number().int().min(1e3).max(18e5).optional(),
             repo_timeout_ms: external_exports.number().int().min(1e3).max(18e5).optional()
-          }),
+          }).strict(),
           args,
           "set_council_timeouts"
         );

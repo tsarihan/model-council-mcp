@@ -180,6 +180,12 @@ export class CouncilOrchestrator {
     const mode = modeOverride ?? this.config.responseMode;
     const maxRounds = maxRoundsOverride ?? this.config.maxDeconflictRounds;
     const verbose = verboseOverride ?? this.runtime.verbose;
+    // Snapshot the judge preference at the START of the call, alongside the
+    // member snapshot below — selectJudge reads it AFTER the member fan-out
+    // await, so reading this.config.judgeModelId there would race a concurrent
+    // configure_council that swapped the judge mid-call (members from config
+    // A, judged by config B). The local is immune to that.
+    const judgeModelIdPref = this.config.judgeModelId;
     // A shallow per-call clone — never mutate the shared this.runtime, or a
     // concurrent ask_council call without full_repo_access would see it too.
     // When repo access is granted, also swap in the longer repo per-completion
@@ -409,7 +415,7 @@ export class CouncilOrchestrator {
     }
     const erroredLabels = new Set(responses.filter(r => r.error).map(r => r.label));
     const judgeModelId = selectJudge(
-      this.config.judgeModelId,
+      judgeModelIdPref,
       // queryTargets, not members: candidates must actually have a response
       // (when images filtered the council to a vision-capable subset, the
       // skipped members never ran and would otherwise be eligible for judge).

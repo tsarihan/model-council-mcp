@@ -911,6 +911,16 @@ async function main() {
     const stStat = parseToolResult(await client.callTool({ name: 'council_status', arguments: {} }));
     check('council_status surfaces run timeout', stStat.timeouts?.run_ms === 1200, `got ${stStat.timeouts?.run_ms}`);
     check('council_status surfaces repo timeout', typeof stStat.timeouts?.repo_ms === 'number', `got ${stStat.timeouts?.repo_ms}`);
+    // A misspelled/unknown key must be REJECTED, not silently stripped while
+    // the tool reports success — otherwise the caller believes the timeout was
+    // set when nothing changed.
+    let strictRejected = false;
+    try {
+      await client.callTool({ name: 'set_council_timeouts', arguments: { repo_timout_ms: 30000 } });
+    } catch {
+      strictRejected = true;
+    }
+    check('set_council_timeouts rejects an unknown/misspelled key', strictRejected, 'expected a validation error for repo_timout_ms');
     // Restore the default-ish timeout so later tests aren't affected.
     await client.callTool({ name: 'set_council_timeouts', arguments: { run_timeout_ms: 300000 } });
 

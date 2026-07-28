@@ -2870,6 +2870,17 @@ console.log('▶ Ollama-harness member: the documented "claude-cli/claude-cli-ol
   const noChange = migrateCloudToHarness(localOnly, curated, true);
   check('migrateCloudToHarness: no-op when no curated cloud models present',
     noChange === localOnly, 'should return same array reference');
+
+  // Dedup: state already held BOTH a bare label and its migrated harness form
+  // (e.g. the user added the harness version while the bare one persisted).
+  // Migration must not produce two identical harness labels (would query twice).
+  const both = ['ollama:glm-5.2:cloud', 'claude-cli/claude-cli-ollama:glm-5.2:cloud', 'ollama:llama3'];
+  const deduped = migrateCloudToHarness(both, curated, true);
+  check('migrateCloudToHarness: dedupes a bare+harness duplicate to one harness label',
+    deduped.filter(l => l === 'claude-cli/claude-cli-ollama:glm-5.2:cloud').length === 1,
+    JSON.stringify(deduped));
+  check('migrateCloudToHarness: dedup preserves the unrelated local model',
+    deduped.includes('ollama:llama3'), JSON.stringify(deduped));
 }
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);

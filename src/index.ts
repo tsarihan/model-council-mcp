@@ -37,13 +37,12 @@ import { ProgressReporter } from './council/query.js';
 import { CouncilConfig, CouncilMember, ModelId, ResponseMode, SubscriptionTiers } from './types.js';
 import { CouncilState, loadState, saveState } from './state.js';
 import { loadSubscriptions, validTiers, tierAllowsCloud, SubProvider } from './subscriptions.js';
-import { detectEnvironment, autoPopulatedMembers, quotaWarning, migrateCloudToHarness } from './detect.js';
+import { detectEnvironment, autoPopulatedMembers, quotaWarning, migrateCloudToHarness, runCli } from './detect.js';
 import { buildAugmentedQuestion } from './context.js';
 import { assertGitRepo } from './git.js';
 import { loadImages } from './images.js';
 import { JobStore } from './jobs.js';
 import { readFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 
 // The server version, read from package.json at load so the MCP `version` never
@@ -164,7 +163,10 @@ const TIMEOUT_NOTICE = 'RESPONSE TIMED OUT, INCREASE TIMEOUT IF MESSAGE IS CUT';
 const TIMEOUT_RE = /\btimed out\b|\btimeout\b/i;
 
 /** Scan every RawResponse array on a council result for members whose error
- *  indicates a per-completion timeout cut. Returns the distinct labels. */
+ *  indicates a per-completion timeout cut. Returns the distinct labels. Covers
+ *  every mode's response-bearing field: individual `responses`, categorized
+ *  `rawResponses`, the verbose `initialResponses`, pooled `reconsidered`,
+ *  dialectic `defenses`/`selections`, and deconfliction per-round `rounds`. */
 function collectTimeoutLabels(result: unknown): string[] {
   const labels: string[] = [];
   const seen = new Set<string>();
@@ -182,12 +184,17 @@ function collectTimeoutLabels(result: unknown): string[] {
   };
   if (result && typeof result === 'object') {
     const r = result as Record<string, unknown>;
-    visit(r.responses);
-    visit(r.rawResponses);
-    visit(r.initialResponses);
-    visit(r.thesis);
-    if (Array.isArray(r.roundHistory)) for (const rd of r.roundHistory) if (rd && typeof rd === 'object') visit((rd as Record<string, unknown>).responses);
-    if (Array.isArray(r.roundDetails)) for (const rd of r.roundDetails) if (rd && typeof rd === 'object') visit((rd as Record<string, unknown>).responses);
+    // Top-level RawResponse[] fields across all five modes.
+    visit(r.responses);          // individual
+    visit(r.rawResponses);       // categorized
+    visit(r.initialResponses);   // deconflicted / pooled / dialectic (verbose thesis)
+    visit(r.reconsidered);       // pooled re-poll
+    visit(r.defenses);           // dialectic defenses
+    visit(r.selections);         // dialectic re-selection
+    // Deconfliction per-round detail (verbose): each round carries its own
+    // RawResponse[] in `.rounds` (NOT roundHistory, which is just RoundSummary
+    // counters with no responses).
+    if (Array.isArray(r.rounds)) for (const rd of r.rounds) if (rd && typeof rd === 'object') visit((rd as Record<string, unknown>).responses);
   }
   return labels;
 }
@@ -353,8 +360,11 @@ async function initCouncil(): Promise<void> {
     const cloudSet = new Set(subs.curatedCloudModels);
     if (labels.some(l => l.startsWith('ollama:') && cloudSet.has(l.slice('ollama:'.length)))) {
       const cmd = appConfig.servers.find(s => s.id === 'claude-cli-ollama')?.command ?? 'claude';
+      // Async probe (runCli spawns + awaits) — a blocking spawnSync here would
+      // stall the whole Node event loop for up to 8s, freezing every concurrent
+      // MCP request, just to decide a one-time migration.
       let cliInstalled = false;
-      try { cliInstalled = spawnSync(cmd, ['--version'], { timeout: 8000, stdio: 'pipe' }).status === 0; } catch {}
+      try { cliInstalled = (await runCli(cmd, ['--version'], { timeoutMs: 8000 })).code === 0; } catch {}
       const migrated = migrateCloudToHarness(labels, subs.curatedCloudModels, cliInstalled);
       if (migrated !== labels) {
         labels = migrated;
@@ -1543,7 +1553,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
           z.object({
             run_timeout_ms: z.number().int().min(1000).max(1800000).optional(),
             repo_timeout_ms: z.number().int().min(1000).max(1800000).optional(),
-          }),
+          }).strict(),
           args,
           'set_council_timeouts',
         );

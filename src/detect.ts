@@ -35,8 +35,10 @@ const isCloudModel = (m: string): boolean => m.endsWith(':cloud') || m.endsWith(
 
 interface CliResult { code: number; stdout: string; stderr: string; }
 
-/** Run a CLI with a timeout; optionally strip credentials to force subscription auth. */
-function runCli(
+/** Run a CLI with a timeout; optionally strip credentials to force subscription auth.
+ *  Exported so the boot-time state migration in index.ts can probe `claude --version`
+ *  asynchronously (a spawnSync there would block the whole event loop for up to 8s). */
+export function runCli(
   command: string,
   args: string[],
   opts: { timeoutMs: number; input?: string; stripKeys?: 'anthropic' | 'openai' | 'xai'; cwd?: string } = { timeoutMs: 8000 },
@@ -341,11 +343,18 @@ export function migrateCloudToHarness(
   if (!labels.some(l => l.startsWith('ollama:') && cloudSet.has(l.slice('ollama:'.length)))) {
     return labels;
   }
-  return labels.map(l => {
+  const mapped = labels.map(l => {
     if (!l.startsWith('ollama:')) return l;
     const model = l.slice('ollama:'.length);
     return cloudSet.has(model) ? `claude-cli/claude-cli-ollama:${model}` : l;
   });
+  // Dedup: if state already held BOTH a bare `ollama:X:cloud` and its migrated
+  // `claude-cli/claude-cli-ollama:X:cloud` form (e.g. the user added the harness
+  // version while the bare one still persisted), the map above would produce two
+  // identical harness labels and the model would be queried twice. Drop dupes
+  // preserving first-seen order — mirrors autoPopulatedMembers' own Set dedup.
+  const seen = new Set<string>();
+  return mapped.filter(l => (seen.has(l) ? false : (seen.add(l), true)));
 }
 
 /**

@@ -256,6 +256,8 @@ Full URLs also work: `gpu3:http://10.0.0.5:9000`
 | `CLOUD_CONCURRENCY` | Max simultaneous requests to cloud members (Ollama cloud `:cloud`/`-cloud`, OpenAI, Anthropic, X.AI). Ollama cloud needs Pro (3 concurrent) or Max (10) | `3` |
 | `LOCAL_CONCURRENCY` | Max simultaneous requests to local models; `1` runs them one at a time to avoid contention, `0` = unlimited | `1` |
 | `COMPLETION_RETRIES` | Attempts per completion before giving up on an empty/failed response | `3` |
+| `REQUEST_TIMEOUT_MS` | Per-completion wall-clock timeout (ms) for **text-only** calls. Default 5 min — local Ollama models run sequentially, so a busy box needs headroom. Honoured verbatim by every provider, including the subscription CLIs (no 300s floor). A member cut by this timeout is flagged in the result (`timeoutNotice`); raise it or use `set_council_timeouts`. | `300000` |
+| `REPO_REQUEST_TIMEOUT_MS` | Per-completion timeout (ms) used **instead** when `full_repo_access` is set — repo-reading completions (CLI member Read/Grep/Glob) run longer. | `600000` |
 | `DECONFLICT_VERBOSE` | `true` → deconflicted results include per-round detail by default | `false` |
 
 **Input send-caps** (bound what the tool feeds the council per call — a large attachment is multiplied across every member × round, so these are a real memory/latency/token amplifier, not just a per-request size). Raise them for a council of large-context models; the **practical ceiling is the smallest member's context window**, so sending ~1 MB (~300K tokens) to a 256K-context local member makes that member error cleanly (`PromptTooLargeError`) while cloud members still answer:
@@ -340,6 +342,8 @@ Send a question to the full council.
 ```
 
 `mode` and `max_deconflict_rounds` override the configured defaults for this call only. In `deconflicted` mode, set `"verbose": true` to include the initial categorization, every member's per-round responses, and the round-by-round re-categorization alongside the final synthesis. In `pooled` mode, `"verbose": true` adds the initial (round-0) raw member responses.
+
+**Completion markers & timeout cuts.** Every completed answer is wrapped in `═══════ BEGINNING OF RESPONSE ═══════` / `═══════ END OF RESPONSE ═══════` delimiters (the JSON payload sits intact on its own lines between them — strip the first and last line to parse). The markers are the completion signal: the tool returns the moment the council finishes, so it never waits the full timeout just because the timeout is set. If a member's completion is cut by the per-completion timeout, the result carries `timeoutNotice: "RESPONSE TIMED OUT, INCREASE TIMEOUT IF MESSAGE IS CUT"` plus a `timedOutMembers` array of the cut labels — this surfaces even under `verbose: false`. Raise the budget with `set_council_timeouts` (or `REQUEST_TIMEOUT_MS` / `REPO_REQUEST_TIMEOUT_MS`) and re-ask.
 
 **Attach context / files.** Add `"context"` (inline background text) and/or `"files"` (an array of local file paths). Files are read from disk and fenced with a `----- FILE:<nonce>: <path> -----` header (a random per-call token, so a file/diff whose content contains a fake fence marker can't forge a boundary the model would mistake for real) so every member sees them as labelled context alongside the question. Caps: 256 KB/file, 768 KB total, 20 files, 768 KB for `"context"` itself, 256 KB for `"question"` — for anything larger than the question cap, pass it via `context` instead. A missing/oversized/binary file (or an oversized `question`/`context`) returns a clear error rather than being silently dropped or truncated. Note: `files`/`images` read any path the server process can read, with no root restriction — the MCP caller is trusted the same way a local `Read` tool call would be.
 
@@ -575,6 +579,12 @@ The welcome/status readout (works in **every** client and install method). Retur
 ### `setup_council`
 
 Set subscription tiers (`chatgpt`, `claude`, `ollama`), then re-detect and auto-populate the council with everything usable. Persists across reloads. Concurrency and newly-registered providers take full effect after a `/reload-plugins`.
+
+### `set_council_timeouts`
+
+Change the per-completion timeouts at runtime — `run_timeout_ms` (text-only calls) and/or `repo_timeout_ms` (calls with `full_repo_access`). Both in milliseconds (1000–1800000). Persists across reloads and overrides the `REQUEST_TIMEOUT_MS` / `REPO_REQUEST_TIMEOUT_MS` env defaults; **takes effect on the next `ask_council`, no reload needed.** Omit either to leave it unchanged. Returns the now-effective values. Unknown keys are rejected (the schema is strict), so a misspelled parameter errors rather than silently no-op'ing. `council_status` surfaces both current values under `timeouts`.
+
+Use it when a member answer is cut mid-generation — the result then carries a `timeoutNotice` (see `ask_council`).
 
 ### Slash commands (Claude Code plugin only)
 

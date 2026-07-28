@@ -406,6 +406,11 @@ const server = http.createServer((req, res) => {
         if (typeof body.model === 'string' && body.model.startsWith('conc')) {
           await delay(60);
         }
+        // 'slow-timeout' model sleeps well past a short test timeout so the
+        // per-completion timeout cuts it — exercises the timeoutNotice path.
+        if (body.model === 'slow-timeout') {
+          await delay(3000);
+        }
         const contentText = chatResponse(body);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ message: { role: 'assistant', content: contentText } }));

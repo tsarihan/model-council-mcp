@@ -71,7 +71,8 @@ These are all set from **`/plugin` → Configure** in Claude Code (or the equiva
 | OpenAI / Anthropic / X.AI API key | Enable cloud models (stored in keychain) | — |
 | vLLM / TRT-LLM / SGLang servers | `name:host:port` entries | — |
 | Max response tokens | Tokens per completion | `16000` |
-| **Per-request timeout** | Wall-clock timeout (ms) for a single completion before the member is recorded as timed-out. Raise it for slow local models (large MLX/GGUF) or `full_repo_access` reviews — honoured verbatim by every provider, including the subscription CLIs (no 300s floor). Set via `REQUEST_TIMEOUT_MS`. | `120000` (2 min) |
+| **Per-request timeout (text)** | Wall-clock timeout (ms) for a single completion on text-only calls before the member is recorded as timed-out. Default raised to 5 min because local Ollama models run sequentially. Honoured verbatim by every provider, including the subscription CLIs (no 300s floor). Set via `REQUEST_TIMEOUT_MS`, or at runtime via the `set_council_timeouts` MCP tool. | `300000` (5 min) |
+| **Per-request timeout (repo)** | Timeout used **instead** of the text timeout when `full_repo_access` is set — the CLI member Read/Grep/Globs the repo tree, materially longer. Set via `REPO_REQUEST_TIMEOUT_MS`, or at runtime via `set_council_timeouts`. | `600000` (10 min) |
 | Cloud concurrency (override) | Optional; caps all cloud pools, overriding the per-tier limits | *(unset → tiers)* |
 | Local concurrency | Simultaneous local requests (0 = unlimited) | `1` |
 | Completion retries | Retries on an empty/failed response | `3` |

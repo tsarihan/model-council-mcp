@@ -1,7 +1,7 @@
 {
   "name": "model-council",
   "description": "Ask a council of local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, X.AI Grok) AI models. Get individual, categorized (agreement / complementary / conflicting), or fully deconflicted answers with a resolution score.",
-  "version": "0.2.74",
+  "version": "0.2.75",
   "author": {
     "name": "Tom Sarihan"
   },
@@ -148,11 +148,19 @@
     },
     "request_timeout_ms": {
       "type": "number",
-      "title": "Per-request timeout (ms)",
-      "description": "Wall-clock timeout for a single model completion before it's recorded as a timed-out member (default 120000 = 2 min). Raise it for slow local models (large MLX/GGUF) or full-repo-access reviews — it's honoured verbatim by every provider, including claude-cli/codex-cli/grok-cli (no 300s floor).",
-      "default": 120000,
+      "title": "Per-request timeout — text-only (ms)",
+      "description": "Wall-clock timeout for a single model completion on text-only calls (no full_repo_access) before it's recorded as a timed-out member (default 300000 = 5 min; local Ollama models run sequentially, so a busy box needs headroom). Raise it for slow local models (large MLX/GGUF) — it's honoured verbatim by every provider, including claude-cli/codex-cli/grok-cli (no 300s floor). Change at runtime with the set_council_timeouts MCP tool.",
+      "default": 300000,
       "min": 5000,
-      "max": 1200000
+      "max": 1800000
+    },
+    "repo_request_timeout_ms": {
+      "type": "number",
+      "title": "Per-request timeout — full_repo_access (ms)",
+      "description": "Per-completion timeout used when full_repo_access is set (default 600000 = 10 min) — the CLI member Read/Grep/Globs the repo tree, materially longer than a flat text completion. Honoured verbatim by every provider. Change at runtime with the set_council_timeouts MCP tool.",
+      "default": 600000,
+      "min": 5000,
+      "max": 1800000
     },
     "deconflict_verbose": {
       "type": "boolean",

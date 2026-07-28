@@ -119,6 +119,13 @@ export class CouncilOrchestrator {
     return { ...this.runtime };
   }
 
+  /** Update runtime in-place (used by set_council_timeouts to apply a runtime
+   *  change without a reload). Shallow-merges so a caller can override just the
+   *  timeout fields without touching concurrency/poolLimits. */
+  updateRuntime(partial: Partial<RuntimeConfig>): void {
+    this.runtime = { ...this.runtime, ...partial };
+  }
+
   /** List all reachable models across all providers */
   async listAllModels(): Promise<ModelInfo[]> {
     const results = await Promise.allSettled(
@@ -175,8 +182,11 @@ export class CouncilOrchestrator {
     const verbose = verboseOverride ?? this.runtime.verbose;
     // A shallow per-call clone — never mutate the shared this.runtime, or a
     // concurrent ask_council call without full_repo_access would see it too.
+    // When repo access is granted, also swap in the longer repo per-completion
+    // timeout — repo-reading completions (CLI member Read/Grep/Glob over the
+    // tree) materially outlast a flat text completion.
     const runtime: RuntimeConfig = fullRepoAccessRepo
-      ? { ...this.runtime, fullRepoAccess: fullRepoAccessRepo }
+      ? { ...this.runtime, fullRepoAccess: fullRepoAccessRepo, requestTimeoutMs: this.runtime.repoRequestTimeoutMs }
       : this.runtime;
 
     // ── Determine council membership ──────────────────────────────────────
@@ -412,9 +422,9 @@ export class CouncilOrchestrator {
     }
 
     const cc = {
-      maxTokens: this.runtime.maxTokens,
-      retries: this.runtime.retries,
-      timeoutMs: this.runtime.requestTimeoutMs,
+      maxTokens: runtime.maxTokens,
+      retries: runtime.retries,
+      timeoutMs: runtime.requestTimeoutMs,
     };
 
     // The judge is itself a council member; a genuine judge failure (unreachable,

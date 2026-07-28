@@ -199,6 +199,24 @@ console.log('▶ ProviderRegistry.resolve: bare-serverId fallback cannot resolve
   check('a correctly-typed bare-serverId lookup still resolves normally', resolvedCorrect?.config?.type === 'codex-cli');
 }
 
+console.log('▶ updateRuntime / per-call repo-timeout swap');
+{
+  const { CouncilOrchestrator } = await import('../dist/council/orchestrator.js');
+  const { ProviderRegistry } = await import('../dist/providers/registry.js');
+  const registry = new ProviderRegistry([
+    { id: 'ollama', type: 'ollama', baseUrl: 'http://127.0.0.1:11434', label: 'Ollama' },
+  ]);
+  const runtime = { localConcurrency: 0, cloudConcurrency: 0, maxTokens: 100, retries: 1, requestTimeoutMs: 300000, repoRequestTimeoutMs: 600000, verbose: false, poolLimits: { local: 0 } };
+  const orch = new CouncilOrchestrator(registry, { members: [], judgeModelId: undefined, responseMode: 'individual', maxDeconflictRounds: 3, autoCouncil: false }, runtime);
+  check('getRuntime returns the constructed text timeout', orch.getRuntime().requestTimeoutMs === 300000);
+  check('getRuntime returns the constructed repo timeout', orch.getRuntime().repoRequestTimeoutMs === 600000);
+  // updateRuntime is a shallow merge — an unset field must survive.
+  orch.updateRuntime({ requestTimeoutMs: 120000 });
+  check('updateRuntime shallow-merges (repo timeout preserved)', orch.getRuntime().requestTimeoutMs === 120000 && orch.getRuntime().repoRequestTimeoutMs === 600000);
+  orch.updateRuntime({ repoRequestTimeoutMs: 900000 });
+  check('updateRuntime sets repo timeout independently', orch.getRuntime().repoRequestTimeoutMs === 900000);
+}
+
 console.log('▶ per-provider pools drain independently at their own limits');
 {
   const { queryMembersVarying } = await import('../dist/council/query.js');
@@ -2560,7 +2578,9 @@ console.log('▶ loadConfig: strictParseInt rejects a numeric PREFIX with traili
     check('envInt: COMPLETION_RETRIES with trailing garbage falls back to the default',
       cfg.runtime.retries === 3, cfg.runtime.retries);
     check('envInt: REQUEST_TIMEOUT_MS with trailing garbage falls back to the default',
-      cfg.runtime.requestTimeoutMs === 120000, cfg.runtime.requestTimeoutMs);
+      cfg.runtime.requestTimeoutMs === 300000, cfg.runtime.requestTimeoutMs);
+    check('envInt: REPO_REQUEST_TIMEOUT_MS defaults to 600000',
+      cfg.runtime.repoRequestTimeoutMs === 600000, cfg.runtime.repoRequestTimeoutMs);
     check('MAX_DECONFLICT_ROUNDS with trailing garbage falls back to the default (3)',
       cfg.council.maxDeconflictRounds === 3, cfg.council.maxDeconflictRounds);
 

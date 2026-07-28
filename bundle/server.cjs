@@ -24864,7 +24864,14 @@ function loadConfig() {
     localConcurrency: localOverride ?? subs.defaults.localConcurrency,
     poolLimits,
     retries: Math.max(1, envInt("COMPLETION_RETRIES", 3)),
-    requestTimeoutMs: Math.max(1e3, envInt("REQUEST_TIMEOUT_MS", 12e4)),
+    // 5 min default for text-only calls: local Ollama models run sequentially
+    // (local_concurrency=1), so a single completion on a busy box can take a
+    // while, and a too-tight cap cuts member answers mid-generation. Raise via
+    // REQUEST_TIMEOUT_MS (or set_council_timeouts).
+    requestTimeoutMs: Math.max(1e3, envInt("REQUEST_TIMEOUT_MS", 3e5)),
+    // 10 min default when full_repo_access is set: the CLI member Read/Grep/
+    // Globs the repo tree, materially longer than a flat text completion.
+    repoRequestTimeoutMs: Math.max(1e3, envInt("REPO_REQUEST_TIMEOUT_MS", 6e5)),
     verbose: envBool("DECONFLICT_VERBOSE", false)
   };
   return {
@@ -37287,6 +37294,12 @@ var CouncilOrchestrator = class {
   getRuntime() {
     return { ...this.runtime };
   }
+  /** Update runtime in-place (used by set_council_timeouts to apply a runtime
+   *  change without a reload). Shallow-merges so a caller can override just the
+   *  timeout fields without touching concurrency/poolLimits. */
+  updateRuntime(partial2) {
+    this.runtime = { ...this.runtime, ...partial2 };
+  }
   /** List all reachable models across all providers */
   async listAllModels() {
     const results = await Promise.allSettled(
@@ -37321,7 +37334,7 @@ var CouncilOrchestrator = class {
     const mode = modeOverride ?? this.config.responseMode;
     const maxRounds = maxRoundsOverride ?? this.config.maxDeconflictRounds;
     const verbose = verboseOverride ?? this.runtime.verbose;
-    const runtime = fullRepoAccessRepo ? { ...this.runtime, fullRepoAccess: fullRepoAccessRepo } : this.runtime;
+    const runtime = fullRepoAccessRepo ? { ...this.runtime, fullRepoAccess: fullRepoAccessRepo, requestTimeoutMs: this.runtime.repoRequestTimeoutMs } : this.runtime;
     let memberIds = this.config.members.map((m2) => m2.modelId);
     let autoUsed = false;
     if (memberIds.length === 0 && this.config.autoCouncil) {
@@ -37431,9 +37444,9 @@ var CouncilOrchestrator = class {
       throw new Error("No judge model available. Add models to council first.");
     }
     const cc = {
-      maxTokens: this.runtime.maxTokens,
-      retries: this.runtime.retries,
-      timeoutMs: this.runtime.requestTimeoutMs
+      maxTokens: runtime.maxTokens,
+      retries: runtime.retries,
+      timeoutMs: runtime.requestTimeoutMs
     };
     try {
       const judgeProvider = this.registry.resolve(judgeModelId);
@@ -38170,6 +38183,16 @@ for (const w2 of appConfig.warnings) {
 `);
 }
 var jobs = new JobStore();
+{
+  const st2 = loadState();
+  const t2 = st2.timeouts;
+  if (t2 && (typeof t2.run === "number" || typeof t2.repo === "number")) {
+    const patch = {};
+    if (typeof t2.run === "number" && Number.isFinite(t2.run)) patch.requestTimeoutMs = Math.max(1e3, Math.floor(t2.run));
+    if (typeof t2.repo === "number" && Number.isFinite(t2.repo)) patch.repoRequestTimeoutMs = Math.max(1e3, Math.floor(t2.repo));
+    if (Object.keys(patch).length) orchestrator.updateRuntime(patch);
+  }
+}
 var explicitlyConfigured = false;
 try {
   saveState({
@@ -38187,6 +38210,43 @@ var END_MARKER = "\u2550\u2550\u2550\u2550\u2550\u2550\u2550 END OF RESPONSE \u2
 var withCompletionMarkers = (text) => `${BEGIN_MARKER}
 ${text}
 ${END_MARKER}`;
+var TIMEOUT_NOTICE = "RESPONSE TIMED OUT, INCREASE TIMEOUT IF MESSAGE IS CUT";
+var TIMEOUT_RE = /\btimed out\b|\btimeout\b/i;
+function collectTimeoutLabels(result) {
+  const labels = [];
+  const seen = /* @__PURE__ */ new Set();
+  const visit = (arr) => {
+    if (!Array.isArray(arr)) return;
+    for (const r2 of arr) {
+      if (r2 && typeof r2 === "object" && typeof r2.label === "string") {
+        const rr2 = r2;
+        if (rr2.error && TIMEOUT_RE.test(String(rr2.error)) && !seen.has(rr2.label)) {
+          seen.add(rr2.label);
+          labels.push(rr2.label);
+        }
+      }
+    }
+  };
+  if (result && typeof result === "object") {
+    const r2 = result;
+    visit(r2.responses);
+    visit(r2.rawResponses);
+    visit(r2.initialResponses);
+    visit(r2.thesis);
+    if (Array.isArray(r2.roundHistory)) {
+      for (const rd of r2.roundHistory) if (rd && typeof rd === "object") visit(rd.responses);
+    }
+    if (Array.isArray(r2.roundDetails)) {
+      for (const rd of r2.roundDetails) if (rd && typeof rd === "object") visit(rd.responses);
+    }
+  }
+  return labels;
+}
+function withTimeoutNotice(result) {
+  const timedOut = collectTimeoutLabels(result);
+  if (timedOut.length === 0) return result;
+  return { ...result, timeoutNotice: TIMEOUT_NOTICE, timedOutMembers: timedOut };
+}
 async function runCouncil(input, onProgress) {
   const question = await buildAugmentedQuestion(input.question, {
     context: input.context,
@@ -38610,6 +38670,28 @@ var TOOLS = [
         ollama: { type: "string", enum: ["free", "pro", "max"], description: "Ollama subscription tier." }
       }
     }
+  },
+  {
+    name: "set_council_timeouts",
+    annotations: { title: "Set per-completion timeouts (repo + text)", readOnlyHint: false },
+    description: "Set the per-completion wall-clock timeouts (ms) for council calls, persisted across reloads and overriding the REQUEST_TIMEOUT_MS / REPO_REQUEST_TIMEOUT_MS env defaults. `run_timeout_ms` applies to text-only ask_council calls; `repo_timeout_ms` applies when full_repo_access is set (repo-reading completions run longer). Omit either to leave it unchanged. Raise these when a member answer is cut mid-generation (the result then carries a `timeoutNotice`). Returns the now-effective values. A reload is NOT required \u2014 takes effect on the next ask_council.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        run_timeout_ms: {
+          type: "number",
+          minimum: 1e3,
+          maximum: 18e5,
+          description: "Per-completion timeout (ms) for text-only calls (no full_repo_access). Default 300000 (5 min)."
+        },
+        repo_timeout_ms: {
+          type: "number",
+          minimum: 1e3,
+          maximum: 18e5,
+          description: "Per-completion timeout (ms) for calls with full_repo_access. Default 600000 (10 min)."
+        }
+      }
+    }
   }
 ];
 var server = new Server(
@@ -38772,7 +38854,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       // ── ask_council ──────────────────────────────────────────────────────
       case "ask_council": {
         const input = parseToolInput(AskCouncilInput, args, "ask_council");
-        const result = await runCouncil(input, onProgress);
+        const result = withTimeoutNotice(await runCouncil(input, onProgress));
         return {
           content: [
             {
@@ -38826,7 +38908,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
             `No such job: ${input.job_id}. Jobs are dropped on server reload; list with get_council_result (no job_id).`
           );
         }
-        const payload = job.status === "done" ? { status: job.status, job_id: job.id, elapsedMs: (job.finishedAt ?? 0) - job.startedAt, result: job.result } : job.status === "error" ? { status: job.status, job_id: job.id, error: job.error } : { status: job.status, job_id: job.id, note: "Still running \u2014 poll again shortly." };
+        const payload = job.status === "done" ? { status: job.status, job_id: job.id, elapsedMs: (job.finishedAt ?? 0) - job.startedAt, result: withTimeoutNotice(job.result) } : job.status === "error" ? { status: job.status, job_id: job.id, error: job.error } : { status: job.status, job_id: job.id, note: "Still running \u2014 poll again shortly." };
         return {
           content: [{
             type: "text",
@@ -38877,7 +38959,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     cloudConcurrency: runtime.cloudConcurrency,
                     localConcurrency: runtime.localConcurrency,
                     retries: runtime.retries,
-                    verbose: runtime.verbose
+                    verbose: runtime.verbose,
+                    requestTimeoutMs: runtime.requestTimeoutMs,
+                    repoRequestTimeoutMs: runtime.repoRequestTimeoutMs
                   },
                   env_reference: {
                     OLLAMA_ADDRESS: "Ollama server URL (default: http://localhost:11434)",
@@ -38909,7 +38993,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     CLOUD_CONCURRENCY: "Optional override: caps ALL cloud pools (overrides per-tier limits). Unset = tiers drive it.",
                     LOCAL_CONCURRENCY: "Max concurrent local requests (default: 1; 0 = unlimited)",
                     COMPLETION_RETRIES: "Attempts per completion before giving up on empty/error (default: 3)",
-                    REQUEST_TIMEOUT_MS: "Per-completion wall-clock timeout in ms (default: 120000). Raise for slow local models or full-repo-access reviews \u2014 this is honoured verbatim by every provider, including claude-cli/codex-cli/grok-cli (no 300s floor).",
+                    REQUEST_TIMEOUT_MS: "Per-completion wall-clock timeout in ms for text-only calls (default: 300000 = 5 min). Raise for slow local models. Honoured verbatim by every provider, including claude-cli/codex-cli/grok-cli (no 300s floor).",
+                    REPO_REQUEST_TIMEOUT_MS: "Per-completion timeout in ms when full_repo_access is set (default: 600000 = 10 min) \u2014 repo-reading completions run longer. Honoured verbatim by every provider.",
+                    SET_COUNCIL_TIMEOUTS: "MCP tool to change the above two at runtime (persisted); see set_council_timeouts.",
                     DECONFLICT_VERBOSE: "true \u2192 deconflicted results include per-round detail by default"
                   }
                 },
@@ -38951,6 +39037,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                   council: { members, count: members.length },
                   concurrency: appConfig.runtime.poolLimits,
                   // currently in effect (boot-time)
+                  timeouts: {
+                    run_ms: orchestrator.getRuntime().requestTimeoutMs,
+                    repo_ms: orchestrator.getRuntime().repoRequestTimeoutMs
+                  },
                   reloadPending,
                   quotaWarning: quotaWarning(report, tiers, subs),
                   hints
@@ -39005,6 +39095,55 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                   council: { members: labels, count: labels.length },
                   quotaWarning: quotaWarning(report, tiers, subs),
                   note: "Tiers saved. Concurrency changes and newly-enabled subscription providers take full effect after `/reload-plugins` (or restarting the server)." + (Object.keys(invalid).length > 0 ? ` Ignored invalid tier value(s): ${JSON.stringify(invalid)} \u2014 see \`invalid\` above for valid options.` : "")
+                },
+                null,
+                2
+              )
+            }
+          ]
+        };
+      }
+      // ── set_council_timeouts ─────────────────────────────────────────────
+      case "set_council_timeouts": {
+        const input = parseToolInput(
+          external_exports.object({
+            run_timeout_ms: external_exports.number().int().min(1e3).max(18e5).optional(),
+            repo_timeout_ms: external_exports.number().int().min(1e3).max(18e5).optional()
+          }),
+          args,
+          "set_council_timeouts"
+        );
+        const cur = orchestrator.getRuntime();
+        const run = input.run_timeout_ms;
+        const repo = input.repo_timeout_ms;
+        if (run === void 0 && repo === void 0) {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            "set_council_timeouts: provide at least one of run_timeout_ms or repo_timeout_ms."
+          );
+        }
+        saveState((current) => ({
+          timeouts: {
+            ...current.timeouts ?? {},
+            ...typeof run === "number" ? { run } : {},
+            ...typeof repo === "number" ? { repo } : {}
+          }
+        }));
+        const patch = {};
+        if (typeof run === "number") patch.requestTimeoutMs = run;
+        if (typeof repo === "number") patch.repoRequestTimeoutMs = repo;
+        orchestrator.updateRuntime(patch);
+        const now = orchestrator.getRuntime();
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  status: "updated",
+                  run_timeout_ms: now.requestTimeoutMs,
+                  repo_timeout_ms: now.repoRequestTimeoutMs,
+                  note: "Takes effect on the next ask_council. Values persist across reloads."
                 },
                 null,
                 2

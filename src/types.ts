@@ -96,8 +96,16 @@ export interface RuntimeConfig {
   poolLimits: Record<PoolKey, number>;
   /** Attempts per completion before giving up on an empty/failed response. Default 3. */
   retries: number;
-  /** Per-attempt wall-clock timeout (ms) for a single completion. Default 120000. */
+  /** Per-attempt wall-clock timeout (ms) for a single completion. Default 300000 (5 min). */
   requestTimeoutMs: number;
+  /**
+   * Per-attempt wall-clock timeout (ms) used INSTEAD of requestTimeoutMs when the
+   * call has full_repo_access — repo-reading completions run longer (the CLI
+   * member Read/Grep/Globs the tree), so they get a bigger budget. Default 600000 (10 min).
+   * The orchestrator swaps this in on the per-call runtime clone when
+   * fullRepoAccessRepo is set.
+   */
+  repoRequestTimeoutMs: number;
   /** Default value of the verbose flag for deconflicted results. */
   verbose: boolean;
   /**

@@ -26,6 +26,13 @@ export interface CouncilState {
   responseMode?: ResponseMode;
   maxDeconflictRounds?: number;
   autoCouncil?: boolean;
+  /**
+   * Per-completion timeouts (ms) set via set_council_timeouts, overriding the
+   * REQUEST_TIMEOUT_MS / REPO_REQUEST_TIMEOUT_MS env+userConfig defaults the
+   * same way `tiers` overrides boot defaults. `run` = text-only calls,
+   * `repo` = calls with full_repo_access. Undefined = use the boot default.
+   */
+  timeouts?: { run?: number; repo?: number };
   /** Reference-data version the user was last welcomed for. */
   welcomedVersion?: string;
   /**

@@ -504,7 +504,14 @@ export function loadConfig(): AppConfig {
     localConcurrency: localOverride ?? subs.defaults.localConcurrency,
     poolLimits,
     retries: Math.max(1, envInt('COMPLETION_RETRIES', 3)),
-    requestTimeoutMs: Math.max(1000, envInt('REQUEST_TIMEOUT_MS', 120000)),
+    // 5 min default for text-only calls: local Ollama models run sequentially
+    // (local_concurrency=1), so a single completion on a busy box can take a
+    // while, and a too-tight cap cuts member answers mid-generation. Raise via
+    // REQUEST_TIMEOUT_MS (or set_council_timeouts).
+    requestTimeoutMs: Math.max(1000, envInt('REQUEST_TIMEOUT_MS', 300000)),
+    // 10 min default when full_repo_access is set: the CLI member Read/Grep/
+    // Globs the repo tree, materially longer than a flat text completion.
+    repoRequestTimeoutMs: Math.max(1000, envInt('REPO_REQUEST_TIMEOUT_MS', 600000)),
     verbose: envBool('DECONFLICT_VERBOSE', false),
   };
 

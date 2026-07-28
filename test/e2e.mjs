@@ -99,7 +99,7 @@ async function main() {
     console.log('\n▶ list tools');
     const tools = await client.listTools();
     const toolNames = tools.tools.map(t => t.name).sort();
-    check('8 tools exposed', toolNames.length === 8, `got ${toolNames.join(',')}`);
+    check('9 tools exposed', toolNames.length === 9, `got ${toolNames.join(',')}`);
     check('has ask_council', toolNames.includes('ask_council'));
     check('has ask_council_async', toolNames.includes('ask_council_async'));
     check('has get_council_result', toolNames.includes('get_council_result'));
@@ -884,6 +884,35 @@ async function main() {
     } finally {
       rmSync(imgDir, { recursive: true, force: true });
     }
+
+    // ── Test: per-completion timeout cut surfaces a timeoutNotice ─────────────
+    console.log('\n▶ timeout cut → timeoutNotice + set_council_timeouts');
+    await resetMock();
+    // Shrink the text-only per-completion timeout so the slow mock model
+    // (sleeps 2s) is cut; then ask it. The result must carry the notice.
+    const sto = parseToolResult(await client.callTool({
+      name: 'set_council_timeouts',
+      arguments: { run_timeout_ms: 1200 },
+    }));
+    check('set_council_timeouts returns updated run timeout', sto.run_timeout_ms === 1200, `got ${sto.run_timeout_ms}`);
+    check('set_council_timeouts leaves repo timeout intact', typeof sto.repo_timeout_ms === 'number', `got ${sto.repo_timeout_ms}`);
+    await client.callTool({
+      name: 'configure_council',
+      arguments: { models: ['ollama:slow-timeout', 'ollama:small-a'], response_mode: 'individual' },
+    });
+    const toRes = parseToolResult(await client.callTool({
+      name: 'ask_council', arguments: { question: 'slow?', mode: 'individual' },
+    }));
+    check('timed-out member flagged with timeout error', /timed out|timeout/i.test(toRes.responses?.[0]?.error ?? ''), `err="${toRes.responses?.[0]?.error}"`);
+    check('result carries timeoutNotice', toRes.timeoutNotice === 'RESPONSE TIMED OUT, INCREASE TIMEOUT IF MESSAGE IS CUT', `got "${toRes.timeoutNotice}"`);
+    check('timedOutMembers lists the cut label', Array.isArray(toRes.timedOutMembers) && toRes.timedOutMembers.includes('ollama:slow-timeout'), `got ${JSON.stringify(toRes.timedOutMembers)}`);
+    check('non-timed member still answered', toRes.responses?.[1]?.response && !toRes.responses?.[1]?.error);
+    // council_status must surface the now-effective timeouts.
+    const stStat = parseToolResult(await client.callTool({ name: 'council_status', arguments: {} }));
+    check('council_status surfaces run timeout', stStat.timeouts?.run_ms === 1200, `got ${stStat.timeouts?.run_ms}`);
+    check('council_status surfaces repo timeout', typeof stStat.timeouts?.repo_ms === 'number', `got ${stStat.timeouts?.repo_ms}`);
+    // Restore the default-ish timeout so later tests aren't affected.
+    await client.callTool({ name: 'set_council_timeouts', arguments: { run_timeout_ms: 300000 } });
 
     // ── Test: async / background job flow ─────────────────────────────────────
     console.log('\n▶ ask_council_async / get_council_result');

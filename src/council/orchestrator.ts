@@ -69,9 +69,14 @@ export function selectJudge(
     // WRONG server's entry (or none, since allModels may not even list every
     // server's models together), silently defaulting bestB to 0 for every
     // candidate and picking candidates[0] instead of the actual largest.
+    // Prefer exact match; fall back to model-name-only for harness-remapped
+    // members (autoPopulatedMembers routes Ollama cloud models through
+    // claude-cli/claude-cli-ollama, but modelCache has provider:'ollama').
+    // Scoped to the harness case to preserve the multi-server guard above.
     const info = allModels.find(
       m => m.model === id.model && m.provider === id.provider && m.serverId === id.serverId,
-    );
+    ) ?? (id.provider === 'claude-cli' && id.serverId === 'claude-cli-ollama'
+      ? allModels.find(m => m.model === id.model) : undefined);
     const b = extractBillions(info?.paramSize);
     if (b > bestB) {
       bestB = b;
@@ -127,7 +132,11 @@ export class CouncilOrchestrator {
 
   /**
    * Zero-config council: every Ollama chat model currently available
-   * (local + :cloud), minus embedding-only models.
+   * (local + :cloud), minus embedding-only models. This is the fallback when
+   * no council is configured — cloud models stay on bare Ollama here because
+   * auto-discovered models may not work through the CLI harness (the boot-path
+   * `autoPopulatedMembers()` in detect.ts routes curated cloud models through
+   * the harness instead).
    */
   async autoDiscoverCouncil(): Promise<ModelId[]> {
     if (this.modelCache.length === 0) {

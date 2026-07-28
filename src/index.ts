@@ -37,12 +37,13 @@ import { ProgressReporter } from './council/query.js';
 import { CouncilConfig, CouncilMember, ModelId, ResponseMode, SubscriptionTiers } from './types.js';
 import { CouncilState, loadState, saveState } from './state.js';
 import { loadSubscriptions, validTiers, tierAllowsCloud, SubProvider } from './subscriptions.js';
-import { detectEnvironment, autoPopulatedMembers, quotaWarning } from './detect.js';
+import { detectEnvironment, autoPopulatedMembers, quotaWarning, migrateCloudToHarness } from './detect.js';
 import { buildAugmentedQuestion } from './context.js';
 import { assertGitRepo } from './git.js';
 import { loadImages } from './images.js';
 import { JobStore } from './jobs.js';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 
 // The server version, read from package.json at load so the MCP `version` never
@@ -271,7 +272,23 @@ async function initCouncil(): Promise<void> {
   // override an already-configured council with persisted/auto state.
   if (orchestrator.getConfig().members.length > 0 || explicitlyConfigured) return;
   if (Array.isArray(persisted.members)) {
-    orchestrator.updateConfig({ members: labelsToMembers(persisted.members) });
+    let labels = persisted.members.filter((s): s is string => typeof s === 'string');
+    // Route persisted bare ollama:*:cloud labels through the CC CLI harness
+    // for Read/Grep/Glob tool access. The check is idempotent: already-migrated
+    // labels start with claude-cli/, not ollama:, so re-runs are no-ops.
+    const subs = loadSubscriptions();
+    const cloudSet = new Set(subs.curatedCloudModels);
+    if (labels.some(l => l.startsWith('ollama:') && cloudSet.has(l.slice('ollama:'.length)))) {
+      const cmd = appConfig.servers.find(s => s.id === 'claude-cli-ollama')?.command ?? 'claude';
+      let cliInstalled = false;
+      try { cliInstalled = spawnSync(cmd, ['--version'], { timeout: 8000, stdio: 'pipe' }).status === 0; } catch {}
+      const migrated = migrateCloudToHarness(labels, subs.curatedCloudModels, cliInstalled);
+      if (migrated !== labels) {
+        labels = migrated;
+        saveState({ members: labels });
+      }
+    }
+    orchestrator.updateConfig({ members: labelsToMembers(labels) });
     return;
   }
   try {

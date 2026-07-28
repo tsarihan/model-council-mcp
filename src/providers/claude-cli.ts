@@ -211,8 +211,13 @@ export class ClaudeCliProvider implements Provider {
     this.config = config;
     this.serverId = config.id;
     this.command = config.command?.trim() || 'claude';
+    // Harness servers (anthropicBaseUrl set) may be registered with an empty
+    // model list purely so auto-population can resolve through them — don't
+    // fall back to DEFAULT_MODELS (opus/sonnet) for those.
     this.models =
-      config.models && config.models.length ? config.models : DEFAULT_MODELS;
+      config.models && config.models.length
+        ? config.models
+        : (config.anthropicBaseUrl?.trim() ? [] : DEFAULT_MODELS);
     this.anthropicBaseUrl = config.anthropicBaseUrl?.trim() || undefined;
   }
 

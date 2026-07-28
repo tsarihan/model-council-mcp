@@ -358,6 +358,40 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Anthropic Messages API — used by the claude CLI harness (ANTHROPIC_BASE_URL
+  // points here when a cloud model is routed through claude-cli-ollama).
+  if (req.method === 'POST' && req.url === '/v1/messages') {
+    let raw = '';
+    req.on('data', c => (raw += c));
+    req.on('end', async () => {
+      let body = {};
+      try { body = JSON.parse(raw); } catch { /* ignore */ }
+      // Extract content from Anthropic format (content can be string or array)
+      const msgs = body.messages ?? [];
+      const lastUser = [...msgs].reverse().find(m => m.role === 'user');
+      let textContent = '';
+      if (typeof lastUser?.content === 'string') {
+        textContent = lastUser.content;
+      } else if (Array.isArray(lastUser?.content)) {
+        textContent = lastUser.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+      }
+      // Reuse the Ollama chat logic by constructing an equivalent body
+      const ollamaBody = { model: body.model ?? 'unknown', messages: [{ role: 'user', content: textContent }] };
+      const responseText = chatResponse(ollamaBody);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        id: 'msg_mock',
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'text', text: responseText }],
+        model: body.model ?? 'unknown',
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 10, output_tokens: 20 },
+      }));
+    });
+    return;
+  }
+
   if (req.method === 'POST' && req.url === '/api/chat') {
     let raw = '';
     req.on('data', c => (raw += c));

@@ -2647,8 +2647,11 @@ console.log('▶ loadConfig: CLAUDE_CLI_OLLAMA_MODELS registers a distinct, opt-
     delete process.env.CLAUDE_CLI_OLLAMA_MODELS;
     delete process.env.CLAUDE_CLI_OLLAMA_ADDRESS;
     const cfgOff = loadConfig();
-    check('unset by default: no claude-cli-ollama server registered (opt-in only)',
-      !cfgOff.servers.some(s => s.id === 'claude-cli-ollama'));
+    const defaultHarness = cfgOff.servers.find(s => s.id === 'claude-cli-ollama');
+    check('always registered: claude-cli-ollama server exists even without CLAUDE_CLI_OLLAMA_MODELS',
+      !!defaultHarness && defaultHarness.type === 'claude-cli');
+    check('always registered: empty model list when CLAUDE_CLI_OLLAMA_MODELS is unset',
+      defaultHarness?.models?.length === 0, JSON.stringify(defaultHarness?.models));
 
     process.env.CLAUDE_CLI_OLLAMA_MODELS = 'glm-5.2:cloud, kimi-k2.7-code:cloud ,';
     const cfgOn = loadConfig();
@@ -2802,10 +2805,51 @@ console.log('▶ Ollama-harness member: the documented "claude-cli/claude-cli-ol
   check('autoPopulatedMembers falls back to the catalogue when a server lists no models',
     autoPopulatedMembers(report, { chatgpt: 'plus', claude: 'pro', grok: 'heavy', ollama: 'max' }, subs, [{ type: 'claude-cli' }])
       .filter(m => m.startsWith('claude-cli:')).length === auto.filter(m => m.startsWith('claude-cli:')).length);
-  check('autoPopulatedMembers: never emits a claude-cli-ollama reference, even with Claude usable',
-    !auto.some(m => m.includes('claude-cli-ollama')), JSON.stringify(auto));
+  check('autoPopulatedMembers: routes cloud models through claude-cli-ollama harness when claude is installed',
+    auto.some(m => m.includes('claude-cli/claude-cli-ollama:')), JSON.stringify(auto));
   check('autoPopulatedMembers: does emit bare claude-cli:<model> entries for the real subscription server',
     auto.some(m => m.startsWith('claude-cli:') && !m.includes('/')), JSON.stringify(auto));
+  // When claude CLI is NOT installed, fall back to bare ollama:
+  const reportNoClaude = { ...report, claude: { installed: false, usable: false } };
+  const autoNoClaude = autoPopulatedMembers(reportNoClaude, { chatgpt: 'plus', claude: 'pro', grok: 'heavy', ollama: 'max' }, subs);
+  check('autoPopulatedMembers: falls back to bare ollama: when claude CLI not installed',
+    !autoNoClaude.some(m => m.includes('claude-cli-ollama')) && autoNoClaude.some(m => m.startsWith('ollama:') && (m.includes(':cloud') || m.includes('-cloud'))),
+    JSON.stringify(autoNoClaude));
+
+  // ── migrateCloudToHarness (state v1→v2) ──────────────────────────────────────
+  const { migrateCloudToHarness } = await import('../dist/detect.js');
+  const curated = ['glm-5.2:cloud', 'kimi-k2.7-code:cloud', 'deepseek-v4-pro:cloud'];
+
+  // When claude is installed, curated cloud models are migrated
+  const v1Labels = ['ollama:llama3', 'ollama:glm-5.2:cloud', 'ollama:kimi-k2.7-code:cloud', 'codex-cli:gpt-5.6-sol'];
+  const migrated = migrateCloudToHarness(v1Labels, curated, true);
+  check('migrateCloudToHarness: upgrades curated cloud models',
+    migrated[1] === 'claude-cli/claude-cli-ollama:glm-5.2:cloud' &&
+    migrated[2] === 'claude-cli/claude-cli-ollama:kimi-k2.7-code:cloud',
+    JSON.stringify(migrated));
+  check('migrateCloudToHarness: leaves local models untouched',
+    migrated[0] === 'ollama:llama3', JSON.stringify(migrated));
+  check('migrateCloudToHarness: leaves non-ollama members untouched',
+    migrated[3] === 'codex-cli:gpt-5.6-sol', JSON.stringify(migrated));
+
+  // When claude is NOT installed, no migration happens
+  const notMigrated = migrateCloudToHarness(v1Labels, curated, false);
+  check('migrateCloudToHarness: no-op when claude CLI not installed',
+    JSON.stringify(notMigrated) === JSON.stringify(v1Labels), JSON.stringify(notMigrated));
+
+  // Non-curated cloud models are not migrated
+  const nonCurated = ['ollama:custom-model:cloud', 'ollama:glm-5.2:cloud'];
+  const partialMigrate = migrateCloudToHarness(nonCurated, curated, true);
+  check('migrateCloudToHarness: only migrates curated models',
+    partialMigrate[0] === 'ollama:custom-model:cloud' &&
+    partialMigrate[1] === 'claude-cli/claude-cli-ollama:glm-5.2:cloud',
+    JSON.stringify(partialMigrate));
+
+  // No cloud models = no-op (returns same array)
+  const localOnly = ['ollama:llama3', 'claude-cli:opus'];
+  const noChange = migrateCloudToHarness(localOnly, curated, true);
+  check('migrateCloudToHarness: no-op when no curated cloud models present',
+    noChange === localOnly, 'should return same array reference');
 }
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);

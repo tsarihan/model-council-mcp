@@ -307,7 +307,13 @@ export function autoPopulatedMembers(
   const out: string[] = [];
   for (const m of report.ollama.localModels) out.push(`ollama:${m}`);
   if (report.ollama.cloud === 'ok') {
-    for (const m of subs.curatedCloudModels) out.push(`ollama:${m}`);
+    // Route cloud models through the CC CLI harness (Read/Grep/Glob tool
+    // access) when the claude binary is installed. This is a CC CLI plugin,
+    // so the binary is expected. Fall back to bare Ollama otherwise.
+    const useHarness = report.claude.installed;
+    for (const m of subs.curatedCloudModels) {
+      out.push(useHarness ? `claude-cli/claude-cli-ollama:${m}` : `ollama:${m}`);
+    }
   }
   if (report.claude.usable && tierAllowsCloud('claude', tiers.claude, subs)) {
     for (const m of configured('claude-cli', subs.providers.claude.models)) out.push(`claude-cli:${m}`);
@@ -319,6 +325,27 @@ export function autoPopulatedMembers(
     for (const m of configured('grok-cli', subs.providers.grok.models)) out.push(`grok-cli:${m}`);
   }
   return [...new Set(out)];
+}
+
+/**
+ * State v1→v2: upgrade persisted bare-Ollama cloud labels to harness labels.
+ * Pure function — the caller supplies the CLI-installed flag.
+ */
+export function migrateCloudToHarness(
+  labels: string[],
+  curatedCloudModels: string[],
+  claudeInstalled: boolean,
+): string[] {
+  if (!claudeInstalled) return labels;
+  const cloudSet = new Set(curatedCloudModels);
+  if (!labels.some(l => l.startsWith('ollama:') && cloudSet.has(l.slice('ollama:'.length)))) {
+    return labels;
+  }
+  return labels.map(l => {
+    if (!l.startsWith('ollama:')) return l;
+    const model = l.slice('ollama:'.length);
+    return cloudSet.has(model) ? `claude-cli/claude-cli-ollama:${model}` : l;
+  });
 }
 
 /**

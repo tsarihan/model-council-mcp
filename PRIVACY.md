@@ -11,10 +11,14 @@ usage data, no crash reports.
 
 - **Your prompts and the models' responses** are sent only to the model endpoints **you**
   configure: your local Ollama server, any self-hosted vLLM / SGLang / TensorRT-LLM
-  servers, cloud API providers you supply keys for (OpenAI / Anthropic / X.AI), and — for
-  subscription members — your own locally installed `claude`, `codex`, and `grok` CLIs.
-  Each provider processes that data under **its own** privacy policy. There is no
-  model-council intermediary.
+  servers, cloud API providers you supply keys for (OpenAI / Anthropic / X.AI), Ollama
+  `:cloud` models (routed through Ollama's cloud infrastructure), and — for subscription
+  members — your own locally installed `claude`, `codex`, and `grok` CLIs. **Cloud models
+  of any provider send your prompts to that provider's cloud.** Check each cloud
+  provider's data-retention and training policies before use, and do not send personal or
+  sensitive data to any provider whose policies you have not reviewed. Each provider
+  processes that data under **its own** privacy policy. There is no model-council
+  intermediary.
 - **Credentials.** API keys are read from your MCP client's configuration / secure
   storage and used only to call the provider you supplied them for. Subscription members
   run under **your own** Claude, ChatGPT, and Grok logins via the first-party CLIs; the

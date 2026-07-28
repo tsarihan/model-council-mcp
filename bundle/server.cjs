@@ -24784,7 +24784,7 @@ function loadConfig() {
     });
   }
   const claudeCliOllamaModels = (envClean("CLAUDE_CLI_OLLAMA_MODELS") ?? "").split(",").map((s2) => s2.trim()).filter(Boolean);
-  if (claudeCliOllamaModels.length) {
+  {
     const harnessAddr = envClean("CLAUDE_CLI_OLLAMA_ADDRESS") ?? ollamaAddr;
     servers.push({
       id: "claude-cli-ollama",
@@ -24887,7 +24887,7 @@ var PROBE_IMAGE_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAGyklEQV
 function neutralizeFileMentions(text) {
   if (!text) return text;
   return text.replace(
-    /(?<![\w@])@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|go)\b|[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@))/g,
+    /(?<!\w)@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|go|secrets|secret|token|tokens|credentials|credential|password|passwd|otp|apikey|key|keys)\b|[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@)|@[~./\\]|@[\w.\-:]*[/\\]|@[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|@(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|go|secrets|secret|token|tokens|credentials|credential|password|passwd|otp|apikey|key|keys)\b|@[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@))/g,
     "@\u200B"
   );
 }
@@ -35354,7 +35354,7 @@ var ClaudeCliProvider = class {
     this.config = config2;
     this.serverId = config2.id;
     this.command = config2.command?.trim() || "claude";
-    this.models = config2.models && config2.models.length ? config2.models : DEFAULT_MODELS;
+    this.models = config2.models && config2.models.length ? config2.models : config2.anthropicBaseUrl?.trim() ? [] : DEFAULT_MODELS;
     this.anthropicBaseUrl = config2.anthropicBaseUrl?.trim() || void 0;
   }
   async ping() {
@@ -36517,24 +36517,44 @@ function mergePositionsByModel(prev, updated) {
   }
   return [...updated, ...preserved];
 }
+function noAttribution(p2) {
+  return (p2.models ?? []).every((m2) => typeof m2 !== "string" || !m2.trim());
+}
+function labelMatchesAny(label, known) {
+  if (!label) return false;
+  if (known.has(label)) return true;
+  const lm = label.toLowerCase();
+  for (const e2 of known) {
+    const le2 = e2.toLowerCase();
+    if (le2 === lm) return true;
+    if (lm.length >= 3 && le2.length >= 3 && (le2.includes(lm) || lm.includes(le2))) return true;
+  }
+  return false;
+}
 function partyErrored(positions, erroredLabels) {
   if (erroredLabels.size === 0) return false;
-  const errored = [...erroredLabels];
   return positions.some(
-    (p2) => (p2.models ?? []).some((raw) => {
-      const m2 = String(raw ?? "").trim();
-      if (!m2) return false;
-      if (erroredLabels.has(m2)) return true;
-      const lm = m2.toLowerCase();
-      return errored.some((e2) => {
-        const le2 = e2.toLowerCase();
-        if (le2 === lm) return true;
-        return lm.length >= 3 && le2.length >= 3 && (le2.includes(lm) || lm.includes(le2));
-      });
-    })
+    (p2) => (p2.models ?? []).some((raw) => typeof raw === "string" && labelMatchesAny(raw.trim(), erroredLabels))
   );
 }
-function detectResolutions(previous, newCateg, erroredLabels = /* @__PURE__ */ new Set()) {
+function crediblyAttributed(p2, memberLabels) {
+  return (p2.models ?? []).some((m2) => typeof m2 === "string" && labelMatchesAny(m2.trim(), memberLabels));
+}
+function attributionUnreliable(positions, memberLabels) {
+  if (memberLabels.size === 0) return false;
+  const seen = /* @__PURE__ */ new Set();
+  for (const p2 of positions ?? []) {
+    for (const m2 of p2.models ?? []) {
+      if (typeof m2 !== "string") continue;
+      const s2 = m2.trim().toLowerCase();
+      if (!s2) continue;
+      if (seen.has(s2)) return true;
+      seen.add(s2);
+    }
+  }
+  return (positions ?? []).some((p2) => !crediblyAttributed(p2, memberLabels));
+}
+function detectResolutions(previous, newCateg, erroredLabels = /* @__PURE__ */ new Set(), memberLabels = /* @__PURE__ */ new Set()) {
   const norm = (s2) => String(s2 ?? "").trim().toLowerCase().replace(/\s+/g, " ");
   const resolved = [];
   const remaining = [];
@@ -36552,13 +36572,16 @@ function detectResolutions(previous, newCateg, erroredLabels = /* @__PURE__ */ n
       matchedNewIdx.add(updatedIdx);
     } else if (topicStillReported) {
       remaining.push(prev);
-    } else if ((prev.positions ?? []).every((p2) => (p2.models ?? []).length === 0)) {
+    } else if ((prev.positions ?? []).every((p2) => noAttribution(p2))) {
       remaining.push(prev);
       partyDropout = true;
-    } else if (erroredLabels.size > 0 && (prev.positions ?? []).some((p2) => (p2.models ?? []).length === 0)) {
+    } else if (erroredLabels.size > 0 && (prev.positions ?? []).some((p2) => noAttribution(p2))) {
       remaining.push(prev);
       partyDropout = true;
     } else if (partyErrored(prev.positions, erroredLabels)) {
+      remaining.push(prev);
+      partyDropout = true;
+    } else if (erroredLabels.size > 0 && attributionUnreliable(prev.positions, memberLabels)) {
       remaining.push(prev);
       partyDropout = true;
     } else {
@@ -36578,15 +36601,16 @@ function detectResolutions(previous, newCateg, erroredLabels = /* @__PURE__ */ n
 }
 async function synthesize(judgeProvider, judgeModelId, prompt, runtime) {
   try {
-    return await pooledComplete(
+    const text = await pooledComplete(
       { modelId: judgeModelId, provider: judgeProvider },
       [{ role: "user", content: prompt }],
       { temperature: 0.3, maxTokens: runtime.maxTokens, timeoutMs: runtime.requestTimeoutMs },
       runtime.retries,
       runtime
     );
+    return { text, failed: false };
   } catch {
-    return "(The judge model returned no final synthesis.)";
+    return { text: "(The judge model returned no final synthesis.)", failed: true };
   }
 }
 async function deconflict(input) {
@@ -36639,15 +36663,16 @@ async function deconflict(input) {
       deconflictionScore: input.judgeDegraded ? null : 100,
       resolved: 0,
       totalConflicts: 0,
-      finalSynthesis: synthesis2,
+      finalSynthesis: synthesis2.text,
       unresolvedConflicts: [],
       roundHistory: [],
       judgeModel: judgeLabel,
-      ...input.judgeDegraded ? { judgeDegraded: true } : {},
+      ...input.judgeDegraded || synthesis2.failed ? { judgeDegraded: true } : {},
       ...verboseFields
     };
   }
   let openConflicts = [...initialConflicts];
+  const memberLabels = new Set(members.map((m2) => modelIdLabel(m2.modelId)));
   const allResolved = [];
   const roundHistory = [];
   const roundDetails = [];
@@ -36721,7 +36746,7 @@ async function deconflict(input) {
       break;
     }
     const erroredLabels = new Set(roundResponses.filter((r2) => r2.error).map((r2) => r2.label));
-    const { resolved, remaining, partyDropout } = detectResolutions(openConflicts, newCateg, erroredLabels);
+    const { resolved, remaining, partyDropout } = detectResolutions(openConflicts, newCateg, erroredLabels, memberLabels);
     if (partyDropout) {
       partyDropoutDegraded = true;
     } else if (newCateg.judgeDegraded) {
@@ -36771,7 +36796,7 @@ async function deconflict(input) {
     deconflictionScore: score,
     resolved: resolvedCount,
     totalConflicts,
-    finalSynthesis: synthesis,
+    finalSynthesis: synthesis.text,
     unresolvedConflicts: openConflicts,
     roundHistory,
     judgeModel: judgeLabel,
@@ -36780,19 +36805,28 @@ async function deconflict(input) {
     // some of what looks "unresolved" may only look that way because a party
     // was absent when the judge assessed it, so the score is a lower bound.
     // (If everything resolved, all resolutions happened in dropout-free rounds
-    // — a dropout only ever carries forward — so the result is trustworthy.)
+    // — a dropout only ever CARRIES FORWARD, never resolves — so a run that
+    // reached a clean 100% did so in rounds where the party was present, and
+    // the result is trustworthy; the dropout only deferred, it did not
+    // fabricate. Conditioning partyDropoutDegraded on `openConflicts.length`
+    // below makes the code match that reasoning. Three independent council
+    // members (codex/kimi/deepseek, round 17) flagged the prior unconditional
+    // OR as flag fatigue: a single early-round dropout permanently tainted a
+    // run that went on to fully resolve everything with complete participation.)
     // ALSO propagate an already-degraded INITIAL categorization: `totalConflicts`
     // (the score's denominator) is fixed from it, so if that measurement was
     // taken over an incomplete council or a failed judge, every score derived
     // from it is likewise unreliable — even when the loop itself ran cleanly and
-    // resolved everything. Without this the flag was silently dropped for any
-    // run that found at least one conflict.
+    // resolved everything. This one IS unconditional: the denominator itself is
+    // suspect, so even a 100% over a degraded initial count is not a clean
+    // measurement (unlike partyDropoutDegraded, which only ever defers a
+    // resolution that later clean rounds can genuinely complete).
     // `partyDropoutDegraded` is set only when an outage-driven ambiguity
     // demonstrably prevented a conflict from resolving/discarding cleanly (see
     // detectResolutions) — NOT merely because some round had a member error.
     // (A round with an unrelated member error but no affected conflict sets
     // `hadRecoveredMemberOutage` below instead, without elevating this flag.)
-    ...midLoopJudgeFailure || input.judgeDegraded || partyDropoutDegraded ? { judgeDegraded: true } : {},
+    ...midLoopJudgeFailure || input.judgeDegraded || partyDropoutDegraded && openConflicts.length > 0 || synthesis.failed ? { judgeDegraded: true } : {},
     ...hadRecoveredMemberOutage ? { hadRecoveredMemberOutage: true } : {},
     ...verbose ? {
       initialResponses: input.initialResponses,
@@ -37185,7 +37219,8 @@ async function runDialectic(input) {
     images
   );
   const defenseOutage = defenses.some((r2) => r2.error);
-  const judgeDegraded = digest.judgeDegraded || prosConsResult.judgeDegraded || defenseOutage;
+  const selectionOutage = selections.some((r2) => r2.error);
+  const judgeDegraded = digest.judgeDegraded || prosConsResult.judgeDegraded || defenseOutage || selectionOutage;
   return {
     mode: "dialectic",
     question,
@@ -37222,7 +37257,7 @@ function selectJudge(judgeModelId, memberIds, allModels, erroredLabels = /* @__P
   for (const id of candidates) {
     const info = allModels.find(
       (m2) => m2.model === id.model && m2.provider === id.provider && m2.serverId === id.serverId
-    );
+    ) ?? (id.provider === "claude-cli" && id.serverId === "claude-cli-ollama" ? allModels.find((m2) => m2.model === id.model) : void 0);
     const b2 = extractBillions(info?.paramSize);
     if (b2 > bestB) {
       bestB = b2;
@@ -37264,7 +37299,11 @@ var CouncilOrchestrator = class {
   }
   /**
    * Zero-config council: every Ollama chat model currently available
-   * (local + :cloud), minus embedding-only models.
+   * (local + :cloud), minus embedding-only models. This is the fallback when
+   * no council is configured — cloud models stay on bare Ollama here because
+   * auto-discovered models may not work through the CLI harness (the boot-path
+   * `autoPopulatedMembers()` in detect.ts routes curated cloud models through
+   * the harness instead).
    */
   async autoDiscoverCouncil() {
     if (this.modelCache.length === 0) {
@@ -37485,6 +37524,9 @@ var CouncilOrchestrator = class {
 
 // src/detect.ts
 var import_node_child_process4 = require("node:child_process");
+var import_node_fs8 = require("node:fs");
+var import_node_os5 = require("node:os");
+var import_node_path6 = require("node:path");
 var isCloudModel = (m2) => m2.endsWith(":cloud") || m2.endsWith("-cloud");
 function runCli(command, args, opts = { timeoutMs: 8e3 }) {
   return new Promise((resolve4) => {
@@ -37503,7 +37545,7 @@ function runCli(command, args, opts = { timeoutMs: 8e3 }) {
     }
     let child;
     try {
-      child = (0, import_node_child_process4.spawn)(command, args, { env, stdio: ["pipe", "pipe", "pipe"], detached: true });
+      child = (0, import_node_child_process4.spawn)(command, args, { env, stdio: ["pipe", "pipe", "pipe"], detached: true, ...opts.cwd ? { cwd: opts.cwd } : {} });
     } catch {
       resolve4({ code: 127, stdout: "", stderr: "spawn failed" });
       return;
@@ -37632,23 +37674,33 @@ async function detectGrok(tiers, subs) {
   const cmd = cliPath("GROK_CLI_PATH", "grok");
   const installed = (await runCli(cmd, ["--version"], { timeoutMs: 8e3 })).code === 0;
   if (!installed) return { installed: false, usable: false };
-  if (!tierAllowsCloud("grok", tiers.grok, subs) && !envBool("GROK_CLI", false)) {
+  const quotaOptIn = tierAllowsCloud("grok", tiers.grok, subs) || envBool("GROK_CLI", false);
+  if (process.env.GROK_CLI_UNSAFE_ACCEPT_RCE !== "true" || !quotaOptIn) {
     return { installed: true, usable: false };
   }
-  const probe = await runCli(
-    cmd,
-    [
-      "-p",
-      "Reply with the single word READY",
-      "--output-format",
-      "json",
-      "--tools",
-      "",
-      "--permission-mode",
-      "bypassPermissions"
-    ],
-    { timeoutMs: 2e4, stripKeys: "xai" }
-  );
+  const probeDir = (0, import_node_fs8.mkdtempSync)((0, import_node_path6.join)((0, import_node_os5.tmpdir)(), "grok-detect-cwd-"));
+  let probe;
+  try {
+    probe = await runCli(
+      cmd,
+      [
+        "-p",
+        "Reply with the single word READY",
+        "--output-format",
+        "json",
+        "--tools",
+        "none",
+        "--permission-mode",
+        "bypassPermissions"
+      ],
+      { timeoutMs: 2e4, stripKeys: "xai", cwd: probeDir }
+    );
+  } finally {
+    try {
+      (0, import_node_fs8.rmSync)(probeDir, { recursive: true, force: true });
+    } catch {
+    }
+  }
   if (probe.code !== 0) return { installed: true, usable: false };
   try {
     const parsed = JSON.parse(probe.stdout);
@@ -37674,7 +37726,10 @@ function autoPopulatedMembers(report, tiers, subs, servers) {
   const out = [];
   for (const m2 of report.ollama.localModels) out.push(`ollama:${m2}`);
   if (report.ollama.cloud === "ok") {
-    for (const m2 of subs.curatedCloudModels) out.push(`ollama:${m2}`);
+    const useHarness = report.claude.installed;
+    for (const m2 of subs.curatedCloudModels) {
+      out.push(useHarness ? `claude-cli/claude-cli-ollama:${m2}` : `ollama:${m2}`);
+    }
   }
   if (report.claude.usable && tierAllowsCloud("claude", tiers.claude, subs)) {
     for (const m2 of configured("claude-cli", subs.providers.claude.models)) out.push(`claude-cli:${m2}`);
@@ -37686,6 +37741,18 @@ function autoPopulatedMembers(report, tiers, subs, servers) {
     for (const m2 of configured("grok-cli", subs.providers.grok.models)) out.push(`grok-cli:${m2}`);
   }
   return [...new Set(out)];
+}
+function migrateCloudToHarness(labels, curatedCloudModels, claudeInstalled) {
+  if (!claudeInstalled) return labels;
+  const cloudSet = new Set(curatedCloudModels);
+  if (!labels.some((l2) => l2.startsWith("ollama:") && cloudSet.has(l2.slice("ollama:".length)))) {
+    return labels;
+  }
+  return labels.map((l2) => {
+    if (!l2.startsWith("ollama:")) return l2;
+    const model = l2.slice("ollama:".length);
+    return cloudSet.has(model) ? `claude-cli/claude-cli-ollama:${model}` : l2;
+  });
 }
 function quotaWarning(report, tiers, subs) {
   const paid = [];
@@ -37700,14 +37767,14 @@ function quotaWarning(report, tiers, subs) {
 // src/context.ts
 var import_promises = require("node:fs/promises");
 var import_node_crypto = require("node:crypto");
-var import_node_path7 = require("node:path");
+var import_node_path8 = require("node:path");
 
 // src/git.ts
 var import_node_child_process5 = require("node:child_process");
 var import_node_util = require("node:util");
-var import_node_fs8 = require("node:fs");
-var import_node_path6 = require("node:path");
-var import_node_os5 = require("node:os");
+var import_node_fs9 = require("node:fs");
+var import_node_path7 = require("node:path");
+var import_node_os6 = require("node:os");
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process5.execFile);
 var MAX_DIFF_BYTES = 512 * 1024;
 var GIT_TIMEOUT_MS = 15e3;
@@ -37775,7 +37842,7 @@ function diffArgsForRef(ref) {
 }
 function tryRealpath(path) {
   try {
-    return (0, import_node_fs8.realpathSync)(path);
+    return (0, import_node_fs9.realpathSync)(path);
   } catch {
     return path;
   }
@@ -37785,9 +37852,9 @@ function samePath(a2, b2) {
   return caseInsensitive ? a2.toLowerCase() === b2.toLowerCase() : a2 === b2;
 }
 async function assertGitRepo(repoPath) {
-  const resolved = (0, import_node_path6.resolve)(repoPath);
+  const resolved = (0, import_node_path7.resolve)(repoPath);
   const canonical = tryRealpath(resolved);
-  if (samePath(canonical, tryRealpath((0, import_node_path6.resolve)((0, import_node_os5.homedir)())))) {
+  if (samePath(canonical, tryRealpath((0, import_node_path7.resolve)((0, import_node_os6.homedir)())))) {
     throw new Error(
       `"${repoPath}" resolves to your home directory \u2014 refusing to grant it as a repo root even though it is a valid git work tree. Point at a narrower project directory instead.`
     );
@@ -37819,7 +37886,7 @@ async function buildGitDiff(input) {
       `git_ref "${ref}" looks like a git option, not a revision/range \u2014 refusing it. Use "uncommitted" | "staged" | "unstaged", or a revision/range like "main..HEAD".`
     );
   }
-  const repoPath = await assertGitRepo((0, import_node_path6.resolve)(input.repo?.trim() || process.cwd()));
+  const repoPath = await assertGitRepo((0, import_node_path7.resolve)(input.repo?.trim() || process.cwd()));
   const filterEnv = await filterNeutralizeEnv(repoPath);
   const args = [...GLOBAL_SAFETY_ARGS, ...diffArgsForRef(ref)];
   const attrSource = await emptyTreeHash(repoPath);
@@ -37886,8 +37953,8 @@ ${diff}`);
   let total = 0;
   for (const raw of files) {
     if (typeof raw !== "string" || !raw.trim()) continue;
-    const path = (0, import_node_path7.resolve)(raw);
-    if (IMAGE_EXTENSIONS.has((0, import_node_path7.extname)(path).toLowerCase())) {
+    const path = (0, import_node_path8.resolve)(raw);
+    if (IMAGE_EXTENSIONS.has((0, import_node_path8.extname)(path).toLowerCase())) {
       throw new Error(
         `${raw} looks like an image \u2014 "files" reads text and would send garbled data. Use the "images" parameter instead.`
       );
@@ -37941,7 +38008,7 @@ ${question}`;
 
 // src/images.ts
 var import_promises2 = require("node:fs/promises");
-var import_node_path8 = require("node:path");
+var import_node_path9 = require("node:path");
 var MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 var MAX_TOTAL_IMAGE_BYTES = 24 * 1024 * 1024;
 var MAX_IMAGES = 6;
@@ -37961,8 +38028,8 @@ async function loadImages(paths) {
   let total = 0;
   for (const raw of paths) {
     if (typeof raw !== "string" || !raw.trim()) continue;
-    const path = (0, import_node_path8.resolve)(raw);
-    const ext = (0, import_node_path8.extname)(path).toLowerCase();
+    const path = (0, import_node_path9.resolve)(raw);
+    const ext = (0, import_node_path9.extname)(path).toLowerCase();
     const mimeType = EXT_TO_MIME[ext];
     if (!mimeType) {
       throw new Error(
@@ -38059,13 +38126,14 @@ var JobStore = class {
 };
 
 // src/index.ts
-var import_node_fs9 = require("node:fs");
-var import_node_path9 = require("node:path");
+var import_node_fs10 = require("node:fs");
+var import_node_child_process6 = require("node:child_process");
+var import_node_path10 = require("node:path");
 var import_meta2 = {};
 var MC_VERSION = (() => {
   const readV = (p2) => {
     try {
-      const v2 = JSON.parse((0, import_node_fs9.readFileSync)(p2, "utf8")).version;
+      const v2 = JSON.parse((0, import_node_fs10.readFileSync)(p2, "utf8")).version;
       return typeof v2 === "string" ? v2 : null;
     } catch {
       return null;
@@ -38077,7 +38145,7 @@ var MC_VERSION = (() => {
   } catch {
   }
   if (process.argv[1]) {
-    const v2 = readV((0, import_node_path9.join)((0, import_node_path9.dirname)(process.argv[1]), "..", "package.json"));
+    const v2 = readV((0, import_node_path10.join)((0, import_node_path10.dirname)(process.argv[1]), "..", "package.json"));
     if (v2) return v2;
   }
   return "0.0.0";
@@ -38183,7 +38251,23 @@ async function initCouncil() {
   }
   if (orchestrator.getConfig().members.length > 0 || explicitlyConfigured) return;
   if (Array.isArray(persisted.members)) {
-    orchestrator.updateConfig({ members: labelsToMembers(persisted.members) });
+    let labels = persisted.members.filter((s2) => typeof s2 === "string");
+    const subs = loadSubscriptions();
+    const cloudSet = new Set(subs.curatedCloudModels);
+    if (labels.some((l2) => l2.startsWith("ollama:") && cloudSet.has(l2.slice("ollama:".length)))) {
+      const cmd = appConfig.servers.find((s2) => s2.id === "claude-cli-ollama")?.command ?? "claude";
+      let cliInstalled = false;
+      try {
+        cliInstalled = (0, import_node_child_process6.spawnSync)(cmd, ["--version"], { timeout: 8e3, stdio: "pipe" }).status === 0;
+      } catch {
+      }
+      const migrated = migrateCloudToHarness(labels, subs.curatedCloudModels, cliInstalled);
+      if (migrated !== labels) {
+        labels = migrated;
+        saveState({ members: labels });
+      }
+    }
+    orchestrator.updateConfig({ members: labelsToMembers(labels) });
     return;
   }
   try {

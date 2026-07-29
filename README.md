@@ -101,32 +101,35 @@ Grok defaults to `free` even when the `grok` CLI is installed and logged in — 
 
 ---
 
-## Install as a standalone MCP server (npm)
+## Install as a standalone MCP server (any MCP client)
+
+The server is a single zero-dependency file (`bundle/server.cjs`) — **no `npm install`, no `npx`**. Clone the repo and point any MCP client at it:
 
 ```bash
-# Quick try
-npx model-council-mcp
-
-# Add to Claude Code
-claude mcp add model-council-mcp -s user -- npx -y model-council-mcp
+git clone https://github.com/tsarihan/model-council-mcp.git
 ```
 
-Or add to `~/.claude.json` → `mcpServers`:
+Then in your client's MCP config (Claude Code's `~/.claude.json` → `mcpServers`, Cursor, Cline, etc.) — point `command` at the cloned bundle:
 
 ```json
 {
   "mcpServers": {
     "model-council": {
-      "command": "npx",
-      "args": ["-y", "model-council-mcp"],
+      "command": "node",
+      "args": ["/absolute/path/to/model-council-mcp/bundle/server.cjs"],
       "env": {
         "OLLAMA_ADDRESS": "http://localhost:11434",
-        "COUNCIL_MODELS": "ollama:llama3,ollama:mistral",
         "RESPONSE_MODE": "categorized"
       }
     }
   }
 }
+```
+
+For Claude Code specifically, you can also add it directly:
+
+```bash
+claude mcp add model-council -s user -- node /absolute/path/to/model-council-mcp/bundle/server.cjs
 ```
 
 ---
@@ -618,8 +621,8 @@ Standalone MCP installs call the `setup_council` / `council_status` **tools** di
 {
   "mcpServers": {
     "model-council": {
-      "command": "npx",
-      "args": ["-y", "model-council-mcp"],
+      "command": "node",
+      "args": ["/absolute/path/to/model-council-mcp/bundle/server.cjs"],
       "env": {
         "OLLAMA_ADDRESS": "http://localhost:11434",
         "OPENAI_API_KEY": "sk-...",

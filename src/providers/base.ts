@@ -93,7 +93,7 @@ export function neutralizeFileMentions(text: string): string {
   // matching them the same way. Common decorators/handles (`@Override`,
   // `@Bean`, `@property`, `@tom`) are NOT secret filenames and stay untouched.
   return text.replace(
-    /(?<!\w)@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|go|secrets|secret|token|tokens|credentials|credential|password|passwd|otp|apikey|key|keys)\b|[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@)|@[~./\\]|@[\w.\-:]*[/\\]|@[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|@(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|go|secrets|secret|token|tokens|credentials|credential|password|passwd|otp|apikey|key|keys)\b|@[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@))/g,
+    /(?<!\w)@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|secrets|secret|token|tokens|credentials|credential|password|passwd|otp|apikey|key|keys)\b|[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@)|@[~./\\]|@[\w.\-:]*[/\\]|@[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|@(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|secrets|secret|token|tokens|credentials|credential|password|passwd|otp|apikey|key|keys)\b|@[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@))/g,
     '@​',
   );
 }

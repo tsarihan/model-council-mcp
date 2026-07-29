@@ -24894,7 +24894,7 @@ var PROBE_IMAGE_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAGyklEQV
 function neutralizeFileMentions(text) {
   if (!text) return text;
   return text.replace(
-    /(?<!\w)@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|go|secrets|secret|token|tokens|credentials|credential|password|passwd|otp|apikey|key|keys)\b|[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@)|@[~./\\]|@[\w.\-:]*[/\\]|@[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|@(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|go|secrets|secret|token|tokens|credentials|credential|password|passwd|otp|apikey|key|keys)\b|@[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@))/g,
+    /(?<!\w)@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|secrets|secret|token|tokens|credentials|credential|password|passwd|otp|apikey|key|keys)\b|[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@)|@[~./\\]|@[\w.\-:]*[/\\]|@[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|@(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|secrets|secret|token|tokens|credentials|credential|password|passwd|otp|apikey|key|keys)\b|@[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@))/g,
     "@\u200B"
   );
 }
@@ -37700,22 +37700,32 @@ async function detectClaude(tiers, subs) {
   if (!tierAllowsCloud("claude", tiers.claude, subs)) {
     return { installed: true, usable: false };
   }
-  const probe = await runCli(
-    cmd,
-    [
-      "-p",
-      "Reply with the single word READY",
-      "--model",
-      "haiku",
-      "--output-format",
-      "text",
-      "--tools",
-      "",
-      "--strict-mcp-config",
-      "--no-session-persistence"
-    ],
-    { timeoutMs: 2e4, stripKeys: "anthropic" }
-  );
+  const probeDir = (0, import_node_fs8.mkdtempSync)((0, import_node_path6.join)((0, import_node_os5.tmpdir)(), "claude-detect-cwd-"));
+  let probe;
+  try {
+    probe = await runCli(
+      cmd,
+      [
+        "-p",
+        "Reply with the single word READY",
+        "--model",
+        "haiku",
+        "--output-format",
+        "text",
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+        "--safe-mode"
+      ],
+      { timeoutMs: 2e4, stripKeys: "anthropic", cwd: probeDir }
+    );
+  } finally {
+    try {
+      (0, import_node_fs8.rmSync)(probeDir, { recursive: true, force: true });
+    } catch {
+    }
+  }
   return { installed: true, usable: probe.code === 0 && probe.stdout.trim().length > 0 };
 }
 async function detectCodex() {
@@ -38501,7 +38511,7 @@ var AskCouncilInput = external_exports.object({
   ),
   context: external_exports.string().optional().describe("Optional background text prepended to the question for every member."),
   files: external_exports.array(external_exports.string()).optional().describe(
-    'Optional local file paths to read and attach as context (each fenced and labelled). Caps: 256 KB/file, 768 KB total, 20 files. Text files only \u2014 use "images" for pictures.'
+    'Optional local file paths to read and attach as context (each fenced and labelled). Default caps: 512 KB/file, 1.5 MB total, 32 files. Text files only \u2014 use "images" for pictures.'
   ),
   git_ref: external_exports.string().optional().describe(
     'Auto-attach a local `git diff` as context \u2014 for repo reviews, instead of hand-listing every changed file via "files". One of "uncommitted" (staged + unstaged vs HEAD), "staged", "unstaged", or any git revision/range (e.g. "main..HEAD", "HEAD~3..HEAD"). Errors clearly if the ref/repo is invalid, there are no changes, or the diff is too large (> 512 KB \u2014 narrow the range or use "files" instead).'
@@ -38544,7 +38554,7 @@ var TOOLS = [
   {
     name: "configure_council",
     annotations: { title: "Configure council", readOnlyHint: false },
-    description: "Update the council configuration: select which models form the council, choose a judge model, set the response mode (individual / categorized / deconflicted), and set the maximum deconfliction rounds. Each field supplied is persisted and survives restarts/reloads, same as setup_council's tier choices; a field left unset is untouched.",
+    description: "Update the council configuration: select which models form the council, choose a judge model, set the response mode (individual / categorized / deconflicted / pooled / dialectic), and set the maximum deconfliction rounds. Each field supplied is persisted and survives restarts/reloads, same as setup_council's tier choices; a field left unset is untouched.",
     inputSchema: {
       type: "object",
       properties: {
@@ -38606,7 +38616,7 @@ var TOOLS = [
         files: {
           type: "array",
           items: { type: "string" },
-          description: 'Optional local file paths to read and attach as labelled context (caps: 256 KB/file, 768 KB total, 20 files). Text only \u2014 use "images" for pictures.'
+          description: 'Optional local file paths to read and attach as labelled context (default caps: 512 KB/file, 1.5 MB total, 32 files). Text only \u2014 use "images" for pictures.'
         },
         git_ref: {
           type: "string",
@@ -38706,7 +38716,7 @@ var TOOLS = [
   {
     name: "council_status",
     annotations: { title: "Council status", readOnlyHint: true },
-    description: "Report the detected environment and current setup: local Ollama models, whether Ollama cloud is reachable on this plan, whether the Claude, Codex, and Grok CLIs are installed AND logged in, the current council members, resolved subscription tiers, per-provider concurrency, and a quota warning. Use this as the welcome/status readout \u2014 it works in every client and install method.",
+    description: "Report the detected environment and current setup: local Ollama models, whether Ollama cloud is reachable on this plan, whether Claude and Codex are logged in, whether Grok CLI is installed but fail-closed, the current council members, resolved subscription tiers, per-provider concurrency, and a quota warning. Use this as the welcome/status readout \u2014 it works in every client and install method.",
     inputSchema: { type: "object", properties: {} }
   },
   {
@@ -39071,9 +39081,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         else if (!report.claude.usable) hints.push("Claude CLI is installed but not usable \u2014 run `claude` then `/login` (or `claude setup-token`).");
         if (!report.codex.installed) hints.push("Codex CLI not found \u2014 `npm i -g @openai/codex` then `codex login` to add ChatGPT members.");
         else if (!report.codex.usable) hints.push("Codex CLI is installed but not signed in \u2014 run `codex login`.");
-        if (!report.grok.installed) hints.push("Grok CLI not found \u2014 install it (curl -fsSL https://x.ai/cli/install.sh | bash) and log in to add Grok members.");
-        else if (!tierAllowsCloud("grok", tiers.grok, subs)) hints.push("Grok CLI is installed \u2014 set GROK_TIER (supergrok | premiumplus | heavy) or run setup_council to add Grok members (defaults to free/opt-in).");
-        else if (!report.grok.usable) hints.push("Grok CLI is installed but not usable \u2014 run `grok login`.");
+        if (!report.grok.installed) hints.push("Grok CLI not found. Its council provider is disabled anyway because safe tool lockdown is unavailable; use the X.AI API provider.");
+        else if (process.env.GROK_CLI_UNSAFE_ACCEPT_RCE !== "true") hints.push(
+          "Grok CLI members are disabled because the CLI tool lockdown permits arbitrary command execution. Use the X.AI API provider; GROK_CLI_UNSAFE_ACCEPT_RCE=true is for isolated testing only."
+        );
+        else if (!tierAllowsCloud("grok", tiers.grok, subs)) hints.push("Unsafe Grok CLI testing is acknowledged, but GROK_TIER is still free; a paid tier is also required to spend subscription quota.");
+        else if (!report.grok.usable) hints.push(
+          "Grok CLI members are disabled because the CLI tool lockdown permits arbitrary command execution. See the README security warning; GROK_CLI_UNSAFE_ACCEPT_RCE=true is for isolated testing only."
+        );
         if (report.ollama.cloud === "failed") hints.push("Ollama cloud models did not respond \u2014 your plan may not include cloud (needs Ollama Pro/Max).");
         if (!report.ollama.reachable) hints.push(`Ollama not reachable at ${ollamaUrl}.`);
         const reloadPending = JSON.stringify(tiers) !== JSON.stringify(appConfig.tiers);

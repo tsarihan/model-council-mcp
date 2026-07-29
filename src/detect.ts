@@ -172,19 +172,27 @@ async function detectClaude(tiers: SubscriptionTiers, subs: Subscriptions): Prom
     return { installed: true, usable: false };
   }
   // Lock the probe down exactly like the completion path: no tools, strict MCP
-  // config (so it does NOT load — and recurse into — this very plugin), and no
-  // session persistence. Without --strict-mcp-config this would boot a nested
-  // model-council and cascade.
+  // config (so it does NOT load — and recurse into — this very plugin), no
+  // session persistence, and --safe-mode so an untrusted project-local
+  // .claude/settings.json cannot execute hooks outside the tool-permission
+  // system. Also pin cwd to an empty temp dir; otherwise the probe inherits the
+  // MCP host's project directory and loads its setting sources.
   // Pin --model exactly like the completion path (claude-cli.ts) does. Without it
   // the probe inherits the CLI's configured default model for this directory — which
   // may be a non-Claude model (e.g. a local Ollama model set via /model), making a
   // perfectly logged-in CLI look "not usable". haiku is the cheapest always-valid alias.
-  const probe = await runCli(
-    cmd,
-    ['-p', 'Reply with the single word READY', '--model', 'haiku', '--output-format', 'text',
-      '--tools', '', '--strict-mcp-config', '--no-session-persistence'],
-    { timeoutMs: 20000, stripKeys: 'anthropic' },
-  );
+  const probeDir = mkdtempSync(join(tmpdir(), 'claude-detect-cwd-'));
+  let probe: CliResult;
+  try {
+    probe = await runCli(
+      cmd,
+      ['-p', 'Reply with the single word READY', '--model', 'haiku', '--output-format', 'text',
+        '--tools', '', '--strict-mcp-config', '--no-session-persistence', '--safe-mode'],
+      { timeoutMs: 20000, stripKeys: 'anthropic', cwd: probeDir },
+    );
+  } finally {
+    try { rmSync(probeDir, { recursive: true, force: true }); } catch { /* already gone */ }
+  }
   return { installed: true, usable: probe.code === 0 && probe.stdout.trim().length > 0 };
 }
 

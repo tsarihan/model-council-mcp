@@ -599,7 +599,7 @@ const AskCouncilInput = z.object({
     .optional()
     .describe(
       'Optional local file paths to read and attach as context (each fenced and ' +
-        'labelled). Caps: 256 KB/file, 768 KB total, 20 files. Text files only — ' +
+        'labelled). Default caps: 512 KB/file, 1.5 MB total, 32 files. Text files only — ' +
         'use "images" for pictures.',
     ),
   git_ref: z
@@ -694,7 +694,7 @@ const TOOLS = [
     annotations: { title: 'Configure council', readOnlyHint: false },
     description:
       'Update the council configuration: select which models form the council, ' +
-      'choose a judge model, set the response mode (individual / categorized / deconflicted), ' +
+      'choose a judge model, set the response mode (individual / categorized / deconflicted / pooled / dialectic), ' +
       'and set the maximum deconfliction rounds. Each field supplied is persisted and survives ' +
       'restarts/reloads, same as setup_council\'s tier choices; a field left unset is untouched.',
     inputSchema: {
@@ -787,7 +787,7 @@ const TOOLS = [
           items: { type: 'string' },
           description:
             'Optional local file paths to read and attach as labelled context ' +
-            '(caps: 256 KB/file, 768 KB total, 20 files). Text only — use "images" for pictures.',
+            '(default caps: 512 KB/file, 1.5 MB total, 32 files). Text only — use "images" for pictures.',
         },
         git_ref: {
           type: 'string',
@@ -915,8 +915,8 @@ const TOOLS = [
     annotations: { title: 'Council status', readOnlyHint: true },
     description:
       'Report the detected environment and current setup: local Ollama models, ' +
-      'whether Ollama cloud is reachable on this plan, whether the Claude, Codex, and ' +
-      'Grok CLIs are installed AND logged in, the current council members, resolved ' +
+      'whether Ollama cloud is reachable on this plan, whether Claude and Codex are ' +
+      'logged in, whether Grok CLI is installed but fail-closed, the current council members, resolved ' +
       'subscription tiers, per-provider concurrency, and a quota warning. Use this ' +
       'as the welcome/status readout — it works in every client and install method.',
     inputSchema: { type: 'object' as const, properties: {} },
@@ -1426,13 +1426,20 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         else if (!report.claude.usable) hints.push('Claude CLI is installed but not usable — run `claude` then `/login` (or `claude setup-token`).');
         if (!report.codex.installed) hints.push('Codex CLI not found — `npm i -g @openai/codex` then `codex login` to add ChatGPT members.');
         else if (!report.codex.usable) hints.push('Codex CLI is installed but not signed in — run `codex login`.');
-        if (!report.grok.installed) hints.push('Grok CLI not found — install it (curl -fsSL https://x.ai/cli/install.sh | bash) and log in to add Grok members.');
+        if (!report.grok.installed) hints.push('Grok CLI not found. Its council provider is disabled anyway because safe tool lockdown is unavailable; use the X.AI API provider.');
+        else if (process.env.GROK_CLI_UNSAFE_ACCEPT_RCE !== 'true') hints.push(
+          'Grok CLI members are disabled because the CLI tool lockdown permits arbitrary command execution. ' +
+          'Use the X.AI API provider; GROK_CLI_UNSAFE_ACCEPT_RCE=true is for isolated testing only.',
+        );
         // Grok defaults to the 'free' tier (opt-in, unlike claude/chatgpt) so a
         // real (quota-metered) login probe never runs until this gate passes —
         // check it BEFORE report.grok.usable, which is unverified (left false)
         // below this gate. See detectGrok() in detect.ts.
-        else if (!tierAllowsCloud('grok', tiers.grok, subs)) hints.push('Grok CLI is installed — set GROK_TIER (supergrok | premiumplus | heavy) or run setup_council to add Grok members (defaults to free/opt-in).');
-        else if (!report.grok.usable) hints.push('Grok CLI is installed but not usable — run `grok login`.');
+        else if (!tierAllowsCloud('grok', tiers.grok, subs)) hints.push('Unsafe Grok CLI testing is acknowledged, but GROK_TIER is still free; a paid tier is also required to spend subscription quota.');
+        else if (!report.grok.usable) hints.push(
+          'Grok CLI members are disabled because the CLI tool lockdown permits arbitrary command execution. ' +
+          'See the README security warning; GROK_CLI_UNSAFE_ACCEPT_RCE=true is for isolated testing only.',
+        );
         if (report.ollama.cloud === 'failed') hints.push('Ollama cloud models did not respond — your plan may not include cloud (needs Ollama Pro/Max).');
         if (!report.ollama.reachable) hints.push(`Ollama not reachable at ${ollamaUrl}.`);
         // Concurrency/registration are fixed at boot; a tier changed since then needs a reload.

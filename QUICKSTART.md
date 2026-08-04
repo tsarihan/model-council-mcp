@@ -170,6 +170,23 @@ back to each model's own default. Higher levels cost real time and subscription
 quota, multiplied across members × rounds — see the README for the full
 per-backend mapping table.
 
+**Which round an answer came from (`dialectic`, mainly).** `dialectic` is the one
+mode where each member answers *three times* — its opening position, its defense
+of that position, and its final ranked re-selection. So every member response
+carries a `phase` tag naming the round that produced it, and you never have to
+work it out from context:
+
+| `phase` | Round | Modes |
+|---|---|---|
+| `thesis` | The opening, independent answer | all |
+| `antithesis` | Defend your pick, argue the alternatives are worse | `dialectic` |
+| `synthesis` | Final ranked re-selection after the pros/cons dossier | `dialectic` |
+| `reconsidered` | Fresh answer after seeing the neutral pool | `pooled` |
+| `deconflict` | A re-question aimed at the open conflicts (`round` says which pass) | `deconflicted` |
+
+Pass `verbose: true` to get the `thesis` round back alongside the rest. See the
+README for why the tag exists on the record rather than just in the field name.
+
 **Attach context or files.** `ask_council` also takes `context` (inline background
 text) and `files` (local paths, read and fenced as labelled context for every
 member) — e.g. review a snippet of code or a design doc across the whole council:

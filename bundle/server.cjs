@@ -24580,6 +24580,13 @@ function statePath() {
   const base = clean(process.env.XDG_CONFIG_HOME) ?? (0, import_node_path2.join)((0, import_node_os.homedir)(), ".config");
   return (0, import_node_path2.join)(base, "model-council", "state.json");
 }
+function stateFileExists() {
+  try {
+    return (0, import_node_fs2.statSync)(statePath()).isFile();
+  } catch {
+    return false;
+  }
+}
 function loadState() {
   try {
     const parsed = JSON.parse((0, import_node_fs2.readFileSync)(statePath(), "utf8"));
@@ -38415,6 +38422,8 @@ for (const w2 of appConfig.warnings) {
 `);
 }
 var jobs = new JobStore();
+var FIRST_RUN_EFFORT = "high";
+var isFirstRun = !stateFileExists();
 {
   const st2 = loadState();
   const t2 = st2.timeouts;
@@ -38426,6 +38435,9 @@ var jobs = new JobStore();
   }
   if (isReasoningEffort(st2.reasoningEffort)) {
     orchestrator.updateRuntime({ reasoningEffort: st2.reasoningEffort });
+  } else if (isFirstRun && appConfig.runtime.reasoningEffort === void 0) {
+    orchestrator.updateRuntime({ reasoningEffort: FIRST_RUN_EFFORT });
+    saveState({ reasoningEffort: FIRST_RUN_EFFORT });
   }
 }
 var explicitlyConfigured = false;

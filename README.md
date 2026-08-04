@@ -71,7 +71,7 @@ These are all set from **`/plugin` → Configure** in Claude Code (or the equiva
 | OpenAI / Anthropic / X.AI API key | Enable cloud models (stored in keychain) | — |
 | vLLM / TRT-LLM / SGLang servers | `name:host:port` entries | — |
 | Max response tokens | Tokens per completion | `16000` |
-| **Default reasoning effort** | How hard every member and the judge think: `none` … `max`. Empty = each model's own default. Clamped per-backend; override per call with `ask_council`'s `reasoning_effort`. See [Reasoning effort](#reasoning-effort). | *(unset)* |
+| **Default reasoning effort** | How hard every member and the judge think: `none` … `max`. Clamped per-backend; override per call with `ask_council`'s `reasoning_effort`. See [Reasoning effort](#reasoning-effort). | `high` on a new install; empty = each model's own default |
 | **Per-request timeout (text)** | Wall-clock timeout (ms) for a single completion on text-only calls before the member is recorded as timed-out. Default raised to 5 min because local Ollama models run sequentially. Honoured verbatim by every provider, including the subscription CLIs (no 300s floor). Set via `REQUEST_TIMEOUT_MS`, or at runtime via the `set_council_timeouts` MCP tool. | `300000` (5 min) |
 | **Per-request timeout (repo)** | Timeout used **instead** of the text timeout when `full_repo_access` is set — the CLI member Read/Grep/Globs the repo tree, materially longer. Set via `REPO_REQUEST_TIMEOUT_MS`, or at runtime via `set_council_timeouts`. | `600000` (10 min) |
 | Cloud concurrency (override) | Optional; caps all cloud pools, overriding the per-tier limits | *(unset → tiers)* |
@@ -251,7 +251,7 @@ Full URLs also work: `gpu3:http://10.0.0.5:9000`
 | `JUDGE_MODEL` | Judge model ID or `auto` | `auto` (largest council member) |
 | `RESPONSE_MODE` | `individual` \| `categorized` \| `deconflicted` \| `pooled` \| `dialectic` | `categorized` |
 | `MAX_DECONFLICT_ROUNDS` | Max deconfliction iterations | `3` |
-| `REASONING_EFFORT` | Default reasoning depth for every member **and** the judge: `none` \| `minimal` \| `low` \| `medium` \| `high` \| `xhigh` \| `max`. See [Reasoning effort](#reasoning-effort) — levels a backend doesn't support are clamped, never errored. | *(unset — each model's own default)* |
+| `REASONING_EFFORT` | Default reasoning depth for every member **and** the judge: `none` \| `minimal` \| `low` \| `medium` \| `high` \| `xhigh` \| `max`. See [Reasoning effort](#reasoning-effort) — levels a backend doesn't support are clamped, never errored. Outranks the first-run seed below. | *(unset — but a **brand-new install** seeds `high`)* |
 
 ### Performance & output
 
@@ -360,7 +360,9 @@ Send a question to the full council.
 }
 ```
 
-It applies to **every member and the judge**, so one setting governs the whole ask rather than producing deeply-reasoned answers reconciled by a shallow judge. Leave it unset (the default) and nothing is sent at all — each model runs at its own default depth, exactly as before this option existed.
+It applies to **every member and the judge**, so one setting governs the whole ask rather than producing deeply-reasoned answers reconciled by a shallow judge.
+
+**A brand-new install starts at `high`** — a council is worth more when its members actually think. That seed is written to `state.json` on the first run only, so from then on it is an ordinary setting you own: change it with `configure_council`, or pass `"auto"` there to clear it back to each model's own default. It is deliberately *not* the plugin option's default value, because a userConfig default would re-apply on every update; an install that already exists and never set an effort keeps running at model defaults, so upgrading never silently changes how hard your council thinks or how much quota it burns. An explicit `REASONING_EFFORT` outranks the seed.
 
 Each backend supports a different slice of the scale, so a level it doesn't accept is **clamped to its nearest supported one, never errored** — a council-wide setting must not shrink a mixed council to whichever members happen to share a vocabulary. Ties clamp *downward* (the cheaper side).
 

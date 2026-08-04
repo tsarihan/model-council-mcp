@@ -4,7 +4,7 @@
  * every plugin reload. Location: $MODEL_COUNCIL_STATE, else
  * $XDG_CONFIG_HOME/model-council/state.json, else ~/.config/model-council/state.json.
  */
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, renameSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { ModelId, ReasoningEffort, ResponseMode } from './types.js';
@@ -87,6 +87,23 @@ export function statePath(): string {
   if (override) return override;
   const base = clean(process.env.XDG_CONFIG_HOME) ?? join(homedir(), '.config');
   return join(base, 'model-council', 'state.json');
+}
+
+/**
+ * Does a state file already exist on disk?
+ *
+ * This is how a genuinely FIRST run is told apart from an existing install
+ * that simply never set a particular field — `loadState()` returns the same
+ * bare `{version}` object for both, so it cannot distinguish them. Must be
+ * called BEFORE anything writes state (boot persists resolved CLI paths early,
+ * which creates the file), or every run looks like an upgrade.
+ */
+export function stateFileExists(): boolean {
+  try {
+    return statSync(statePath()).isFile();
+  } catch {
+    return false;
+  }
 }
 
 export function loadState(): CouncilState {

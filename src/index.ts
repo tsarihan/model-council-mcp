@@ -36,7 +36,7 @@ import { CouncilOrchestrator } from './council/orchestrator.js';
 import { ProgressReporter } from './council/query.js';
 import { CouncilConfig, CouncilMember, ModelId, ReasoningEffort, ResponseMode, SubscriptionTiers } from './types.js';
 import { EFFORT_ORDER, isReasoningEffort } from './providers/effort.js';
-import { CouncilState, loadState, saveState } from './state.js';
+import { CouncilState, loadState, saveState, stateFileExists } from './state.js';
 import { loadSubscriptions, validTiers, tierAllowsCloud, SubProvider } from './subscriptions.js';
 import { detectEnvironment, autoPopulatedMembers, quotaWarning, migrateCloudToHarness, runCli } from './detect.js';
 import { buildAugmentedQuestion } from './context.js';
@@ -98,6 +98,23 @@ for (const w of appConfig.warnings) {
 }
 const jobs = new JobStore();
 
+/**
+ * Reasoning depth a BRAND-NEW install starts at. Deliberately not the plugin
+ * option's default: a userConfig default applies to every install on every
+ * update, which would silently re-point an existing user who had deliberately
+ * left the setting alone. Seeding state.json on first run instead means the
+ * value is chosen exactly once, then owned by the user like any other
+ * configure_council setting.
+ */
+const FIRST_RUN_EFFORT: ReasoningEffort = 'high';
+
+/**
+ * Whether this is the first run on this machine — captured BEFORE anything
+ * writes state (boot persists resolved CLI paths a few lines below, which
+ * creates the file), because after that every run looks like an upgrade.
+ */
+const isFirstRun = !stateFileExists();
+
 // Apply any set_council_timeouts overrides persisted in state ahead of the
 // first ask_council, the same way persistedConfigOverrides applies
 // judgeModelId/responseMode/maxDeconflictRounds. State wins over the
@@ -117,6 +134,23 @@ const jobs = new JobStore();
   // hand-edited or left over from a version with a different scale.
   if (isReasoningEffort(st.reasoningEffort)) {
     orchestrator.updateRuntime({ reasoningEffort: st.reasoningEffort });
+  } else if (isFirstRun && appConfig.runtime.reasoningEffort === undefined) {
+    // FIRST RUN ONLY. A council is worth more when its members actually think,
+    // so a new install starts at `high` rather than at whatever each model
+    // happens to default to. Deliberately scoped three ways so it can never
+    // override a decision someone already made:
+    //   - only when no state file existed at all (an EXISTING install that
+    //     simply never set an effort keeps running at model defaults — an
+    //     update must not silently change how hard the council thinks, or how
+    //     much quota it burns);
+    //   - only when REASONING_EFFORT / the plugin option didn't already set
+    //     one (an explicit config always outranks a seeded default);
+    //   - and never over a persisted value, which the branch above already took.
+    // It is persisted immediately so it behaves like any other configured
+    // setting from here on: visible in get_council_config, and overwritten the
+    // moment the user changes it.
+    orchestrator.updateRuntime({ reasoningEffort: FIRST_RUN_EFFORT });
+    saveState({ reasoningEffort: FIRST_RUN_EFFORT });
   }
 }
 

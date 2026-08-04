@@ -1041,8 +1041,11 @@ async function main() {
     // ── reasoning_effort ──────────────────────────────────────────────────
     // Absent by default: the feature must be invisible unless asked for, so an
     // existing council keeps behaving byte-for-byte as it did before.
-    check('reasoning_effort: no --effort flag when the caller did not ask for one',
-      cli.responses?.every(r => /effort=unset/.test(r.response ?? '')),
+    // A brand-new install (fresh state file) seeds `high` — a council is worth
+    // more when its members actually think — so the flag IS present, at that
+    // level, without the caller asking for one.
+    check('reasoning_effort: a first run seeds high and passes it to the CLI',
+      cli.responses?.every(r => /effort=high\b/.test(r.response ?? '')),
       cli.responses?.map(r => r.response).join(' | '));
 
     const effortHigh = parseToolResult(await cliClient.callTool({
@@ -1245,8 +1248,8 @@ async function main() {
     check('codex-cli: CODEX_API_KEY stripped', cx.responses?.every(r => /ckey=unset/.test(r.response ?? '')));
     check('codex-cli: read-only sandbox', cx.responses?.every(r => /sandbox=read-only/.test(r.response ?? '')));
     check('codex-cli: prompt reached the CLI via stdin', cx.responses?.every(r => /hi codex/.test(r.response ?? '')));
-    check('codex-cli: no reasoning-effort config key when the caller did not ask for one',
-      cx.responses?.every(r => /effort=unset/.test(r.response ?? '')),
+    check('codex-cli: the first-run default reaches the config key without the caller asking',
+      cx.responses?.every(r => /effort=high\b/.test(r.response ?? '')),
       cx.responses?.map(r => r.response).join(' | '));
     // Codex takes a level nothing below it does (`xhigh`), so this proves the
     // value arrives verbatim rather than being clamped to a common denominator.
@@ -2002,6 +2005,70 @@ async function main() {
       /auto/i.test(badJudgeCfg.council?.judgeModel ?? ''), JSON.stringify(badJudgeCfg.council));
     await badJudgeClient.close();
     rmSync(badJudgeDir, { recursive: true, force: true });
+
+    // ── first-run effort seed: new installs only ───────────────────────────
+    // `high` is seeded ONLY when no state file existed. An install that has
+    // been used before but never set an effort must keep running at each
+    // model's own default — an update that silently made every council think
+    // harder would change answers, latency, and quota burn with no signal.
+    const upgDir = mkdtempSync(join(tmpdir(), 'mc-e2e-upgrade-'));
+    const upgStateFile = join(upgDir, 'state.json');
+    // An existing install: has state (tiers/mode), but no reasoningEffort key.
+    writeFileSync(upgStateFile, JSON.stringify({ version: 1, responseMode: 'individual', tiers: { claude: 'pro' } }));
+    const upgTransport = new StdioClientTransport({
+      command: 'node', args: [serverEntry],
+      env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: upgStateFile },
+    });
+    const upgClient = new Client({ name: 'upgrade-e2e', version: '1.0.0' }, { capabilities: {} });
+    await upgClient.connect(upgTransport);
+    const upgCfg = parseToolResult(await upgClient.callTool({ name: 'get_council_config', arguments: {} }));
+    check('first-run effort seed does NOT apply to an existing install that never set one',
+      upgCfg.council?.reasoningEffort === null && upgCfg.runtime?.reasoningEffort === null,
+      JSON.stringify({ c: upgCfg.council?.reasoningEffort, r: upgCfg.runtime?.reasoningEffort }));
+    check('first-run effort seed does not write reasoningEffort into an existing state file',
+      JSON.parse(readFileSync(upgStateFile, 'utf8')).reasoningEffort === undefined,
+      readFileSync(upgStateFile, 'utf8').slice(0, 200));
+    await upgClient.close();
+    rmSync(upgDir, { recursive: true, force: true });
+
+    // A FRESH install (no state file at all) does seed it — and persists it, so
+    // it behaves like any other configured setting from then on.
+    const freshDir = mkdtempSync(join(tmpdir(), 'mc-e2e-fresh-'));
+    const freshStateFile = join(freshDir, 'state.json'); // deliberately NOT created
+    const freshTransport = new StdioClientTransport({
+      command: 'node', args: [serverEntry],
+      env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: freshStateFile },
+    });
+    const freshClient = new Client({ name: 'fresh-e2e', version: '1.0.0' }, { capabilities: {} });
+    await freshClient.connect(freshTransport);
+    const freshCfg = parseToolResult(await freshClient.callTool({ name: 'get_council_config', arguments: {} }));
+    check('a first run seeds reasoningEffort=high',
+      freshCfg.council?.reasoningEffort === 'high' && freshCfg.runtime?.reasoningEffort === 'high',
+      JSON.stringify({ c: freshCfg.council?.reasoningEffort, r: freshCfg.runtime?.reasoningEffort }));
+    check('the seeded effort is persisted, so it survives as a normal setting',
+      JSON.parse(readFileSync(freshStateFile, 'utf8')).reasoningEffort === 'high',
+      readFileSync(freshStateFile, 'utf8').slice(0, 200));
+    // ...and the user still owns it: changing it must stick, not be re-seeded.
+    await freshClient.callTool({ name: 'configure_council', arguments: { reasoning_effort: 'auto' } });
+    check('clearing the seeded default with "auto" is respected, not re-seeded',
+      JSON.parse(readFileSync(freshStateFile, 'utf8')).reasoningEffort === undefined,
+      readFileSync(freshStateFile, 'utf8').slice(0, 200));
+    await freshClient.close();
+    rmSync(freshDir, { recursive: true, force: true });
+
+    // An explicit REASONING_EFFORT outranks the seed even on a first run.
+    const envDir = mkdtempSync(join(tmpdir(), 'mc-e2e-effortenv-'));
+    const envTransport = new StdioClientTransport({
+      command: 'node', args: [serverEntry],
+      env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: join(envDir, 'state.json'), REASONING_EFFORT: 'low' },
+    });
+    const envClient = new Client({ name: 'effortenv-e2e', version: '1.0.0' }, { capabilities: {} });
+    await envClient.connect(envTransport);
+    const envCfg = parseToolResult(await envClient.callTool({ name: 'get_council_config', arguments: {} }));
+    check('an explicit REASONING_EFFORT outranks the first-run seed',
+      envCfg.runtime?.reasoningEffort === 'low', JSON.stringify(envCfg.runtime?.reasoningEffort));
+    await envClient.close();
+    rmSync(envDir, { recursive: true, force: true });
   } finally {
     try { await detectClient.close(); } catch { /* already closed */ }
     try { if (rebootClient) await rebootClient.close(); } catch { /* noop */ }

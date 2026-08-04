@@ -151,6 +151,25 @@ install with the `*_models` options.
 | `pooled` | Delphi-style: members reconsider a neutral, attribution-free pool of answers — divergence is preserved, not averaged away. |
 | `dialectic` | thesis → antithesis → synthesis: members defend their pick, the judge builds a pros/cons dossier, members re-select. |
 
+**Dial the reasoning depth.** `reasoning_effort` sets how hard every member
+*and* the judge think — `none` · `minimal` · `low` · `medium` · `high` · `xhigh` · `max`:
+
+```
+ask_council(question="Design a migration path off this schema.", mode="dialectic",
+            reasoning_effort="max")
+```
+
+Leave it out and nothing is sent, so each model runs at its own default depth.
+Each backend accepts a different slice of the scale, so a level it doesn't take
+is **clamped to its nearest supported one, never errored** — `max` runs as
+`high` on an Ollama model, `none` as `low` on the Claude CLI — which is what
+lets one setting work across a mixed council without dropping members. Set a
+persisted default with `configure_council(reasoning_effort=…)` (or the
+**Default reasoning effort** plugin option), and pass `"auto"` there to clear it
+back to each model's own default. Higher levels cost real time and subscription
+quota, multiplied across members × rounds — see the README for the full
+per-backend mapping table.
+
 **Attach context or files.** `ask_council` also takes `context` (inline background
 text) and `files` (local paths, read and fenced as labelled context for every
 member) — e.g. review a snippet of code or a design doc across the whole council:
@@ -263,6 +282,7 @@ Handy tools & commands:
 | Ask about an image | `ask_council(images=[…])` — routed only to vision-capable members |
 | Not block on a long run | `ask_council_async` → `get_council_result(job_id)` |
 | Cap output length | `max_tokens` (auto-clamped down to each server's context) |
+| Make the council think harder (or cheaper) | `reasoning_effort` on `ask_council`, or `configure_council(reasoning_effort=…)` for a persisted default |
 | Change default answer style | `response_mode` |
 | Pin an exact council | `council_models` (or `configure_council`) |
 | Match your real plans | `claude_tier` / `chatgpt_tier` / `grok_tier` / `ollama_tier` |

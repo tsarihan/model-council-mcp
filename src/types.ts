@@ -136,12 +136,41 @@ export interface RuntimeConfig {
 
 // ─── Raw responses ────────────────────────────────────────────────────────────
 
+/**
+ * Which deliberation round produced an answer.
+ *
+ * Rounds are already separated STRUCTURALLY — each is a distinct awaited call
+ * whose results land in their own array, at a fixed per-member index, so a slow
+ * member's answer can never arrive late and be collected into the next round.
+ * This tag is defense in depth on top of that: it puts the round on the RECORD
+ * rather than leaving it implied by whichever array the record happens to sit
+ * in, so a future refactor that merges, re-orders, or forwards responses
+ * between collections can't silently turn a thesis into an antithesis. It is
+ * also what lets a caller reading raw JSON tell the rounds apart without
+ * knowing the container's field name.
+ */
+export type ResponsePhase =
+  /** Round 0: each member's initial, independent answer. Every mode has one. */
+  | 'thesis'
+  /** dialectic: defend your own initial pick and argue the alternatives are worse. */
+  | 'antithesis'
+  /** dialectic: final ranked re-selection, made after weighing the pros/cons dossier. */
+  | 'synthesis'
+  /** pooled: a fresh answer given after seeing the neutral, attribution-free pool. */
+  | 'reconsidered'
+  /** deconflicted: a re-question aimed at the open conflicts; see `round` for which pass. */
+  | 'deconflict';
+
 export interface RawResponse {
   modelId: ModelId;
   label: string;
   response: string;
   error?: string;
   latencyMs: number;
+  /** Which round produced this answer (see ResponsePhase). */
+  phase?: ResponsePhase;
+  /** 1-based deconfliction round. Only set when `phase` is 'deconflict'. */
+  round?: number;
 }
 
 /**

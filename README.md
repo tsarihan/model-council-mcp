@@ -377,6 +377,18 @@ Two members that can't honour the request at all are handled rather than dropped
 
 **Cost.** Higher levels buy depth with time and subscription quota, and the multiplier is `members × rounds` — a `max` run of a 5-member `deconflicted` council is a materially bigger spend than a `low` one. `set_council_timeouts` may need raising alongside it.
 
+**Which round produced an answer.** Every member response carries a `phase` tag naming the round it came from, so a caller reading raw JSON can tell the rounds apart without inferring it from the surrounding field name:
+
+| `phase` | Round |
+|---|---|
+| `thesis` | Round 0 — each member's initial, independent answer (every mode) |
+| `antithesis` | `dialectic` — defend your own pick, argue the alternatives are worse |
+| `synthesis` | `dialectic` — final ranked re-selection after weighing the pros/cons dossier |
+| `reconsidered` | `pooled` — a fresh answer given after seeing the neutral pool |
+| `deconflict` | `deconflicted` — a re-question aimed at the open conflicts; `round` carries which pass (1-based) |
+
+This is defense in depth, not the primary mechanism. Rounds are already separated structurally: each is its own awaited call whose results land in a dedicated array at a fixed per-member index, so a slow member's answer can never arrive late and be swept into the next round — a member that times out simply leaves an errored entry in its own round's slot (and sets `judgeDegraded`). The tag puts that round on the *record* rather than leaving it implied by the container, so a future refactor that merges or forwards responses between collections can't silently turn a thesis into an antithesis. The `dialectic` dossier prompt — the one place two rounds are shown to the judge together — labels each entry from its own `phase` for the same reason.
+
 **Completion markers & timeout cuts.** Every completed answer is wrapped in `═══════ BEGINNING OF RESPONSE ═══════` / `═══════ END OF RESPONSE ═══════` delimiters (the JSON payload sits intact on its own lines between them — strip the first and last line to parse). The markers are the completion signal: the tool returns the moment the council finishes, so it never waits the full timeout just because the timeout is set. If a member's completion is cut by the per-completion timeout, the result carries `timeoutNotice: "RESPONSE TIMED OUT, INCREASE TIMEOUT IF MESSAGE IS CUT"` plus a `timedOutMembers` array of the cut labels — this surfaces even under `verbose: false`. Raise the budget with `set_council_timeouts` (or `REQUEST_TIMEOUT_MS` / `REPO_REQUEST_TIMEOUT_MS`) and re-ask.
 
 **Attach context / files.** Add `"context"` (inline background text) and/or `"files"` (an array of local file paths). Files are read from disk and fenced with a `----- FILE:<nonce>: <path> -----` header (a random per-call token, so a file/diff whose content contains a fake fence marker can't forge a boundary the model would mistake for real) so every member sees them as labelled context alongside the question. Caps: 256 KB/file, 768 KB total, 20 files, 768 KB for `"context"` itself, 256 KB for `"question"` — for anything larger than the question cap, pass it via `context` instead. A missing/oversized/binary file (or an oversized `question`/`context`) returns a clear error rather than being silently dropped or truncated. Note: `files`/`images` read any path the server process can read, with no root restriction — the MCP caller is trusted the same way a local `Read` tool call would be.

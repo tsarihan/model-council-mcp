@@ -31,6 +31,7 @@ import {
   pooledComplete,
   queryMembers,
   queryMembersVarying,
+  withPhase,
 } from './query.js';
 import { poolResponses } from './pool.js';
 import { UNTRUSTED_CONTENT_NOTICE, UNTRUSTED_PEER_CONTENT_NOTICE } from './prompt-safety.js';
@@ -76,14 +77,17 @@ export function buildDossierPrompt(
   defenses: RawResponse[],
 ): string {
   const optionList = digest.options.map(o => `- ${o.answer}`).join('\n');
-  const initialBlock = initial
+  // This is the ONE prompt that shows two different rounds side by side, so the
+  // per-entry header carries the round from the RECORD (r.phase) rather than
+  // relying solely on which array it was passed in. If a future change ever
+  // handed the wrong array to the wrong parameter, the judge would see the
+  // mismatch spelled out instead of silently reading a thesis as an antithesis.
+  const render = (rs: RawResponse[]): string => rs
     .filter(r => !r.error && r.response.trim())
-    .map(r => `### ${r.label}\n${r.response}`)
+    .map(r => `### ${r.label}${r.phase ? ` [${r.phase}]` : ''}\n${r.response}`)
     .join('\n\n');
-  const defenseBlock = defenses
-    .filter(r => !r.error && r.response.trim())
-    .map(r => `### ${r.label}\n${r.response}`)
-    .join('\n\n');
+  const initialBlock = render(initial);
+  const defenseBlock = render(defenses);
 
   return `You are compiling a DIALECTICAL pros/cons analysis (thesis → antithesis → synthesis).
 
@@ -350,12 +354,15 @@ export async function runDialectic(input: DialecticInput): Promise<DialecticResu
 
   // 2. Antithesis: each member defends its own pick and critiques the rest.
   //    initialResponses is in member order, so member[i] ↔ initialResponses[i].
-  const defenses = await queryMembersVarying(
-    (_member, i) => buildDefensePrompt(question, optionsBlock, initialResponses[i]?.response ?? ''),
-    members,
-    runtime,
-    {},
-    images,
+  const defenses = withPhase(
+    await queryMembersVarying(
+      (_member, i) => buildDefensePrompt(question, optionsBlock, initialResponses[i]?.response ?? ''),
+      members,
+      runtime,
+      {},
+      images,
+    ),
+    'antithesis',
   );
 
   // 3. Judge compiles the pros/cons dossier.
@@ -372,12 +379,15 @@ export async function runDialectic(input: DialecticInput): Promise<DialecticResu
   const prosCons = prosConsResult.options;
 
   // 4. Synthesis: each member selects a ranked top-3 from the dossier.
-  const selections = await queryMembers(
-    buildSelectionPrompt(question, prosCons),
-    members,
-    runtime,
-    {},
-    images,
+  const selections = withPhase(
+    await queryMembers(
+      buildSelectionPrompt(question, prosCons),
+      members,
+      runtime,
+      {},
+      images,
+    ),
+    'synthesis',
   );
 
   // A partial outage in the DEFENSE round itself must also degrade the result.

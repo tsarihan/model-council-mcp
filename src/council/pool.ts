@@ -19,7 +19,7 @@ import { ModelId, PooledDigest, PooledResult, RawResponse, RuntimeConfig } from 
 import { ChatImage, Provider, parseJudgeJson } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
 import { CompleteConfig } from './categorizer.js';
-import { EmptyCompletionError, Member, pooledComplete, queryMembers } from './query.js';
+import { EmptyCompletionError, Member, pooledComplete, queryMembers, withPhase } from './query.js';
 import { UNTRUSTED_CONTENT_NOTICE, UNTRUSTED_PEER_CONTENT_NOTICE } from './prompt-safety.js';
 
 // ─── Judge prompt: build the neutral pooled digest ───────────────────────────
@@ -246,7 +246,10 @@ export async function runPooled(input: PooledInput): Promise<PooledResult> {
 
   // 2. Re-poll every member with the neutral digest (no attribution/counts/order).
   const repollPrompt = buildRepollPrompt(question, initialPool);
-  const reconsidered = await queryMembers(repollPrompt, members, runtime, {}, images);
+  const reconsidered = withPhase(
+    await queryMembers(repollPrompt, members, runtime, {}, images),
+    'reconsidered',
+  );
 
   // 3. Judge distils the reconsidered answers into a second neutral pool.
   //    No winner is declared — the two pools let the caller see any movement.

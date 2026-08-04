@@ -30,6 +30,7 @@ let lastRepollPrompt = null;
 let lastDefensePrompt = null;
 let defensePrompts = {};
 let lastSelectionPrompt = null;
+let lastDossierPrompt = null;
 let curConcurrent = 0;
 let maxConcurrent = 0;
 let lastNumPredict = null;
@@ -256,6 +257,7 @@ function chatResponse(body) {
   // Dialectic: judge compiles the pros/cons dossier (capitalised marker is unique).
   if (content.includes('DIALECTICAL pros/cons')) {
     lastDossierImages = lastImages;
+    lastDossierPrompt = content; // the one prompt showing thesis + antithesis together
     return JSON.stringify({
       options: [
         {
@@ -330,6 +332,7 @@ const server = http.createServer((req, res) => {
     lastDefensePrompt = null;
     defensePrompts = {};
     lastSelectionPrompt = null;
+    lastDossierPrompt = null;
     maxConcurrent = 0;
     flakyCalls = 0;
     lastNumPredict = null;
@@ -351,7 +354,7 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       maxConcurrent, lastNumPredict, lastRepollPrompt, lastDefensePrompt, defensePrompts,
-      lastSelectionPrompt, lastUserPrompt, lastImages, challengeCalls,
+      lastSelectionPrompt, lastDossierPrompt, lastUserPrompt, lastImages, challengeCalls,
       lastCategorizeImages, lastPoolDigestImages, lastDossierImages,
       lastRepollImages, lastDefenseImages, lastSelectionImages, lastDeconflictRoundImages,
     }));

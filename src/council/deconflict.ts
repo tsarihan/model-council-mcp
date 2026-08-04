@@ -22,7 +22,7 @@ import {
 import { ChatImage, Provider } from '../providers/base.js';
 import { modelIdLabel } from '../config.js';
 import { categorize, buildSynthesisPrompt } from './categorizer.js';
-import { Member, pooledComplete, queryMembers } from './query.js';
+import { Member, pooledComplete, queryMembers, withPhase } from './query.js';
 import { UNTRUSTED_PEER_CONTENT_NOTICE } from './prompt-safety.js';
 
 // ─── Round-query prompt ───────────────────────────────────────────────────────
@@ -593,7 +593,11 @@ export async function deconflict(
 
     // ── Ask each council member about the open conflicts ──────────────────
     const roundPrompt = buildConflictRoundPrompt(question, openConflicts, round);
-    const roundResponses = await queryMembers(roundPrompt, members, runtime, {}, images);
+    const roundResponses = withPhase(
+      await queryMembers(roundPrompt, members, runtime, {}, images),
+      'deconflict',
+      round,
+    );
     pushTimeouts(roundResponses);
 
     // ── Judge re-categorizes these round-specific responses ───────────────

@@ -198,6 +198,10 @@ async function main() {
     check('pooled: all 3 members reconsidered', pool.reconsidered?.length === 3, `got ${pool.reconsidered?.length}`);
     check('pooled: final pool converged to 1', pool.finalPool?.options?.length === 1, `got ${pool.finalPool?.options?.length}`);
     check('pooled: verbose includes round-0 responses', pool.initialResponses?.length === 3, `got ${pool.initialResponses?.length}`);
+    check('pooled: round-0 answers are tagged phase=thesis',
+      pool.initialResponses?.every(r => r.phase === 'thesis'), JSON.stringify(pool.initialResponses?.map(r => r.phase)));
+    check('pooled: post-pool answers are tagged phase=reconsidered (distinct from the thesis round)',
+      pool.reconsidered?.every(r => r.phase === 'reconsidered'), JSON.stringify(pool.reconsidered?.map(r => r.phase)));
     check('pooled: genuine run not flagged judgeDegraded', pool.initialPool?.judgeDegraded === undefined && pool.finalPool?.judgeDegraded === undefined);
     // Neutrality: the prompt shown to members must carry NO attribution/labels.
     const dbgPool = await (await fetch(`${MOCK_URL}/debug`)).json();
@@ -250,10 +254,29 @@ async function main() {
     check('dialectic: option records championedBy', Array.isArray(backoff?.championedBy) && backoff.championedBy.includes('ollama:small-a'));
     check('dialectic: 3 members re-selected', dia.selections?.length === 3, `got ${dia.selections?.length}`);
     check('dialectic: verbose includes thesis responses', dia.initialResponses?.length === 3, `got ${dia.initialResponses?.length}`);
+    // Round identity lives on the RECORD, not only in the container field —
+    // so a refactor that merged/forwarded these arrays can't turn a thesis into
+    // an antithesis, and a caller reading raw JSON can tell the rounds apart.
+    const allPhase = (arr, ph) => Array.isArray(arr) && arr.length > 0 && arr.every(r => r.phase === ph);
+    check('dialectic: thesis responses are tagged phase=thesis',
+      allPhase(dia.initialResponses, 'thesis'), JSON.stringify(dia.initialResponses?.map(r => r.phase)));
+    check('dialectic: defenses are tagged phase=antithesis',
+      allPhase(dia.defenses, 'antithesis'), JSON.stringify(dia.defenses?.map(r => r.phase)));
+    check('dialectic: selections are tagged phase=synthesis',
+      allPhase(dia.selections, 'synthesis'), JSON.stringify(dia.selections?.map(r => r.phase)));
+    // The three rounds must carry DISTINCT tags — a single shared tag would
+    // label everything without actually distinguishing the rounds.
+    check('dialectic: the three rounds carry three distinct phases',
+      new Set([dia.initialResponses?.[0]?.phase, dia.defenses?.[0]?.phase, dia.selections?.[0]?.phase]).size === 3);
     // Structure: defense prompt is personalised; selection prompt carries the dossier.
     const dbgDia = await (await fetch(`${MOCK_URL}/debug`)).json();
     check('dialectic: defense prompt asks to defend + shows own answer', /Defend your initial selection/.test(dbgDia.lastDefensePrompt ?? '') && /Your initial answer was/.test(dbgDia.lastDefensePrompt ?? ''));
     check('dialectic: selection prompt shows pros AND cons', /Pros:/.test(dbgDia.lastSelectionPrompt ?? '') && /Cons:/.test(dbgDia.lastSelectionPrompt ?? ''));
+    // The dossier prompt shows both rounds together — the only place they meet —
+    // so each entry there must name its own round.
+    check('dialectic: dossier prompt labels each entry with its round',
+      /\[thesis\]/.test(dbgDia.lastDossierPrompt ?? '') && /\[antithesis\]/.test(dbgDia.lastDossierPrompt ?? ''),
+      (dbgDia.lastDossierPrompt ?? '').slice(0, 200));
     // Per-member alignment: each member's defense prompt embeds ITS OWN thesis
     // (unique tokens: small-a=write-through, big-judge=write-back, small-b=stderr).
     // Catches a constant-index or off-by-one regression in queryMembersVarying.

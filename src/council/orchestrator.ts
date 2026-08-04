@@ -23,7 +23,7 @@ import { categorize } from './categorizer.js';
 import { deconflict } from './deconflict.js';
 import { runDialectic } from './dialectic.js';
 import { runPooled } from './pool.js';
-import { checkVisionPooled, Member, ProgressReporter, queryMembers } from './query.js';
+import { checkVisionPooled, Member, ProgressReporter, queryMembers, withPhase } from './query.js';
 import { loadState, saveState, VisionCacheEntry, VISION_CACHE_TTL_MS } from '../state.js';
 
 // ─── Model classification ──────────────────────────────────────────────────────
@@ -438,7 +438,10 @@ export class CouncilOrchestrator {
     }
 
     // ── Query all members (bounded concurrency) ───────────────────────────
-    const responses = await queryMembers(question, queryTargets, runtime, {}, images, onProgress);
+    const responses = withPhase(
+      await queryMembers(question, queryTargets, runtime, {}, images, onProgress),
+      'thesis',
+    );
 
     // ── Individual mode — done ─────────────────────────────────────────────
     if (mode === 'individual') {

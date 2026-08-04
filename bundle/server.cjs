@@ -36287,6 +36287,9 @@ async function checkVisionPooled(members, runtime, onProgress) {
   );
   return results;
 }
+function withPhase(responses, phase, round) {
+  return responses.map((r2) => ({ ...r2, phase, ...round !== void 0 ? { round } : {} }));
+}
 var EmptyCompletionError = class extends Error {
   constructor(message = "empty response after retries") {
     super(message);
@@ -36851,7 +36854,11 @@ async function deconflict(input) {
   for (let round = 1; round <= maxRounds; round++) {
     const enteringCount = openConflicts.length;
     const roundPrompt = buildConflictRoundPrompt(question, openConflicts, round);
-    const roundResponses = await queryMembers(roundPrompt, members, runtime, {}, images);
+    const roundResponses = withPhase(
+      await queryMembers(roundPrompt, members, runtime, {}, images),
+      "deconflict",
+      round
+    );
     pushTimeouts(roundResponses);
     let newCateg;
     try {
@@ -37142,7 +37149,10 @@ async function runPooled(input) {
     runtime
   );
   const repollPrompt = buildRepollPrompt(question, initialPool);
-  const reconsidered = await queryMembers(repollPrompt, members, runtime, {}, images);
+  const reconsidered = withPhase(
+    await queryMembers(repollPrompt, members, runtime, {}, images),
+    "reconsidered"
+  );
   const finalPool = await poolResponses(
     judgeQuestion,
     reconsidered,
@@ -37191,10 +37201,10 @@ critical, but fair \u2014 concede a genuine strength where one exists. Keep it f
 }
 function buildDossierPrompt(question, digest, initial, defenses) {
   const optionList = digest.options.map((o2) => `- ${o2.answer}`).join("\n");
-  const initialBlock = initial.filter((r2) => !r2.error && r2.response.trim()).map((r2) => `### ${r2.label}
+  const render = (rs) => rs.filter((r2) => !r2.error && r2.response.trim()).map((r2) => `### ${r2.label}${r2.phase ? ` [${r2.phase}]` : ""}
 ${r2.response}`).join("\n\n");
-  const defenseBlock = defenses.filter((r2) => !r2.error && r2.response.trim()).map((r2) => `### ${r2.label}
-${r2.response}`).join("\n\n");
+  const initialBlock = render(initial);
+  const defenseBlock = render(defenses);
   return `You are compiling a DIALECTICAL pros/cons analysis (thesis \u2192 antithesis \u2192 synthesis).
 
 Question:
@@ -37366,12 +37376,15 @@ async function runDialectic(input) {
     runtime
   );
   const optionsBlock = renderOptions(digest);
-  const defenses = await queryMembersVarying(
-    (_member, i2) => buildDefensePrompt(question, optionsBlock, initialResponses[i2]?.response ?? ""),
-    members,
-    runtime,
-    {},
-    images
+  const defenses = withPhase(
+    await queryMembersVarying(
+      (_member, i2) => buildDefensePrompt(question, optionsBlock, initialResponses[i2]?.response ?? ""),
+      members,
+      runtime,
+      {},
+      images
+    ),
+    "antithesis"
   );
   const prosConsResult = await buildProsCons(
     judgeQuestion,
@@ -37384,12 +37397,15 @@ async function runDialectic(input) {
     runtime
   );
   const prosCons = prosConsResult.options;
-  const selections = await queryMembers(
-    buildSelectionPrompt(question, prosCons),
-    members,
-    runtime,
-    {},
-    images
+  const selections = withPhase(
+    await queryMembers(
+      buildSelectionPrompt(question, prosCons),
+      members,
+      runtime,
+      {},
+      images
+    ),
+    "synthesis"
   );
   const defenseOutage = defenses.some((r2) => r2.error);
   const selectionOutage = selections.some((r2) => r2.error);
@@ -37613,7 +37629,10 @@ var CouncilOrchestrator = class {
         skippedNonVision
       };
     }
-    const responses = await queryMembers(question, queryTargets, runtime, {}, images, onProgress);
+    const responses = withPhase(
+      await queryMembers(question, queryTargets, runtime, {}, images, onProgress),
+      "thesis"
+    );
     if (mode === "individual") {
       return attachTimedOut({
         mode: "individual",

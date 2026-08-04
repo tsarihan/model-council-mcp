@@ -3,7 +3,7 @@
  * retry-on-empty completion.
  */
 import { ChatImage, ChatMessage, CompletionOptions, Provider, isTimeoutError, isQuotaError, QuotaExceededError, PromptTooLargeError } from '../providers/base.js';
-import { ModelId, PoolKey, RawResponse, RuntimeConfig } from '../types.js';
+import { ModelId, PoolKey, RawResponse, ResponsePhase, RuntimeConfig } from '../types.js';
 import { modelIdLabel } from '../config.js';
 
 export interface Member {
@@ -120,6 +120,23 @@ export async function checkVisionPooled(
   );
 
   return results;
+}
+
+/**
+ * Stamp a round's responses with the phase that produced them (see
+ * ResponsePhase). Applied at each round's call site rather than inside
+ * queryMembers, because only the caller knows which round it is asking for —
+ * and errored/timed-out entries are stamped too, so an absent answer is still
+ * attributable to the round it was missing from.
+ *
+ * Returns new objects; the inputs are left untouched.
+ */
+export function withPhase(
+  responses: RawResponse[],
+  phase: ResponsePhase,
+  round?: number,
+): RawResponse[] {
+  return responses.map(r => ({ ...r, phase, ...(round !== undefined ? { round } : {}) }));
 }
 
 /** Thrown by completeWithRetry when every attempt returned an empty response. */

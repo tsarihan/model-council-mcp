@@ -692,4 +692,4 @@ model-council runs **entirely locally** and stores nothing off your machine. Ful
 
 ## License
 
-Apache License 2.0 — Copyright (c) 2026 Tom Sarihan. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Apache License 2.0 — Copyright (c) 2026 Tom Sarihan (Desnet AI LLC). See [LICENSE](LICENSE) and [NOTICE](NOTICE).

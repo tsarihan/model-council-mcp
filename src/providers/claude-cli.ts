@@ -90,6 +90,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CappedBuffer, ChatImage, ChatMessage, CompletionOptions, Provider, neutralizeFileMentions } from './base.js';
+import { CLAUDE_CLI_EFFORTS, clampEffort } from './effort.js';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
 import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
 import { redactUrlUserinfo } from '../config.js';
@@ -385,6 +386,9 @@ export class ClaudeCliProvider implements Provider {
         '--strict-mcp-config',    // no MCP servers (no recursion into this plugin)
         '--no-session-persistence',
         '--system-prompt', systemText, // replace the default coding-agent persona
+        // Reasoning depth, when the caller asked for one. The CLI's scale has
+        // no `none`/`minimal`, so those clamp up to `low` (see effort.ts).
+        ...(opts.effort ? ['--effort', clampEffort(opts.effort, CLAUDE_CLI_EFFORTS)] : []),
       ];
 
       // Respect an explicit opts.timeoutMs verbatim (matches every other

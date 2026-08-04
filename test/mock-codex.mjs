@@ -82,8 +82,12 @@ process.stdin.on('end', () => {
   if (imagePaths.length && input.includes(CHALLENGE_PROMPT)) {
     try { challengeAnswer = CHALLENGE_BY_BASE64.get(readFileSync(imagePaths[0]).toString('base64')); } catch { /* fall through */ }
   }
+  // `-c model_reasoning_effort="high"` — echoed so a test can prove the effort
+  // reached the argv, and in the exact TOML-quoted form codex parses.
+  const effortCfg = args.find(a => a.startsWith('model_reasoning_effort='));
   const result = challengeAnswer ??
     `mock-codex model=${model} okey=${okey} ckey=${ckey} sandbox=${sandbox} ${imageSummary} ${cwdListing} ` +
+    `effort=${effortCfg ? effortCfg.slice('model_reasoning_effort='.length).replace(/"/g, '') : 'unset'} ` +
     `:: ${input.trim().slice(0, 500)}`;
   if (outFile) {
     try { writeFileSync(outFile, result); } catch { /* ignore */ }

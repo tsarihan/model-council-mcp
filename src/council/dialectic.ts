@@ -212,7 +212,7 @@ async function buildProsCons(
       rawJson = await pooledComplete(
         { modelId: judgeModelId, provider: judgeProvider },
         [{ role: 'user', content: buildDossierPrompt(question, digest, initial, defenses) }],
-        { jsonMode: true, jsonSchema: DOSSIER_SCHEMA, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
+        { jsonMode: true, jsonSchema: DOSSIER_SCHEMA, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs, effort: cc.effort },
         cc.retries,
         runtime,
       );
@@ -334,6 +334,7 @@ export async function runDialectic(input: DialecticInput): Promise<DialecticResu
   const judgeQuestion = input.judgeQuestion ?? question;
   const cc: CompleteConfig = {
     maxTokens: runtime.maxTokens, retries: runtime.retries, timeoutMs: runtime.requestTimeoutMs,
+    effort: runtime.reasoningEffort,
   };
 
   // 1. Distil the distinct options (reuse the pooled digest).

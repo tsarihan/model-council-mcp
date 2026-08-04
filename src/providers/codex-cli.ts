@@ -48,6 +48,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CappedBuffer, ChatImage, ChatMessage, CompletionOptions, Provider , neutralizeFileMentions } from './base.js';
+import { CODEX_CLI_EFFORTS, clampEffort } from './effort.js';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
 import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
 
@@ -207,6 +208,13 @@ export class CodexCliProvider implements Provider {
       ];
       if (model && model !== 'default') {
         args.push('-m', model);
+      }
+      // Reasoning depth. Codex takes nearly the whole canonical scale, but not
+      // quite: `minimal` is advertised by the parameter's enum yet REJECTED by
+      // the current default model (verified live), so it clamps to `low` here
+      // rather than failing the member — see CODEX_CLI_EFFORTS.
+      if (opts.effort) {
+        args.push('-c', `model_reasoning_effort="${clampEffort(opts.effort, CODEX_CLI_EFFORTS)}"`);
       }
       // Images are attached only on a user message; the orchestrator only routes
       // here at all when supportsVision() was confirmed for this member. Written

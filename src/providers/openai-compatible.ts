@@ -10,6 +10,7 @@ import {
   DEFAULT_COMPLETION_TIMEOUT_MS, PROBE_IMAGE_BASE64, isTimeoutError,
 } from './base.js';
 import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
+import { OPENAI_EFFORTS, clampEffort } from './effort.js';
 
 /**
  * The OpenAI SDK appends `/models`, `/chat/completions`, etc. to its baseURL, so
@@ -271,21 +272,55 @@ export class OpenAICompatibleProvider implements Provider {
     // (e.g. 16000) doesn't get hard-rejected by servers like vLLM.
     const maxTokens = clampMaxTokens(opts.maxTokens ?? 16000, await this.maxModelLen(model), messages);
     const wireMessages = toOpenAIMessages(messages);
-    const res = await this.client.chat.completions.create(
-      {
-        model,
-        messages: wireMessages,
-        temperature: opts.temperature ?? 0.7,
-        max_tokens: maxTokens,
-        // Prefer schema-constrained decoding (OpenAI + vLLM/SGLang guided
-        // decoding) over plain json_object, which only guarantees parseable JSON.
-        ...(opts.jsonSchema
-          ? { response_format: { type: 'json_schema' as const,
-              json_schema: { name: 'council_judge', schema: opts.jsonSchema, strict: false } } }
-          : opts.jsonMode ? { response_format: { type: 'json_object' as const } } : {}),
-      },
-      { timeout: opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS },
-    );
+    const body = {
+      model,
+      messages: wireMessages,
+      temperature: opts.temperature ?? 0.7,
+      max_tokens: maxTokens,
+      // Prefer schema-constrained decoding (OpenAI + vLLM/SGLang guided
+      // decoding) over plain json_object, which only guarantees parseable JSON.
+      ...(opts.jsonSchema
+        ? { response_format: { type: 'json_schema' as const,
+            json_schema: { name: 'council_judge', schema: opts.jsonSchema, strict: false } } }
+        : opts.jsonMode ? { response_format: { type: 'json_object' as const } } : {}),
+    };
+    // Reasoning depth. OpenAI documents none/minimal/low/medium/high (newer
+    // models add xhigh) — but this same provider also fronts vLLM / TRT-LLM /
+    // SGLang, whose support varies by build and by model, and a non-reasoning
+    // model rejects the parameter outright. So it goes on as a separate field
+    // that can be dropped and retried (below) rather than failing the member.
+    const effort = opts.effort ? clampEffort(opts.effort, OPENAI_EFFORTS) : undefined;
+    const reqOpts = { timeout: opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS };
+
+    let res;
+    try {
+      res = await this.client.chat.completions.create(
+        // The pinned SDK's own `reasoning_effort` union predates the newer
+        // levels (it types only low/medium/high), so the wider canonical value
+        // is cast on. The WIRE is what matters here — this provider also fronts
+        // vLLM/TRT-LLM/SGLang, whose accepted values aren't OpenAI's anyway —
+        // and a server that rejects the value is already handled by the retry
+        // below, so an out-of-date client-side type must not narrow what the
+        // council can ask for.
+        effort ? { ...body, reasoning_effort: effort as unknown as 'low' } : body,
+        reqOpts,
+      );
+    } catch (err) {
+      // Retry once WITHOUT the effort field when the server rejected that
+      // field specifically (400 naming reasoning_effort / an unsupported or
+      // unknown parameter). Mirrors the reactive max_tokens clamp in
+      // anthropic.ts: an optional quality knob must never cost the council a
+      // member. Anything else — auth, quota, timeout, a genuine bad request —
+      // propagates unchanged, so real failures stay loud.
+      const status = (err as { status?: number }).status;
+      const msg = String((err as { message?: string })?.message ?? err);
+      const rejectedEffort =
+        effort !== undefined &&
+        status === 400 &&
+        /reasoning[_ ]?effort|unsupported parameter|unknown parameter|unrecognized/i.test(msg);
+      if (!rejectedEffort) throw err;
+      res = await this.client.chat.completions.create(body, reqOpts);
+    }
 
     return stripThinkBlocks(res.choices[0]?.message?.content ?? '');
   }

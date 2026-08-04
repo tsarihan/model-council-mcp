@@ -123,6 +123,7 @@ process.stdin.on('end', () => {
   const result =
     `mock-claude model=${model} key=${key} tools=${toolsTag} ` +
     `mcp=${strictMcp ? 'strict' : 'default'} sys=${sysReplace ? 'replace' : 'default'} ${readSummary} ${repoListing} ` +
+    `effort=${flag('--effort') ?? 'unset'} ` +
     `cwd=${process.cwd()} :: ${input.trim().slice(0, 80)}`;
   process.stdout.write(
     JSON.stringify({

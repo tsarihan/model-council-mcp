@@ -16,6 +16,7 @@ import {
   SubProvider,
 } from './subscriptions.js';
 import { loadState } from './state.js';
+import { EFFORT_ORDER, isReasoningEffort } from './providers/effort.js';
 
 export interface AppConfig {
   servers: ServerConfig[];
@@ -458,6 +459,22 @@ export function loadConfig(): AppConfig {
     Math.min(10, strictParseInt(envClean('MAX_DECONFLICT_ROUNDS')) ?? 3),
   );
 
+  // ── Reasoning effort ──────────────────────────────────────────────────────
+  // Boot default for how hard every member (and the judge) thinks. Unset means
+  // "send nothing", which is NOT the same as any particular level — each model
+  // then runs at its own default, exactly as before this setting existed.
+  const effortRaw = envClean('REASONING_EFFORT');
+  if (effortRaw !== undefined && !isReasoningEffort(effortRaw)) {
+    // Same treatment as a typo'd JUDGE_MODEL: silently ignoring it would leave
+    // the user believing they'd set a level, with nothing to tell them apart
+    // from an intentionally unset one.
+    warnings.push(
+      `REASONING_EFFORT="${effortRaw}" is not a valid level (expected one of ` +
+      `${EFFORT_ORDER.join(', ')}) — falling back to each model's own default.`,
+    );
+  }
+  const reasoningEffort = isReasoningEffort(effortRaw) ? effortRaw : undefined;
+
   // Auto-council: default ON. Only "false"/"0"/"no" disables it.
   const autoRaw = (envClean('AUTO_COUNCIL') ?? 'true').toLowerCase();
   const autoCouncil = !['false', '0', 'no', 'off'].includes(autoRaw);
@@ -500,6 +517,7 @@ export function loadConfig(): AppConfig {
     // managed). 32K is a generous-but-bounded default (raise via MAX_TOKENS for
     // even longer answers — slower/costlier, multiplied across members × rounds).
     maxTokens: Math.max(1, envInt('MAX_TOKENS', 32768)),
+    reasoningEffort,
     cloudConcurrency: cloudOverride ?? subs.defaults.cloudConcurrency,
     localConcurrency: localOverride ?? subs.defaults.localConcurrency,
     poolLimits,

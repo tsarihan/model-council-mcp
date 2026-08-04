@@ -5,6 +5,7 @@ import {
   DEFAULT_COMPLETION_TIMEOUT_MS, isTimeoutError,
 } from './base.js';
 import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
+import { effortToThinkingBudget } from './effort.js';
 
 /**
  * If `err` is Anthropic's 400 for max_tokens exceeding a model's output cap,
@@ -199,6 +200,14 @@ export class AnthropicProvider implements Provider {
       : systemParts || undefined;
 
     const requested = opts.maxTokens ?? 16000;
+    // Reasoning depth. Anthropic has no effort enum — extended thinking is
+    // bought with a token budget instead, derived from the output budget so
+    // the API's `budget_tokens < max_tokens` rule always holds (see
+    // effortToThinkingBudget). `none`/`minimal`, and a max_tokens too small to
+    // fit the API's 1024-token minimum budget, yield undefined = no thinking.
+    const thinkingBudget = opts.effort
+      ? effortToThinkingBudget(opts.effort, requested)
+      : undefined;
     const body = {
       model,
       max_tokens: requested,
@@ -206,7 +215,18 @@ export class AnthropicProvider implements Provider {
       // honour it). Dropping it silently ran judge calls at the API default
       // instead of the deliberate low temperature the caller asked for — which
       // matters for judge determinism.
-      ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
+      //
+      // EXCEPT with thinking enabled: the API requires temperature to be 1
+      // (i.e. unset) and hard-rejects any other value alongside a thinking
+      // block. Effort was explicitly asked for and determinism is the weaker
+      // of the two preferences, so temperature yields rather than failing the
+      // call outright.
+      ...(opts.temperature !== undefined && thinkingBudget === undefined
+        ? { temperature: opts.temperature }
+        : {}),
+      ...(thinkingBudget !== undefined
+        ? { thinking: { type: 'enabled' as const, budget_tokens: thinkingBudget } }
+        : {}),
       ...(systemText ? { system: systemText } : {}),
       messages: userMessages,
     };
@@ -226,13 +246,29 @@ export class AnthropicProvider implements Provider {
       // propagates unchanged.
       const cap = maxTokensCapFrom400(err);
       if (cap !== null && cap < requested) {
-        res = await this.client.messages.create({ ...body, max_tokens: cap }, reqOpts);
+        // Recompute the thinking budget against the LOWERED cap — reusing the
+        // original budget could now exceed max_tokens, which the API rejects,
+        // turning a recoverable clamp into a failed member.
+        const cappedBudget = opts.effort ? effortToThinkingBudget(opts.effort, cap) : undefined;
+        res = await this.client.messages.create(
+          {
+            ...body,
+            max_tokens: cap,
+            ...(cappedBudget !== undefined
+              ? { thinking: { type: 'enabled' as const, budget_tokens: cappedBudget } }
+              : { thinking: undefined }),
+          },
+          reqOpts,
+        );
       } else {
         throw err;
       }
     }
 
-    const block = res.content[0];
+    // With extended thinking on, content[0] is a `thinking` block and the
+    // answer follows it — indexing [0] blindly would return '' for every
+    // thinking-enabled call. Take the first TEXT block instead.
+    const block = res.content.find(b => b.type === 'text');
     return block?.type === 'text' ? block.text : '';
   }
 }

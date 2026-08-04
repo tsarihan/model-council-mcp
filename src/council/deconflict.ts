@@ -408,7 +408,7 @@ async function synthesize(
     const text = await pooledComplete(
       { modelId: judgeModelId, provider: judgeProvider },
       [{ role: 'user', content: prompt }],
-      { temperature: 0.3, maxTokens: runtime.maxTokens, timeoutMs: runtime.requestTimeoutMs },
+      { temperature: 0.3, maxTokens: runtime.maxTokens, timeoutMs: runtime.requestTimeoutMs, effort: runtime.reasoningEffort },
       runtime.retries,
       runtime,
     );
@@ -490,6 +490,7 @@ export async function deconflict(
 
   const cc = {
     maxTokens: runtime.maxTokens, retries: runtime.retries, timeoutMs: runtime.requestTimeoutMs,
+    effort: runtime.reasoningEffort,
   };
   const judgeLabel = modelIdLabel(judgeModelId);
   const totalConflicts = initialConflicts.length;

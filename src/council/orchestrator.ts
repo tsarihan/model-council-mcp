@@ -11,6 +11,7 @@ import {
   ModelId,
   ModelInfo,
   RawResponse,
+  ReasoningEffort,
   ResponseMode,
   RuntimeConfig,
   VisionRouting,
@@ -209,6 +210,7 @@ export class CouncilOrchestrator {
     onProgress?: ProgressReporter,
     fullRepoAccessRepo?: string,
     originalQuestion?: string,
+    effortOverride?: ReasoningEffort,
   ): Promise<CouncilResult> {
     // `question` is what MEMBERS see — possibly augmented by buildAugmentedQuestion
     // with untrusted context/files/git-diff content. `judgeQuestion` is the
@@ -232,9 +234,14 @@ export class CouncilOrchestrator {
     // When repo access is granted, also swap in the longer repo per-completion
     // timeout — repo-reading completions (CLI member Read/Grep/Glob over the
     // tree) materially outlast a flat text completion.
-    const runtime: RuntimeConfig = fullRepoAccessRepo
+    // A per-call reasoning_effort rides on the same clone, for the same reason:
+    // it must not leak into a concurrent ask_council that didn't ask for it.
+    const baseRuntime: RuntimeConfig = fullRepoAccessRepo
       ? { ...this.runtime, fullRepoAccess: fullRepoAccessRepo, requestTimeoutMs: this.runtime.repoRequestTimeoutMs }
       : this.runtime;
+    const runtime: RuntimeConfig = effortOverride
+      ? { ...baseRuntime, reasoningEffort: effortOverride }
+      : baseRuntime;
 
     // ── Determine council membership ──────────────────────────────────────
     // If explicitly configured, use those. Otherwise (zero-config) auto-
@@ -476,6 +483,10 @@ export class CouncilOrchestrator {
       maxTokens: runtime.maxTokens,
       retries: runtime.retries,
       timeoutMs: runtime.requestTimeoutMs,
+      // Judge calls run at the SAME depth as member calls: one council-wide
+      // setting governs the whole ask, so a "max" question is answered AND
+      // reconciled deeply rather than deeply answered then shallowly judged.
+      effort: runtime.reasoningEffort,
     };
 
     // The judge is itself a council member; a genuine judge failure (unreachable,

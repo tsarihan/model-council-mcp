@@ -71,6 +71,7 @@ These are all set from **`/plugin` → Configure** in Claude Code (or the equiva
 | OpenAI / Anthropic / X.AI API key | Enable cloud models (stored in keychain) | — |
 | vLLM / TRT-LLM / SGLang servers | `name:host:port` entries | — |
 | Max response tokens | Tokens per completion | `16000` |
+| **Default reasoning effort** | How hard every member and the judge think: `none` … `max`. Empty = each model's own default. Clamped per-backend; override per call with `ask_council`'s `reasoning_effort`. See [Reasoning effort](#reasoning-effort). | *(unset)* |
 | **Per-request timeout (text)** | Wall-clock timeout (ms) for a single completion on text-only calls before the member is recorded as timed-out. Default raised to 5 min because local Ollama models run sequentially. Honoured verbatim by every provider, including the subscription CLIs (no 300s floor). Set via `REQUEST_TIMEOUT_MS`, or at runtime via the `set_council_timeouts` MCP tool. | `300000` (5 min) |
 | **Per-request timeout (repo)** | Timeout used **instead** of the text timeout when `full_repo_access` is set — the CLI member Read/Grep/Globs the repo tree, materially longer. Set via `REPO_REQUEST_TIMEOUT_MS`, or at runtime via `set_council_timeouts`. | `600000` (10 min) |
 | Cloud concurrency (override) | Optional; caps all cloud pools, overriding the per-tier limits | *(unset → tiers)* |
@@ -250,6 +251,7 @@ Full URLs also work: `gpu3:http://10.0.0.5:9000`
 | `JUDGE_MODEL` | Judge model ID or `auto` | `auto` (largest council member) |
 | `RESPONSE_MODE` | `individual` \| `categorized` \| `deconflicted` \| `pooled` \| `dialectic` | `categorized` |
 | `MAX_DECONFLICT_ROUNDS` | Max deconfliction iterations | `3` |
+| `REASONING_EFFORT` | Default reasoning depth for every member **and** the judge: `none` \| `minimal` \| `low` \| `medium` \| `high` \| `xhigh` \| `max`. See [Reasoning effort](#reasoning-effort) — levels a backend doesn't support are clamped, never errored. | *(unset — each model's own default)* |
 
 ### Performance & output
 
@@ -322,11 +324,12 @@ Update the council at runtime (changes persist for the session).
   "models": ["ollama:llama3", "ollama:mistral", "openai:gpt-4o"],
   "judge_model": "openai:gpt-4o",
   "response_mode": "deconflicted",
-  "max_deconflict_rounds": 4
+  "max_deconflict_rounds": 4,
+  "reasoning_effort": "high"
 }
 ```
 
-All fields are optional — only supplied fields are updated. `models` is capped at 100 entries.
+All fields are optional — only supplied fields are updated. `models` is capped at 100 entries. `reasoning_effort` sets the council-wide default reasoning depth (see [Reasoning effort](#reasoning-effort)); it persists across reloads and is overridable per call on `ask_council`. Pass `"auto"` to clear it back to each model's own default — distinct from `"none"`, which actively asks every backend for no reasoning.
 
 > **Parameter names are strict.** An unrecognized parameter is **rejected with an error**, never silently ignored — so a call that doesn't do what you meant fails loudly instead of returning a cheerful `"status": "updated"` while changing nothing. The error names the offending key, suggests the intended one, and lists the valid parameters. Two easy slips worth knowing: the council is **set** with `models` but **reported** (by `get_council_config` / `council_status`) as `members`; and the response mode is `response_mode` here but `mode` on `ask_council`.
 
@@ -344,7 +347,35 @@ Send a question to the full council.
 }
 ```
 
-`mode` and `max_deconflict_rounds` override the configured defaults for this call only. In `deconflicted` mode, set `"verbose": true` to include the initial categorization, every member's per-round responses, and the round-by-round re-categorization alongside the final synthesis. In `pooled` mode, `"verbose": true` adds the initial (round-0) raw member responses.
+`mode`, `max_deconflict_rounds`, and `reasoning_effort` override the configured defaults for this call only. In `deconflicted` mode, set `"verbose": true` to include the initial categorization, every member's per-round responses, and the round-by-round re-categorization alongside the final synthesis. In `pooled` mode, `"verbose": true` adds the initial (round-0) raw member responses.
+
+<a id="reasoning-effort"></a>
+**Reasoning effort.** `"reasoning_effort"` sets how hard the council thinks, on one canonical scale — `none` · `minimal` · `low` · `medium` · `high` · `xhigh` · `max`:
+
+```json
+{
+  "question": "Design a migration path off this schema.",
+  "mode": "dialectic",
+  "reasoning_effort": "max"
+}
+```
+
+It applies to **every member and the judge**, so one setting governs the whole ask rather than producing deeply-reasoned answers reconciled by a shallow judge. Leave it unset (the default) and nothing is sent at all — each model runs at its own default depth, exactly as before this option existed.
+
+Each backend supports a different slice of the scale, so a level it doesn't accept is **clamped to its nearest supported one, never errored** — a council-wide setting must not shrink a mixed council to whichever members happen to share a vocabulary. Ties clamp *downward* (the cheaper side).
+
+| Member type | Knob used | Levels it accepts | Example clamp |
+|---|---|---|---|
+| `claude-cli` | `--effort` | `low` … `max` | `none` → `low` |
+| `codex-cli` | `-c model_reasoning_effort=` | `none`, `low` … `max` | `minimal` → `none` (its parameter enum advertises `minimal`, but the model itself rejects it) |
+| `grok-cli` | `--reasoning-effort` | `low`, `high` | `max` → `high`, `medium` → `low` |
+| `ollama` | `think:` | `low`, `medium`, `high`, `max` | `xhigh` → `high`; `none` → `think: false` |
+| `openai` / `vllm` / `trtllm` / `sglang` | `reasoning_effort` | `none` … `xhigh` | `max` → `xhigh` |
+| `anthropic` (API key) | extended thinking `budget_tokens` | derived from the level | `none`/`minimal` → no thinking |
+
+Two members that can't honour the request at all are handled rather than dropped: an Ollama model with no thinking support, and an OpenAI-compatible server that rejects the parameter, are each retried once without it, so they still answer (at their own depth) instead of failing the call.
+
+**Cost.** Higher levels buy depth with time and subscription quota, and the multiplier is `members × rounds` — a `max` run of a 5-member `deconflicted` council is a materially bigger spend than a `low` one. `set_council_timeouts` may need raising alongside it.
 
 **Completion markers & timeout cuts.** Every completed answer is wrapped in `═══════ BEGINNING OF RESPONSE ═══════` / `═══════ END OF RESPONSE ═══════` delimiters (the JSON payload sits intact on its own lines between them — strip the first and last line to parse). The markers are the completion signal: the tool returns the moment the council finishes, so it never waits the full timeout just because the timeout is set. If a member's completion is cut by the per-completion timeout, the result carries `timeoutNotice: "RESPONSE TIMED OUT, INCREASE TIMEOUT IF MESSAGE IS CUT"` plus a `timedOutMembers` array of the cut labels — this surfaces even under `verbose: false`. Raise the budget with `set_council_timeouts` (or `REQUEST_TIMEOUT_MS` / `REPO_REQUEST_TIMEOUT_MS`) and re-ask.
 

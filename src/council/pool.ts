@@ -112,7 +112,7 @@ export async function poolResponses(
     rawJson = await pooledComplete(
       { modelId: judgeModelId, provider: judgeProvider },
       [{ role: 'user', content: prompt }],
-      { jsonMode: true, jsonSchema: POOL_SCHEMA, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
+      { jsonMode: true, jsonSchema: POOL_SCHEMA, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs, effort: cc.effort },
       cc.retries,
       runtime,
     );
@@ -231,6 +231,7 @@ export async function runPooled(input: PooledInput): Promise<PooledResult> {
   const judgeQuestion = input.judgeQuestion ?? question;
   const cc: CompleteConfig = {
     maxTokens: runtime.maxTokens, retries: runtime.retries, timeoutMs: runtime.requestTimeoutMs,
+    effort: runtime.reasoningEffort,
   };
 
   // 1. Judge distils round-0 answers into a neutral pool.

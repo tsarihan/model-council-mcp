@@ -1,4 +1,5 @@
 import { ModelInfo, ServerConfig } from '../types.js';
+import { ReasoningEffort } from './effort.js';
 
 /** A single image attached to a user message, decoded to base64 + its MIME type. */
 export interface ChatImage {
@@ -131,6 +132,22 @@ export interface CompletionOptions {
   jsonSchema?: Record<string, unknown>;
   /** Per-attempt wall-clock timeout (ms). Bounds a hung server/subprocess. */
   timeoutMs?: number;
+  /**
+   * How much reasoning to ask the model for, on the council's own canonical
+   * scale (`none` … `max` — see providers/effort.ts). Every provider honours
+   * it through whatever knob its backend exposes:
+   *   - claude-cli:  `--effort <level>`
+   *   - codex-cli:   `-c model_reasoning_effort=<level>`
+   *   - grok-cli:    `--reasoning-effort <level>`
+   *   - ollama:      `think: <level>` (or `think: false` for `none`)
+   *   - openai/vllm/trtllm/sglang: `reasoning_effort`
+   *   - anthropic:   extended thinking with a derived `budget_tokens`
+   * A level the backend doesn't support is CLAMPED to its nearest supported
+   * one (clampEffort) rather than erroring the member — the whole point is
+   * that one council-wide setting works across a mixed council. Undefined
+   * (the default) sends nothing at all, leaving each model at its own default.
+   */
+  effort?: ReasoningEffort;
   /**
    * Absolute repo root to grant repo exploration access to, for the CLI
    * providers that support it — enforced DIFFERENTLY per provider:

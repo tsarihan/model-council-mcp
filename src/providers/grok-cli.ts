@@ -61,6 +61,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CappedBuffer, ChatImage, ChatMessage, CompletionOptions, Provider , neutralizeFileMentions } from './base.js';
+import { GROK_CLI_EFFORTS, clampEffort } from './effort.js';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
 import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
 
@@ -283,6 +284,12 @@ export class GrokCliProvider implements Provider {
         '--tools', 'none',
         '--permission-mode', 'bypassPermissions', // required in headless mode, see file header
         '--system-prompt-override', systemText,
+        // Reasoning depth. UNLIKE claude/codex, grok does NOT validate this at
+        // arg-parse time (verified: a bogus value is accepted by the CLI and
+        // forwarded to the xAI API), so an unsupported level fails the whole
+        // request and kills the member. GROK_CLI_EFFORTS is therefore narrow
+        // (low/high — what xAI documents) and everything clamps into it.
+        ...(opts.effort ? ['--reasoning-effort', clampEffort(opts.effort, GROK_CLI_EFFORTS)] : []),
       ];
 
       // Respect an explicit opts.timeoutMs verbatim (matches every other

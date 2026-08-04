@@ -11,6 +11,7 @@ import {
   ConflictPosition,
   ModelId,
   RawResponse,
+  ReasoningEffort,
   RuntimeConfig,
 } from '../types.js';
 import { Provider, parseJudgeJson } from '../providers/base.js';
@@ -24,6 +25,12 @@ export interface CompleteConfig {
   retries: number;
   /** Per-attempt wall-clock timeout (ms) for judge calls. */
   timeoutMs: number;
+  /**
+   * Reasoning depth for judge calls — the SAME council-wide level the members
+   * ran at (see RuntimeConfig.reasoningEffort). Undefined leaves the judge at
+   * its model's own default.
+   */
+  effort?: ReasoningEffort;
 }
 
 // ─── Judge prompt ─────────────────────────────────────────────────────────────
@@ -189,7 +196,7 @@ export async function categorize(
     rawJson = await pooledComplete(
       { modelId: judgeModelId, provider: judgeProvider },
       [{ role: 'user', content: prompt }],
-      { jsonMode: true, jsonSchema: CATEGORIZATION_SCHEMA, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
+      { jsonMode: true, jsonSchema: CATEGORIZATION_SCHEMA, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs, effort: cc.effort },
       cc.retries,
       runtime,
     );

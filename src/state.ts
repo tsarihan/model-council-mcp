@@ -7,7 +7,7 @@
 import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { ModelId, ResponseMode } from './types.js';
+import { ModelId, ReasoningEffort, ResponseMode } from './types.js';
 
 export interface CouncilState {
   version: number;
@@ -33,6 +33,13 @@ export interface CouncilState {
    * `repo` = calls with full_repo_access. Undefined = use the boot default.
    */
   timeouts?: { run?: number; repo?: number };
+  /**
+   * Council-wide reasoning depth set via configure_council, overriding the
+   * REASONING_EFFORT env/userConfig default the same way `timeouts` overrides
+   * the timeout defaults. Undefined = use the boot default (which is itself
+   * usually unset, meaning each model's own default depth).
+   */
+  reasoningEffort?: ReasoningEffort;
   /** Reference-data version the user was last welcomed for. */
   welcomedVersion?: string;
   /**

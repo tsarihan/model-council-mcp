@@ -1015,6 +1015,83 @@ async function main() {
     check('claude-cli: strict MCP config (no recursion)', cli.responses?.every(r => /mcp=strict/.test(r.response ?? '')));
     check('claude-cli: replaces Claude Code system prompt (neutral persona)', cli.responses?.every(r => /sys=replace/.test(r.response ?? '')));
     check('claude-cli: prompt reached the CLI via stdin', cli.responses?.every(r => /hello world/.test(r.response ?? '')));
+    // ── reasoning_effort ──────────────────────────────────────────────────
+    // Absent by default: the feature must be invisible unless asked for, so an
+    // existing council keeps behaving byte-for-byte as it did before.
+    check('reasoning_effort: no --effort flag when the caller did not ask for one',
+      cli.responses?.every(r => /effort=unset/.test(r.response ?? '')),
+      cli.responses?.map(r => r.response).join(' | '));
+
+    const effortHigh = parseToolResult(await cliClient.callTool({
+      name: 'ask_council', arguments: { question: 'hello world', mode: 'individual', reasoning_effort: 'high' },
+    }));
+    check('reasoning_effort: per-call level reaches the claude CLI argv',
+      effortHigh.responses?.every(r => /effort=high\b/.test(r.response ?? '')),
+      effortHigh.responses?.map(r => r.response).join(' | '));
+
+    // claude-cli's scale starts at `low`, so a below-floor level must be
+    // clamped UP rather than passed through (the CLI would reject it) or
+    // dropped (the caller asked for a level and would silently get none).
+    const effortNone = parseToolResult(await cliClient.callTool({
+      name: 'ask_council', arguments: { question: 'hello world', mode: 'individual', reasoning_effort: 'none' },
+    }));
+    check('reasoning_effort: a level below the backend floor is clamped up, not dropped (none -> low)',
+      effortNone.responses?.every(r => /effort=low\b/.test(r.response ?? '')),
+      effortNone.responses?.map(r => r.response).join(' | '));
+
+    // `effort` is the obvious shorthand, and the schema is strict — so the
+    // rejection has to NAME the canonical parameter rather than just listing
+    // every valid key, the same "did you mean" treatment `mode`/`members` get.
+    let aliasThrew = false, aliasMsg = '';
+    try {
+      await cliClient.callTool({
+        name: 'ask_council', arguments: { question: 'hello world', mode: 'individual', effort: 'max' },
+      });
+    } catch (e) { aliasThrew = true; aliasMsg = String(e?.message ?? e); }
+    check('reasoning_effort: the `effort` shorthand is rejected with a did-you-mean pointing at reasoning_effort',
+      aliasThrew && /did you mean "reasoning_effort"/.test(aliasMsg), aliasMsg);
+
+    // An out-of-scale value must be REJECTED, not silently coerced — a typo'd
+    // level that quietly ran at the default is exactly the invisible failure
+    // the strict schema exists to prevent.
+    let badEffortThrew = false, badEffortMsg = '';
+    try {
+      await cliClient.callTool({
+        name: 'ask_council', arguments: { question: 'x', mode: 'individual', reasoning_effort: 'extreme' },
+      });
+    } catch (e) { badEffortThrew = true; badEffortMsg = String(e?.message ?? e); }
+    check('reasoning_effort: an invalid level is rejected rather than silently ignored',
+      badEffortThrew && /reasoning_effort/.test(badEffortMsg), badEffortMsg);
+
+    // Persisted default via configure_council, applied to a later ask with no
+    // per-call level of its own.
+    await cliClient.callTool({ name: 'configure_council', arguments: { reasoning_effort: 'xhigh' } });
+    const cfgEffort = parseToolResult(await cliClient.callTool({ name: 'get_council_config', arguments: {} }));
+    check('reasoning_effort: configure_council default is reported by get_council_config',
+      cfgEffort.council?.reasoningEffort === 'xhigh' && cfgEffort.runtime?.reasoningEffort === 'xhigh',
+      JSON.stringify({ c: cfgEffort.council?.reasoningEffort, r: cfgEffort.runtime?.reasoningEffort }));
+    const defaulted = parseToolResult(await cliClient.callTool({
+      name: 'ask_council', arguments: { question: 'hello world', mode: 'individual' },
+    }));
+    check('reasoning_effort: the configured default applies to a call that sets none',
+      defaulted.responses?.every(r => /effort=xhigh\b/.test(r.response ?? '')),
+      defaulted.responses?.map(r => r.response).join(' | '));
+    const overridden = parseToolResult(await cliClient.callTool({
+      name: 'ask_council', arguments: { question: 'hello world', mode: 'individual', reasoning_effort: 'low' },
+    }));
+    check('reasoning_effort: a per-call level overrides the configured default',
+      overridden.responses?.every(r => /effort=low\b/.test(r.response ?? '')),
+      overridden.responses?.map(r => r.response).join(' | '));
+    // ...and the override must not have leaked into the shared runtime, or the
+    // NEXT caller silently inherits a level they never asked for.
+    const afterOverride = parseToolResult(await cliClient.callTool({
+      name: 'ask_council', arguments: { question: 'hello world', mode: 'individual' },
+    }));
+    check('reasoning_effort: a per-call override does not leak into the server-wide default',
+      afterOverride.responses?.every(r => /effort=xhigh\b/.test(r.response ?? '')),
+      afterOverride.responses?.map(r => r.response).join(' | '));
+    // Clear it again so the later assertions in this block see a clean council.
+    await cliClient.callTool({ name: 'configure_council', arguments: { models: ['claude-cli:opus', 'claude-cli:sonnet'], response_mode: 'individual' } });
 
     // is_error result (exit 0 + is_error:true) → surfaced as a member error
     await cliClient.callTool({ name: 'configure_council', arguments: { models: ['claude-cli:erroring'], response_mode: 'individual' } });
@@ -1145,6 +1222,26 @@ async function main() {
     check('codex-cli: CODEX_API_KEY stripped', cx.responses?.every(r => /ckey=unset/.test(r.response ?? '')));
     check('codex-cli: read-only sandbox', cx.responses?.every(r => /sandbox=read-only/.test(r.response ?? '')));
     check('codex-cli: prompt reached the CLI via stdin', cx.responses?.every(r => /hi codex/.test(r.response ?? '')));
+    check('codex-cli: no reasoning-effort config key when the caller did not ask for one',
+      cx.responses?.every(r => /effort=unset/.test(r.response ?? '')),
+      cx.responses?.map(r => r.response).join(' | '));
+    // Codex takes a level nothing below it does (`xhigh`), so this proves the
+    // value arrives verbatim rather than being clamped to a common denominator.
+    const cxEffort = parseToolResult(await codexClient.callTool({
+      name: 'ask_council', arguments: { question: 'hi codex', mode: 'individual', reasoning_effort: 'xhigh' },
+    }));
+    check('codex-cli: reasoning_effort arrives as -c model_reasoning_effort, unclamped',
+      cxEffort.responses?.every(r => /effort=xhigh\b/.test(r.response ?? '')),
+      cxEffort.responses?.map(r => r.response).join(' | '));
+    // `minimal` is advertised by codex's parameter enum but rejected by the
+    // model itself (verified live), so it must be clamped here — passing it
+    // through would 400 and drop the member.
+    const cxMinimal = parseToolResult(await codexClient.callTool({
+      name: 'ask_council', arguments: { question: 'hi codex', mode: 'individual', reasoning_effort: 'minimal' },
+    }));
+    check('codex-cli: minimal is clamped to none (the model rejects minimal despite the enum advertising it)',
+      cxMinimal.responses?.every(r => /effort=none\b/.test(r.response ?? '')),
+      cxMinimal.responses?.map(r => r.response).join(' | '));
 
     // Vision: codex has a first-party -i/--image flag (no workaround needed) —
     // asserts the provider actually wrote real image bytes at the path it

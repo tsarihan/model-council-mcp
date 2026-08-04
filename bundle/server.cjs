@@ -24605,6 +24605,79 @@ function saveState(patch) {
   return next;
 }
 
+// src/providers/effort.ts
+var EFFORT_ORDER = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max"
+];
+function isReasoningEffort(v2) {
+  return typeof v2 === "string" && EFFORT_ORDER.includes(v2);
+}
+function clampEffort(requested, supported) {
+  if (supported.includes(requested)) return requested;
+  const want = EFFORT_ORDER.indexOf(requested);
+  let best = supported[0];
+  let bestScore = Infinity;
+  for (const candidate of supported) {
+    const rank = EFFORT_ORDER.indexOf(candidate);
+    const score = Math.abs(rank - want) + (rank > want ? 0.5 : 0);
+    if (score < bestScore) {
+      bestScore = score;
+      best = candidate;
+    }
+  }
+  return best;
+}
+var CLAUDE_CLI_EFFORTS = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max"
+];
+var CODEX_CLI_EFFORTS = [
+  "none",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max"
+];
+var GROK_CLI_EFFORTS = ["low", "high"];
+var OLLAMA_EFFORTS = ["low", "medium", "high", "max"];
+var OPENAI_EFFORTS = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh"
+];
+var ANTHROPIC_MIN_THINKING_BUDGET = 1024;
+var THINKING_FRACTION = {
+  none: 0,
+  minimal: 0,
+  low: 0.2,
+  medium: 0.4,
+  high: 0.6,
+  xhigh: 0.75,
+  max: 0.85
+};
+function effortToThinkingBudget(effort, maxTokens) {
+  const fraction = THINKING_FRACTION[effort];
+  if (!fraction) return void 0;
+  const budget = Math.floor(maxTokens * fraction);
+  if (budget < ANTHROPIC_MIN_THINKING_BUDGET) {
+    return maxTokens > ANTHROPIC_MIN_THINKING_BUDGET ? ANTHROPIC_MIN_THINKING_BUDGET : void 0;
+  }
+  return budget;
+}
+
 // src/config.ts
 var DEFAULT_PORTS = {
   vllm: 8e3,
@@ -24845,6 +24918,13 @@ function loadConfig() {
     1,
     Math.min(10, strictParseInt(envClean("MAX_DECONFLICT_ROUNDS")) ?? 3)
   );
+  const effortRaw = envClean("REASONING_EFFORT");
+  if (effortRaw !== void 0 && !isReasoningEffort(effortRaw)) {
+    warnings.push(
+      `REASONING_EFFORT="${effortRaw}" is not a valid level (expected one of ${EFFORT_ORDER.join(", ")}) \u2014 falling back to each model's own default.`
+    );
+  }
+  const reasoningEffort = isReasoningEffort(effortRaw) ? effortRaw : void 0;
   const autoRaw = (envClean("AUTO_COUNCIL") ?? "true").toLowerCase();
   const autoCouncil = !["false", "0", "no", "off"].includes(autoRaw);
   const cloudOverrideRaw = envClean("CLOUD_CONCURRENCY");
@@ -24860,6 +24940,7 @@ function loadConfig() {
     // managed). 32K is a generous-but-bounded default (raise via MAX_TOKENS for
     // even longer answers — slower/costlier, multiplied across members × rounds).
     maxTokens: Math.max(1, envInt("MAX_TOKENS", 32768)),
+    reasoningEffort,
     cloudConcurrency: cloudOverride ?? subs.defaults.cloudConcurrency,
     localConcurrency: localOverride ?? subs.defaults.localConcurrency,
     poolLimits,
@@ -25364,18 +25445,35 @@ var OllamaProvider = class {
         temperature: opts.temperature ?? 0.7,
         num_predict: numPredict
       },
+      // Reasoning depth. Ollama's scale is low/medium/high/max plus the
+      // booleans (verified against 0.32.5's own error message), so `none` maps
+      // to `think: false` — an explicit "don't think", not an omitted field —
+      // and minimal/xhigh clamp to their nearest neighbours.
+      ...opts.effort ? { think: opts.effort === "none" ? false : clampEffort(opts.effort, OLLAMA_EFFORTS) } : {},
       // A schema (when supplied) constrains decoding; plain 'json' is the
       // weaker fallback. NOTE: Ollama :cloud models ignore `format` entirely
       // (measured), so the caller's parse+shape guard remains the real backstop.
       ...opts.jsonSchema ? { format: opts.jsonSchema } : opts.jsonMode ? { format: "json" } : {}
     };
-    const res = await fetch(`${this.config.baseUrl}/api/chat`, {
+    const post = (payload) => fetch(`${this.config.baseUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify(payload),
       // Bound a wedged host/model so one member can't stall the whole ask.
       signal: AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS)
     });
+    let res = await post(body);
+    if (!res.ok && "think" in body) {
+      const text = await res.text();
+      if (res.status >= 400 && res.status < 500 && /think/i.test(text)) {
+        const { think: _dropped, ...withoutThink } = body;
+        res = await post(withoutThink);
+      } else {
+        const err = new Error(`Ollama complete failed (${res.status}): ${text}`);
+        err.status = res.status;
+        throw err;
+      }
+    }
     if (!res.ok) {
       const text = await res.text();
       const err = new Error(`Ollama complete failed (${res.status}): ${text}`);
@@ -32185,21 +32283,40 @@ var OpenAICompatibleProvider = class {
   async complete(model, messages, opts = {}) {
     const maxTokens = clampMaxTokens(opts.maxTokens ?? 16e3, await this.maxModelLen(model), messages);
     const wireMessages = toOpenAIMessages(messages);
-    const res = await this.client.chat.completions.create(
-      {
-        model,
-        messages: wireMessages,
-        temperature: opts.temperature ?? 0.7,
-        max_tokens: maxTokens,
-        // Prefer schema-constrained decoding (OpenAI + vLLM/SGLang guided
-        // decoding) over plain json_object, which only guarantees parseable JSON.
-        ...opts.jsonSchema ? { response_format: {
-          type: "json_schema",
-          json_schema: { name: "council_judge", schema: opts.jsonSchema, strict: false }
-        } } : opts.jsonMode ? { response_format: { type: "json_object" } } : {}
-      },
-      { timeout: opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS }
-    );
+    const body = {
+      model,
+      messages: wireMessages,
+      temperature: opts.temperature ?? 0.7,
+      max_tokens: maxTokens,
+      // Prefer schema-constrained decoding (OpenAI + vLLM/SGLang guided
+      // decoding) over plain json_object, which only guarantees parseable JSON.
+      ...opts.jsonSchema ? { response_format: {
+        type: "json_schema",
+        json_schema: { name: "council_judge", schema: opts.jsonSchema, strict: false }
+      } } : opts.jsonMode ? { response_format: { type: "json_object" } } : {}
+    };
+    const effort = opts.effort ? clampEffort(opts.effort, OPENAI_EFFORTS) : void 0;
+    const reqOpts = { timeout: opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS };
+    let res;
+    try {
+      res = await this.client.chat.completions.create(
+        // The pinned SDK's own `reasoning_effort` union predates the newer
+        // levels (it types only low/medium/high), so the wider canonical value
+        // is cast on. The WIRE is what matters here — this provider also fronts
+        // vLLM/TRT-LLM/SGLang, whose accepted values aren't OpenAI's anyway —
+        // and a server that rejects the value is already handled by the retry
+        // below, so an out-of-date client-side type must not narrow what the
+        // council can ask for.
+        effort ? { ...body, reasoning_effort: effort } : body,
+        reqOpts
+      );
+    } catch (err) {
+      const status = err.status;
+      const msg = String(err?.message ?? err);
+      const rejectedEffort = effort !== void 0 && status === 400 && /reasoning[_ ]?effort|unsupported parameter|unknown parameter|unrecognized/i.test(msg);
+      if (!rejectedEffort) throw err;
+      res = await this.client.chat.completions.create(body, reqOpts);
+    }
     return stripThinkBlocks(res.choices[0]?.message?.content ?? "");
   }
 };
@@ -35262,6 +35379,7 @@ var AnthropicProvider = class {
 
 Respond with valid JSON only.`.trim() : systemParts || void 0;
     const requested = opts.maxTokens ?? 16e3;
+    const thinkingBudget = opts.effort ? effortToThinkingBudget(opts.effort, requested) : void 0;
     const body = {
       model,
       max_tokens: requested,
@@ -35269,7 +35387,14 @@ Respond with valid JSON only.`.trim() : systemParts || void 0;
       // honour it). Dropping it silently ran judge calls at the API default
       // instead of the deliberate low temperature the caller asked for — which
       // matters for judge determinism.
-      ...opts.temperature !== void 0 ? { temperature: opts.temperature } : {},
+      //
+      // EXCEPT with thinking enabled: the API requires temperature to be 1
+      // (i.e. unset) and hard-rejects any other value alongside a thinking
+      // block. Effort was explicitly asked for and determinism is the weaker
+      // of the two preferences, so temperature yields rather than failing the
+      // call outright.
+      ...opts.temperature !== void 0 && thinkingBudget === void 0 ? { temperature: opts.temperature } : {},
+      ...thinkingBudget !== void 0 ? { thinking: { type: "enabled", budget_tokens: thinkingBudget } } : {},
       ...systemText ? { system: systemText } : {},
       messages: userMessages
     };
@@ -35280,12 +35405,20 @@ Respond with valid JSON only.`.trim() : systemParts || void 0;
     } catch (err) {
       const cap = maxTokensCapFrom400(err);
       if (cap !== null && cap < requested) {
-        res = await this.client.messages.create({ ...body, max_tokens: cap }, reqOpts);
+        const cappedBudget = opts.effort ? effortToThinkingBudget(opts.effort, cap) : void 0;
+        res = await this.client.messages.create(
+          {
+            ...body,
+            max_tokens: cap,
+            ...cappedBudget !== void 0 ? { thinking: { type: "enabled", budget_tokens: cappedBudget } } : { thinking: void 0 }
+          },
+          reqOpts
+        );
       } else {
         throw err;
       }
     }
-    const block = res.content[0];
+    const block = res.content.find((b2) => b2.type === "text");
     return block?.type === "text" ? block.text : "";
   }
 };
@@ -35476,8 +35609,11 @@ var ClaudeCliProvider = class {
         // no MCP servers (no recursion into this plugin)
         "--no-session-persistence",
         "--system-prompt",
-        systemText
+        systemText,
         // replace the default coding-agent persona
+        // Reasoning depth, when the caller asked for one. The CLI's scale has
+        // no `none`/`minimal`, so those clamp up to `low` (see effort.ts).
+        ...opts.effort ? ["--effort", clampEffort(opts.effort, CLAUDE_CLI_EFFORTS)] : []
       ];
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       let scratchCwd;
@@ -35698,6 +35834,9 @@ var CodexCliProvider = class {
       ];
       if (model && model !== "default") {
         args.push("-m", model);
+      }
+      if (opts.effort) {
+        args.push("-c", `model_reasoning_effort="${clampEffort(opts.effort, CODEX_CLI_EFFORTS)}"`);
       }
       const images = messages.find((m2) => m2.role === "user" && m2.images?.length)?.images ?? [];
       images.forEach((img, i2) => {
@@ -35932,7 +36071,13 @@ var GrokCliProvider = class {
         "bypassPermissions",
         // required in headless mode, see file header
         "--system-prompt-override",
-        systemText
+        systemText,
+        // Reasoning depth. UNLIKE claude/codex, grok does NOT validate this at
+        // arg-parse time (verified: a bogus value is accepted by the CLI and
+        // forwarded to the xAI API), so an unsupported level fails the whole
+        // request and kills the member. GROK_CLI_EFFORTS is therefore narrow
+        // (low/high — what xAI documents) and everything clamps into it.
+        ...opts.effort ? ["--reasoning-effort", clampEffort(opts.effort, GROK_CLI_EFFORTS)] : []
       ];
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS3;
       const { code, stdout, stderr } = await this.run(args, void 0, timeoutMs, runDir);
@@ -36260,6 +36405,10 @@ async function queryMembersVarying(promptFor, members, runtime, opts = {}, image
             maxTokens: runtime.maxTokens,
             timeoutMs: runtime.requestTimeoutMs,
             fullRepoAccess: runtime.fullRepoAccess,
+            // Council-wide reasoning depth. Set here rather than at each call
+            // site so EVERY member round inherits it — the initial fan-out,
+            // every deconfliction round, and the pooled/dialectic re-asks.
+            effort: runtime.reasoningEffort,
             ...opts
           },
           runtime.retries
@@ -36381,7 +36530,7 @@ async function categorize(question, responses, judgeModelId, judgeProvider, cc, 
     rawJson = await pooledComplete(
       { modelId: judgeModelId, provider: judgeProvider },
       [{ role: "user", content: prompt }],
-      { jsonMode: true, jsonSchema: CATEGORIZATION_SCHEMA, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
+      { jsonMode: true, jsonSchema: CATEGORIZATION_SCHEMA, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs, effort: cc.effort },
       cc.retries,
       runtime
     );
@@ -36611,7 +36760,7 @@ async function synthesize(judgeProvider, judgeModelId, prompt, runtime) {
     const text = await pooledComplete(
       { modelId: judgeModelId, provider: judgeProvider },
       [{ role: "user", content: prompt }],
-      { temperature: 0.3, maxTokens: runtime.maxTokens, timeoutMs: runtime.requestTimeoutMs },
+      { temperature: 0.3, maxTokens: runtime.maxTokens, timeoutMs: runtime.requestTimeoutMs, effort: runtime.reasoningEffort },
       runtime.retries,
       runtime
     );
@@ -36636,7 +36785,8 @@ async function deconflict(input) {
   const cc = {
     maxTokens: runtime.maxTokens,
     retries: runtime.retries,
-    timeoutMs: runtime.requestTimeoutMs
+    timeoutMs: runtime.requestTimeoutMs,
+    effort: runtime.reasoningEffort
   };
   const judgeLabel = modelIdLabel(judgeModelId);
   const totalConflicts = initialConflicts.length;
@@ -36914,7 +37064,7 @@ async function poolResponses(question, responses, judgeModelId, judgeProvider, c
     rawJson = await pooledComplete(
       { modelId: judgeModelId, provider: judgeProvider },
       [{ role: "user", content: prompt }],
-      { jsonMode: true, jsonSchema: POOL_SCHEMA, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
+      { jsonMode: true, jsonSchema: POOL_SCHEMA, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs, effort: cc.effort },
       cc.retries,
       runtime
     );
@@ -36980,7 +37130,8 @@ async function runPooled(input) {
   const cc = {
     maxTokens: runtime.maxTokens,
     retries: runtime.retries,
-    timeoutMs: runtime.requestTimeoutMs
+    timeoutMs: runtime.requestTimeoutMs,
+    effort: runtime.reasoningEffort
   };
   const initialPool = await poolResponses(
     judgeQuestion,
@@ -37124,7 +37275,7 @@ async function buildProsCons(question, digest, initial, defenses, judgeModelId, 
       rawJson = await pooledComplete(
         { modelId: judgeModelId, provider: judgeProvider },
         [{ role: "user", content: buildDossierPrompt(question, digest, initial, defenses) }],
-        { jsonMode: true, jsonSchema: DOSSIER_SCHEMA, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs },
+        { jsonMode: true, jsonSchema: DOSSIER_SCHEMA, temperature: 0.2, maxTokens: cc.maxTokens, timeoutMs: cc.timeoutMs, effort: cc.effort },
         cc.retries,
         runtime
       );
@@ -37203,7 +37354,8 @@ async function runDialectic(input) {
   const cc = {
     maxTokens: runtime.maxTokens,
     retries: runtime.retries,
-    timeoutMs: runtime.requestTimeoutMs
+    timeoutMs: runtime.requestTimeoutMs,
+    effort: runtime.reasoningEffort
   };
   const digest = await poolResponses(
     judgeQuestion,
@@ -37373,13 +37525,14 @@ var CouncilOrchestrator = class {
     return this.modelCache.filter((m2) => m2.provider === "ollama" && !isEmbeddingModel(m2)).map((m2) => ({ provider: "ollama", serverId: m2.serverId, model: m2.model }));
   }
   /** Ask the council and return a result in the configured (or overridden) mode */
-  async ask(question, modeOverride, maxRoundsOverride, verboseOverride, images, onProgress, fullRepoAccessRepo, originalQuestion) {
+  async ask(question, modeOverride, maxRoundsOverride, verboseOverride, images, onProgress, fullRepoAccessRepo, originalQuestion, effortOverride) {
     const judgeQuestion = originalQuestion ?? question;
     const mode = modeOverride ?? this.config.responseMode;
     const maxRounds = maxRoundsOverride ?? this.config.maxDeconflictRounds;
     const verbose = verboseOverride ?? this.runtime.verbose;
     const judgeModelIdPref = this.config.judgeModelId;
-    const runtime = fullRepoAccessRepo ? { ...this.runtime, fullRepoAccess: fullRepoAccessRepo, requestTimeoutMs: this.runtime.repoRequestTimeoutMs } : this.runtime;
+    const baseRuntime = fullRepoAccessRepo ? { ...this.runtime, fullRepoAccess: fullRepoAccessRepo, requestTimeoutMs: this.runtime.repoRequestTimeoutMs } : this.runtime;
+    const runtime = effortOverride ? { ...baseRuntime, reasoningEffort: effortOverride } : baseRuntime;
     let memberIds = this.config.members.map((m2) => m2.modelId);
     let autoUsed = false;
     if (memberIds.length === 0 && this.config.autoCouncil) {
@@ -37491,7 +37644,11 @@ var CouncilOrchestrator = class {
     const cc = {
       maxTokens: runtime.maxTokens,
       retries: runtime.retries,
-      timeoutMs: runtime.requestTimeoutMs
+      timeoutMs: runtime.requestTimeoutMs,
+      // Judge calls run at the SAME depth as member calls: one council-wide
+      // setting governs the whole ask, so a "max" question is answered AND
+      // reconciled deeply rather than deeply answered then shallowly judged.
+      effort: runtime.reasoningEffort
     };
     try {
       const judgeProvider = this.registry.resolve(judgeModelId);
@@ -38248,6 +38405,9 @@ var jobs = new JobStore();
     if (typeof t2.repo === "number" && Number.isFinite(t2.repo)) patch.repoRequestTimeoutMs = Math.max(1e3, Math.floor(t2.repo));
     if (Object.keys(patch).length) orchestrator.updateRuntime(patch);
   }
+  if (isReasoningEffort(st2.reasoningEffort)) {
+    orchestrator.updateRuntime({ reasoningEffort: st2.reasoningEffort });
+  }
 }
 var explicitlyConfigured = false;
 try {
@@ -38331,7 +38491,8 @@ async function runCouncil(input, onProgress) {
     // The ORIGINAL question drives every JUDGE prompt — `question` above may
     // embed untrusted context/files/git-diff content that the judge must not
     // receive in a trust-affirming position (see orchestrator.ask).
-    input.question
+    input.question,
+    isReasoningEffort(input.reasoning_effort) ? input.reasoning_effort : void 0
   );
 }
 var labelsToMembers = (labels) => labels.flatMap((s2) => {
@@ -38435,7 +38596,11 @@ var PARAM_ALIASES = {
   judgemodel: "judge_model",
   rounds: "max_deconflict_rounds",
   maxrounds: "max_deconflict_rounds",
-  autocouncil: "auto_council"
+  autocouncil: "auto_council",
+  effort: "reasoning_effort",
+  reasoning: "reasoning_effort",
+  thinking: "reasoning_effort",
+  effortlevel: "reasoning_effort"
 };
 function suggestKey(unknownKey, validKeys) {
   const norm = (s2) => s2.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -38500,6 +38665,9 @@ var ConfigureCouncilInput = external_exports.object({
   max_deconflict_rounds: external_exports.number().int().min(1).max(10).optional().describe("Maximum deconfliction rounds (1\u201310, default 3)."),
   auto_council: external_exports.boolean().optional().describe(
     "When true (default) and no models are set, the council is auto-populated from all available Ollama chat models (local + :cloud)."
+  ),
+  reasoning_effort: external_exports.enum([...EFFORT_ORDER, "auto"]).optional().describe(
+    `Default reasoning depth for every member AND the judge, persisted across reloads. Levels a given backend does not support are clamped to its nearest supported one (e.g. "max" runs as "high" on an Ollama model, "none" as "low" on claude-cli), so one setting works across a mixed council. Pass "auto" to CLEAR it back to each model's own default depth \u2014 note that is distinct from "none", which actively asks for no reasoning. Omit to leave the default unchanged; ask_council's own reasoning_effort overrides this for a single call.`
   )
 }).strict();
 var AskCouncilInput = external_exports.object({
@@ -38522,6 +38690,9 @@ var AskCouncilInput = external_exports.object({
   ),
   images: external_exports.array(external_exports.string()).optional().describe(
     "Optional local image paths (png/jpg/jpeg/gif/webp). Auto-detected vision-capable council members are queried with the image(s); members without vision support are automatically skipped for this call (see visionRouting in the result). Caps: 8 MB/image, 24 MB total, 6 images."
+  ),
+  reasoning_effort: external_exports.enum(EFFORT_ORDER).optional().describe(
+    'How hard every member AND the judge think, for this call only \u2014 overrides the configured default. Higher levels give deeper answers at real cost in time and subscription quota, multiplied across members x rounds. Levels a given backend does not support are clamped to its nearest supported one (e.g. "max" runs as "high" on an Ollama model, "none" as "low" on claude-cli), so one setting works across a mixed council and no member is ever dropped for asking. Omit to use the configured default.'
   )
 }).strict();
 var AskCouncilAsyncInput = AskCouncilInput;
@@ -38572,6 +38743,11 @@ var TOOLS = [
           type: "string",
           enum: ["individual", "categorized", "deconflicted", "pooled", "dialectic"],
           description: "individual: raw responses. categorized: agreement/complementary/conflicting. deconflicted: iterative loop with deconfliction score. pooled: Delphi-style neutral reconsideration (no attribution or ranking shown to members). dialectic: thesis/antithesis/synthesis \u2014 defend, build pros/cons, re-select."
+        },
+        reasoning_effort: {
+          type: "string",
+          enum: [...EFFORT_ORDER, "auto"],
+          description: `Default reasoning depth for every member and the judge, persisted across reloads. A level a backend does not support is clamped to its nearest supported one, so one setting works across a mixed council. Pass "auto" to clear it back to each model's own default depth (distinct from "none", which actively asks for no reasoning). ask_council's own reasoning_effort overrides this for a single call.`
         },
         max_deconflict_rounds: {
           type: "number",
@@ -38634,6 +38810,11 @@ var TOOLS = [
           type: "array",
           items: { type: "string" },
           description: "Optional local image paths (png/jpg/jpeg/gif/webp). Auto-detected vision-capable council members are queried with the image(s); members without vision support are automatically skipped for this call (see visionRouting in the result). Caps: 8 MB/image, 24 MB total, 6 images."
+        },
+        reasoning_effort: {
+          type: "string",
+          enum: [...EFFORT_ORDER],
+          description: 'How hard every member AND the judge think, for this call only \u2014 overrides the configured default. Higher levels give deeper answers at real cost in time and subscription quota, multiplied across members x rounds. A level the backend does not support is clamped to its nearest supported one ("max" runs as "high" on Ollama, "none" as "low" on claude-cli), so one setting works across a mixed council and no member is dropped for asking. Omit to use the configured default.'
         }
       }
     }
@@ -38685,6 +38866,11 @@ var TOOLS = [
           type: "array",
           items: { type: "string" },
           description: "Optional local image paths \u2014 same vision-routing behavior as ask_council."
+        },
+        reasoning_effort: {
+          type: "string",
+          enum: [...EFFORT_ORDER],
+          description: "Reasoning depth for every member and the judge, for this call only \u2014 same per-backend clamping behavior as ask_council."
         }
       }
     }
@@ -38864,6 +39050,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         if (input.auto_council !== void 0) {
           update.autoCouncil = input.auto_council;
         }
+        if (input.reasoning_effort !== void 0) {
+          orchestrator.updateRuntime({
+            reasoningEffort: input.reasoning_effort === "auto" ? void 0 : input.reasoning_effort
+          });
+        }
         orchestrator.updateConfig(update);
         if (input.models !== void 0) {
           explicitlyConfigured = true;
@@ -38885,6 +39076,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         if (input.auto_council !== void 0) {
           persistPatch.autoCouncil = cfg.autoCouncil;
         }
+        if (input.reasoning_effort !== void 0) {
+          persistPatch.reasoningEffort = orchestrator.getRuntime().reasoningEffort;
+        }
         if (Object.keys(persistPatch).length > 0) {
           saveState(persistPatch);
         }
@@ -38900,7 +39094,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     judgeModel: cfg.judgeModelId ? modelIdLabel(cfg.judgeModelId) : "auto (largest member)",
                     responseMode: cfg.responseMode,
                     maxDeconflictRounds: cfg.maxDeconflictRounds,
-                    autoCouncil: cfg.autoCouncil
+                    autoCouncil: cfg.autoCouncil,
+                    reasoningEffort: orchestrator.getRuntime().reasoningEffort ?? "auto (each model's own default)"
                   },
                   // Surfaced so a mistyped or keyless member isn't silently ignored.
                   ...rejected.length ? { rejected: { note: 'Unrecognized model IDs (need "provider:model") \u2014 ignored.', ids: rejected } } : {},
@@ -39013,11 +39208,16 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     autoCouncil: cfg.autoCouncil,
                     judgeModel: cfg.judgeModelId ? modelIdLabel(cfg.judgeModelId) : "auto (largest member)",
                     responseMode: cfg.responseMode,
-                    maxDeconflictRounds: cfg.maxDeconflictRounds
+                    maxDeconflictRounds: cfg.maxDeconflictRounds,
+                    // null (not a level) when unset — each model then runs at
+                    // its own default depth, which is not the same as any one
+                    // level and must not be reported as one.
+                    reasoningEffort: runtime.reasoningEffort ?? null
                   },
                   providers,
                   runtime: {
                     maxTokens: runtime.maxTokens,
+                    reasoningEffort: runtime.reasoningEffort ?? null,
                     cloudConcurrency: runtime.cloudConcurrency,
                     localConcurrency: runtime.localConcurrency,
                     retries: runtime.retries,
@@ -39052,6 +39252,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     GROK_CLI_MODELS: "Comma-separated model names for the Grok CLI member (default: grok-4.5)",
                     GROK_CLI_PATH: "Path to the grok executable (default: grok)",
                     MAX_TOKENS: "Max output tokens per completion (default: 32768), clamped per-model to fit context",
+                    REASONING_EFFORT: `Default reasoning depth for members and judge: ${EFFORT_ORDER.join(" | ")}. Unset = each model's own default. Clamped per-backend; overridable per call via ask_council's reasoning_effort.`,
                     CLOUD_CONCURRENCY: "Optional override: caps ALL cloud pools (overrides per-tier limits). Unset = tiers drive it.",
                     LOCAL_CONCURRENCY: "Max concurrent local requests (default: 1; 0 = unlimited)",
                     COMPLETION_RETRIES: "Attempts per completion before giving up on empty/error (default: 3)",
@@ -39108,6 +39309,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     run_ms: orchestrator.getRuntime().requestTimeoutMs,
                     repo_ms: orchestrator.getRuntime().repoRequestTimeoutMs
                   },
+                  reasoningEffort: orchestrator.getRuntime().reasoningEffort ?? null,
                   reloadPending,
                   quotaWarning: quotaWarning(report, tiers, subs),
                   hints

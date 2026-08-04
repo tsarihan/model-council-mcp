@@ -82,6 +82,7 @@ const toolsOff = toolsValue === 'none';
 const result =
   `mock-grok model=${model ?? '?'} xkey=${xkey} tools=${toolsOff ? 'off' : toolsValue} ` +
   `perm=${permMode ?? 'default'} sys=${sysOverride ? 'override' : 'default'} images=${imageBlocks.length} ` +
+  `effort=${flag('--reasoning-effort') ?? 'unset'} ` +
   `via=${viaFile ? 'file' : 'json'} :: ` +
   `${(textBlock?.text ?? '').trim().slice(0, 80)}`;
 

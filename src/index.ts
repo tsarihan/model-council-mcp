@@ -34,7 +34,8 @@ import { KNOWN_PROVIDERS, loadConfig, modelIdLabel, parseModelId, redactUrlUseri
 import { ProviderRegistry } from './providers/registry.js';
 import { CouncilOrchestrator } from './council/orchestrator.js';
 import { ProgressReporter } from './council/query.js';
-import { CouncilConfig, CouncilMember, ModelId, ResponseMode, SubscriptionTiers } from './types.js';
+import { CouncilConfig, CouncilMember, ModelId, ReasoningEffort, ResponseMode, SubscriptionTiers } from './types.js';
+import { EFFORT_ORDER, isReasoningEffort } from './providers/effort.js';
 import { CouncilState, loadState, saveState } from './state.js';
 import { loadSubscriptions, validTiers, tierAllowsCloud, SubProvider } from './subscriptions.js';
 import { detectEnvironment, autoPopulatedMembers, quotaWarning, migrateCloudToHarness, runCli } from './detect.js';
@@ -109,6 +110,13 @@ const jobs = new JobStore();
     if (typeof t.run === 'number' && Number.isFinite(t.run)) patch.requestTimeoutMs = Math.max(1000, Math.floor(t.run));
     if (typeof t.repo === 'number' && Number.isFinite(t.repo)) patch.repoRequestTimeoutMs = Math.max(1000, Math.floor(t.repo));
     if (Object.keys(patch).length) orchestrator.updateRuntime(patch);
+  }
+  // Same treatment for a persisted configure_council reasoning_effort: it lives
+  // on RuntimeConfig (not CouncilConfig), so persistedConfigOverrides can't
+  // carry it. Re-validated because state.json, while server-owned, could be
+  // hand-edited or left over from a version with a different scale.
+  if (isReasoningEffort(st.reasoningEffort)) {
+    orchestrator.updateRuntime({ reasoningEffort: st.reasoningEffort });
   }
 }
 
@@ -231,6 +239,7 @@ async function runCouncil(
     git_ref?: string;
     git_repo?: string;
     full_repo_access?: boolean;
+    reasoning_effort?: string;
   },
   onProgress?: ProgressReporter,
 ) {
@@ -267,6 +276,7 @@ async function runCouncil(
     // embed untrusted context/files/git-diff content that the judge must not
     // receive in a trust-affirming position (see orchestrator.ask).
     input.question,
+    isReasoningEffort(input.reasoning_effort) ? input.reasoning_effort : undefined,
   );
 }
 
@@ -450,6 +460,8 @@ const PARAM_ALIASES: Record<string, string> = {
   judge: 'judge_model', judgemodel: 'judge_model',
   rounds: 'max_deconflict_rounds', maxrounds: 'max_deconflict_rounds',
   autocouncil: 'auto_council',
+  effort: 'reasoning_effort', reasoning: 'reasoning_effort',
+  thinking: 'reasoning_effort', effortlevel: 'reasoning_effort',
 };
 
 /**
@@ -568,6 +580,18 @@ const ConfigureCouncilInput = z.object({
       'When true (default) and no models are set, the council is auto-populated ' +
         'from all available Ollama chat models (local + :cloud).',
     ),
+  reasoning_effort: z
+    .enum([...EFFORT_ORDER, 'auto'] as const)
+    .optional()
+    .describe(
+      'Default reasoning depth for every member AND the judge, persisted across reloads. ' +
+        'Levels a given backend does not support are clamped to its nearest supported one ' +
+        '(e.g. "max" runs as "high" on an Ollama model, "none" as "low" on claude-cli), so one ' +
+        'setting works across a mixed council. Pass "auto" to CLEAR it back to each model\'s ' +
+        'own default depth — note that is distinct from "none", which actively asks for no ' +
+        'reasoning. Omit to leave the default unchanged; ask_council\'s own reasoning_effort ' +
+        'overrides this for a single call.',
+    ),
 }).strict();
 
 const AskCouncilInput = z.object({
@@ -641,6 +665,17 @@ const AskCouncilInput = z.object({
         'vision-capable council members are queried with the image(s); members ' +
         'without vision support are automatically skipped for this call (see ' +
         'visionRouting in the result). Caps: 8 MB/image, 24 MB total, 6 images.',
+    ),
+  reasoning_effort: z
+    .enum(EFFORT_ORDER)
+    .optional()
+    .describe(
+      'How hard every member AND the judge think, for this call only — overrides the ' +
+        'configured default. Higher levels give deeper answers at real cost in time and ' +
+        'subscription quota, multiplied across members x rounds. Levels a given backend does ' +
+        'not support are clamped to its nearest supported one (e.g. "max" runs as "high" on an ' +
+        'Ollama model, "none" as "low" on claude-cli), so one setting works across a mixed ' +
+        'council and no member is ever dropped for asking. Omit to use the configured default.',
     ),
 }).strict();
 
@@ -722,6 +757,16 @@ const TOOLS = [
             'deconflicted: iterative loop with deconfliction score. ' +
             'pooled: Delphi-style neutral reconsideration (no attribution or ranking shown to members). ' +
             'dialectic: thesis/antithesis/synthesis — defend, build pros/cons, re-select.',
+        },
+        reasoning_effort: {
+          type: 'string',
+          enum: [...EFFORT_ORDER, 'auto'],
+          description:
+            'Default reasoning depth for every member and the judge, persisted across reloads. ' +
+            'A level a backend does not support is clamped to its nearest supported one, so one ' +
+            'setting works across a mixed council. Pass "auto" to clear it back to each model\'s ' +
+            'own default depth (distinct from "none", which actively asks for no reasoning). ' +
+            'ask_council\'s own reasoning_effort overrides this for a single call.',
         },
         max_deconflict_rounds: {
           type: 'number',
@@ -822,6 +867,17 @@ const TOOLS = [
             'vision support are automatically skipped for this call (see visionRouting in ' +
             'the result). Caps: 8 MB/image, 24 MB total, 6 images.',
         },
+        reasoning_effort: {
+          type: 'string',
+          enum: [...EFFORT_ORDER],
+          description:
+            'How hard every member AND the judge think, for this call only — overrides the ' +
+            'configured default. Higher levels give deeper answers at real cost in time and ' +
+            'subscription quota, multiplied across members x rounds. A level the backend does ' +
+            'not support is clamped to its nearest supported one ("max" runs as "high" on ' +
+            'Ollama, "none" as "low" on claude-cli), so one setting works across a mixed ' +
+            'council and no member is dropped for asking. Omit to use the configured default.',
+        },
       },
     },
   },
@@ -877,6 +933,13 @@ const TOOLS = [
           type: 'array',
           items: { type: 'string' },
           description: 'Optional local image paths — same vision-routing behavior as ask_council.',
+        },
+        reasoning_effort: {
+          type: 'string',
+          enum: [...EFFORT_ORDER],
+          description:
+            'Reasoning depth for every member and the judge, for this call only — same ' +
+            'per-backend clamping behavior as ask_council.',
         },
       },
     },
@@ -1157,6 +1220,20 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
           update.autoCouncil = input.auto_council;
         }
 
+        // reasoning_effort lives on RuntimeConfig, not CouncilConfig, so it
+        // goes through updateRuntime rather than the `update` patch above.
+        if (input.reasoning_effort !== undefined) {
+          // "auto" is the explicit clear-back-to-unset sentinel, the same one
+          // judge_model uses. It is NOT a synonym for "none": `none` actively
+          // asks every backend for no reasoning, whereas cleared means we send
+          // no effort at all and each model keeps its own default.
+          orchestrator.updateRuntime({
+            reasoningEffort: input.reasoning_effort === 'auto'
+              ? undefined
+              : (input.reasoning_effort as ReasoningEffort),
+          });
+        }
+
         orchestrator.updateConfig(update);
         // Only a call that actually expresses MEMBERSHIP intent (touches
         // `models`, even to an empty/intentional-clear list) should block
@@ -1194,6 +1271,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         if (input.auto_council !== undefined) {
           persistPatch.autoCouncil = cfg.autoCouncil;
         }
+        if (input.reasoning_effort !== undefined) {
+          persistPatch.reasoningEffort = orchestrator.getRuntime().reasoningEffort;
+        }
         if (Object.keys(persistPatch).length > 0) {
           saveState(persistPatch);
         }
@@ -1215,6 +1295,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     responseMode: cfg.responseMode,
                     maxDeconflictRounds: cfg.maxDeconflictRounds,
                     autoCouncil: cfg.autoCouncil,
+                    reasoningEffort:
+                      orchestrator.getRuntime().reasoningEffort ?? 'auto (each model\'s own default)',
                   },
                   // Surfaced so a mistyped or keyless member isn't silently ignored.
                   ...(rejected.length
@@ -1356,10 +1438,15 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                       : 'auto (largest member)',
                     responseMode: cfg.responseMode,
                     maxDeconflictRounds: cfg.maxDeconflictRounds,
+                    // null (not a level) when unset — each model then runs at
+                    // its own default depth, which is not the same as any one
+                    // level and must not be reported as one.
+                    reasoningEffort: runtime.reasoningEffort ?? null,
                   },
                   providers,
                   runtime: {
                     maxTokens: runtime.maxTokens,
+                    reasoningEffort: runtime.reasoningEffort ?? null,
                     cloudConcurrency: runtime.cloudConcurrency,
                     localConcurrency: runtime.localConcurrency,
                     retries: runtime.retries,
@@ -1394,6 +1481,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     GROK_CLI_MODELS: 'Comma-separated model names for the Grok CLI member (default: grok-4.5)',
                     GROK_CLI_PATH: 'Path to the grok executable (default: grok)',
                     MAX_TOKENS: 'Max output tokens per completion (default: 32768), clamped per-model to fit context',
+                    REASONING_EFFORT: `Default reasoning depth for members and judge: ${EFFORT_ORDER.join(' | ')}. Unset = each model's own default. Clamped per-backend; overridable per call via ask_council's reasoning_effort.`,
                     CLOUD_CONCURRENCY: 'Optional override: caps ALL cloud pools (overrides per-tier limits). Unset = tiers drive it.',
                     LOCAL_CONCURRENCY: 'Max concurrent local requests (default: 1; 0 = unlimited)',
                     COMPLETION_RETRIES: 'Attempts per completion before giving up on empty/error (default: 3)',
@@ -1460,6 +1548,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     run_ms: orchestrator.getRuntime().requestTimeoutMs,
                     repo_ms: orchestrator.getRuntime().repoRequestTimeoutMs,
                   },
+                  reasoningEffort: orchestrator.getRuntime().reasoningEffort ?? null,
                   reloadPending,
                   quotaWarning: quotaWarning(report, tiers, subs),
                   hints,

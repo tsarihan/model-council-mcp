@@ -1,7 +1,7 @@
 {
   "name": "model-council",
   "description": "Ask a council of local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, X.AI Grok) AI models. Get individual, categorized (agreement / complementary / conflicting), or fully deconflicted answers with a resolution score.",
-  "version": "0.2.78",
+  "version": "0.2.79",
   "author": {
     "name": "Tom Sarihan"
   },
@@ -122,6 +122,11 @@
       "default": 32768,
       "min": 256,
       "max": 200000
+    },
+    "reasoning_effort": {
+      "type": "string",
+      "title": "Default reasoning effort",
+      "description": "How hard every council member AND the judge think: none | minimal | low | medium | high | xhigh | max. Leave empty to use each model's own default. Higher levels give deeper answers at real cost in time and subscription quota, multiplied across members x rounds. A level a given backend doesn't support is clamped to its nearest supported one (e.g. 'max' runs as 'high' on an Ollama model, 'none' as 'low' on the Claude CLI), so one setting works across a mixed council. Override per call with ask_council's reasoning_effort."
     },
     "cloud_concurrency": {
       "type": "number",

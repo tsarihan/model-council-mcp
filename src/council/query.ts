@@ -326,6 +326,10 @@ export async function queryMembersVarying(
             maxTokens: runtime.maxTokens,
             timeoutMs: runtime.requestTimeoutMs,
             fullRepoAccess: runtime.fullRepoAccess,
+            // Council-wide reasoning depth. Set here rather than at each call
+            // site so EVERY member round inherits it — the initial fan-out,
+            // every deconfliction round, and the pooled/dialectic re-asks.
+            effort: runtime.reasoningEffort,
             ...opts,
           },
           runtime.retries,

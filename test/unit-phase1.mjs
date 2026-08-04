@@ -14,6 +14,11 @@ import {
   isValid, loadSubscriptions, resolvePoolLimits, tierAllowsCloud, tierConcurrency, validTiers,
 } from '../dist/subscriptions.js';
 import { poolKey } from '../dist/council/query.js';
+import {
+  ANTHROPIC_MIN_THINKING_BUDGET, CLAUDE_CLI_EFFORTS, CODEX_CLI_EFFORTS, EFFORT_ORDER,
+  GROK_CLI_EFFORTS, OLLAMA_EFFORTS, OPENAI_EFFORTS, clampEffort, effortToThinkingBudget,
+  isReasoningEffort,
+} from '../dist/providers/effort.js';
 
 let pass = 0, fail = 0;
 const check = (name, cond, detail = '') => {
@@ -2881,6 +2886,78 @@ console.log('▶ Ollama-harness member: the documented "claude-cli/claude-cli-ol
     JSON.stringify(deduped));
   check('migrateCloudToHarness: dedup preserves the unrelated local model',
     deduped.includes('ollama:llama3'), JSON.stringify(deduped));
+}
+
+console.log('▶ reasoning effort: canonical scale, per-backend clamping, Anthropic thinking budget');
+{
+  // Every clamp result must be a level the backend actually accepts — that is
+  // the whole guarantee: a council-wide setting can never kill a member by
+  // handing its provider a value the provider does not know.
+  for (const [name, table] of Object.entries({
+    claude: CLAUDE_CLI_EFFORTS, codex: CODEX_CLI_EFFORTS,
+    grok: GROK_CLI_EFFORTS, ollama: OLLAMA_EFFORTS, openai: OPENAI_EFFORTS,
+  })) {
+    check(`clampEffort always lands inside the ${name} table`,
+      EFFORT_ORDER.every(e => table.includes(clampEffort(e, table))),
+      EFFORT_ORDER.map(e => `${e}->${clampEffort(e, table)}`).join(' '));
+    check(`clampEffort is identity for every level ${name} supports`,
+      table.every(e => clampEffort(e, table) === e));
+  }
+
+  // Codex takes everything EXCEPT `minimal` — advertised by the parameter's
+  // enum but rejected by the model itself (verified live), so it must clamp
+  // rather than be passed through and kill the member.
+  // `minimal` sits between `none` and `low`, so the downward tie-break sends it
+  // to `none` — the closest thing codex has to "barely think", and verified
+  // live to be accepted where `minimal` itself is not.
+  check('codex passes every level through except minimal, which clamps down to none',
+    EFFORT_ORDER.filter(e => e !== 'minimal').every(e => clampEffort(e, CODEX_CLI_EFFORTS) === e) &&
+    clampEffort('minimal', CODEX_CLI_EFFORTS) === 'none',
+    EFFORT_ORDER.map(e => `${e}->${clampEffort(e, CODEX_CLI_EFFORTS)}`).join(' '));
+
+  // Direction: over the ceiling clamps DOWN to the ceiling, under the floor
+  // clamps UP to the floor. A tie resolves downward (cheaper, not costlier).
+  check('above-ceiling clamps down: xhigh/max -> high on Ollama-minus-max',
+    clampEffort('xhigh', ['low', 'medium', 'high']) === 'high');
+  check('below-floor clamps up: none/minimal -> low on claude-cli',
+    clampEffort('none', CLAUDE_CLI_EFFORTS) === 'low' &&
+    clampEffort('minimal', CLAUDE_CLI_EFFORTS) === 'low');
+  check('Ollama keeps max (it genuinely supports it) but folds xhigh into high',
+    clampEffort('max', OLLAMA_EFFORTS) === 'max' && clampEffort('xhigh', OLLAMA_EFFORTS) === 'high');
+  check('equidistant tie resolves DOWNWARD (medium between low and max -> low)',
+    clampEffort('medium', ['low', 'max']) === 'low',
+    clampEffort('medium', ['low', 'max']));
+  // grok exposes only low/high, so `medium` sits exactly between them and the
+  // downward tie-break applies — deliberately the cheaper side, consistent
+  // with every other backend rather than special-cased.
+  check('grok (low/high only): medium ties downward to low, xhigh/max reach high, none floors at low',
+    clampEffort('medium', GROK_CLI_EFFORTS) === 'low' &&
+    clampEffort('high', GROK_CLI_EFFORTS) === 'high' &&
+    clampEffort('max', GROK_CLI_EFFORTS) === 'high' &&
+    clampEffort('none', GROK_CLI_EFFORTS) === 'low',
+    ['none', 'medium', 'high', 'max'].map(e => `${e}->${clampEffort(e, GROK_CLI_EFFORTS)}`).join(' '));
+
+  check('isReasoningEffort accepts every canonical level and rejects anything else',
+    EFFORT_ORDER.every(isReasoningEffort) &&
+    !isReasoningEffort('HIGH') && !isReasoningEffort('extreme') &&
+    !isReasoningEffort('') && !isReasoningEffort(undefined) && !isReasoningEffort(3));
+
+  // Anthropic has no enum — the scale becomes a thinking budget, which the API
+  // requires to be BOTH >= 1024 and strictly < max_tokens.
+  check('anthropic: none/minimal request no thinking at all',
+    effortToThinkingBudget('none', 32768) === undefined &&
+    effortToThinkingBudget('minimal', 32768) === undefined);
+  check('anthropic: budget rises with effort and always stays under max_tokens',
+    ['low', 'medium', 'high', 'xhigh', 'max']
+      .map(e => effortToThinkingBudget(e, 32768))
+      .every((b, i, all) => b < 32768 && (i === 0 || b > all[i - 1])),
+    JSON.stringify(['low', 'medium', 'high', 'xhigh', 'max'].map(e => effortToThinkingBudget(e, 32768))));
+  check('anthropic: budget never falls below the API minimum of 1024',
+    effortToThinkingBudget('low', 4000) >= ANTHROPIC_MIN_THINKING_BUDGET,
+    String(effortToThinkingBudget('low', 4000)));
+  check('anthropic: a max_tokens too small for a valid budget disables thinking rather than sending an illegal one',
+    effortToThinkingBudget('max', 1024) === undefined &&
+    effortToThinkingBudget('low', 900) === undefined);
 }
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);

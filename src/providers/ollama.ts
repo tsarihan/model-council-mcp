@@ -4,6 +4,7 @@ import {
   DEFAULT_COMPLETION_TIMEOUT_MS,
 } from './base.js';
 import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
+import { OLLAMA_EFFORTS, clampEffort } from './effort.js';
 
 /** What we read out of a single /api/show call — cached together so context
  *  length and vision capability never need two separate round trips. */
@@ -195,19 +196,49 @@ export class OllamaProvider implements Provider {
         temperature: opts.temperature ?? 0.7,
         num_predict: numPredict,
       },
+      // Reasoning depth. Ollama's scale is low/medium/high/max plus the
+      // booleans (verified against 0.32.5's own error message), so `none` maps
+      // to `think: false` — an explicit "don't think", not an omitted field —
+      // and minimal/xhigh clamp to their nearest neighbours.
+      ...(opts.effort
+        ? { think: opts.effort === 'none' ? false : clampEffort(opts.effort, OLLAMA_EFFORTS) }
+        : {}),
       // A schema (when supplied) constrains decoding; plain 'json' is the
       // weaker fallback. NOTE: Ollama :cloud models ignore `format` entirely
       // (measured), so the caller's parse+shape guard remains the real backstop.
       ...(opts.jsonSchema ? { format: opts.jsonSchema } : opts.jsonMode ? { format: 'json' } : {}),
     };
 
-    const res = await fetch(`${this.config.baseUrl}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      // Bound a wedged host/model so one member can't stall the whole ask.
-      signal: AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS),
-    });
+    const post = (payload: object): Promise<Response> =>
+      fetch(`${this.config.baseUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        // Bound a wedged host/model so one member can't stall the whole ask.
+        signal: AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS),
+      });
+
+    let res = await post(body);
+
+    if (!res.ok && 'think' in body) {
+      // Not every Ollama model can think, and one that can't rejects the field
+      // outright ("model does not support thinking"). Dropping a member over an
+      // OPTIONAL quality knob is the wrong trade — a council-wide effort
+      // setting must not silently shrink the council to its reasoning models —
+      // so retry once without it and let the model answer at its own depth.
+      // Deliberately narrow: only a 4xx whose body actually names thinking
+      // retries, so a genuine 500/timeout/quota refusal still surfaces
+      // unchanged (and is not doubled up into two failing round trips).
+      const text = await res.text();
+      if (res.status >= 400 && res.status < 500 && /think/i.test(text)) {
+        const { think: _dropped, ...withoutThink } = body as typeof body & { think?: unknown };
+        res = await post(withoutThink);
+      } else {
+        const err = new Error(`Ollama complete failed (${res.status}): ${text}`) as Error & { status?: number };
+        err.status = res.status;
+        throw err;
+      }
+    }
 
     if (!res.ok) {
       const text = await res.text();

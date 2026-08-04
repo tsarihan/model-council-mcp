@@ -17,6 +17,7 @@
         "TRTLLM_SERVERS": "${user_config.trtllm_servers}",
         "SGLANG_SERVERS": "${user_config.sglang_servers}",
         "MAX_TOKENS": "${user_config.max_tokens}",
+        "REASONING_EFFORT": "${user_config.reasoning_effort}",
         "CLOUD_CONCURRENCY": "${user_config.cloud_concurrency}",
         "LOCAL_CONCURRENCY": "${user_config.local_concurrency}",
         "COMPLETION_RETRIES": "${user_config.completion_retries}",

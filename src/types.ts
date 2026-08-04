@@ -19,6 +19,13 @@ export type ResponseMode =
   | 'pooled'
   | 'dialectic';
 
+// The canonical reasoning-effort scale and its per-provider mapping live in
+// providers/effort.ts (next to the verified backend tables they describe);
+// re-exported here so `types.ts` stays the single import site for the shared
+// vocabularies, alongside ResponseMode/ProviderType.
+import type { ReasoningEffort } from './providers/effort.js';
+export type { ReasoningEffort };
+
 /** A reference to a specific model on a specific server */
 export interface ModelId {
   provider: ProviderType;
@@ -88,6 +95,15 @@ export interface SubscriptionTiers {
 export interface RuntimeConfig {
   /** Max output tokens requested per completion (default 32768), clamped per-model to fit context. */
   maxTokens: number;
+  /**
+   * How much reasoning to ask every member AND the judge for, on the canonical
+   * `none`…`max` scale (providers/effort.ts). Undefined (the default) sends
+   * nothing, leaving each model at its own default depth. Set by
+   * REASONING_EFFORT, by configure_council (persisted), or per call by
+   * ask_council — the per-call value is applied to a shallow clone of this
+   * config, never to the shared server-wide one.
+   */
+  reasoningEffort?: ReasoningEffort;
   /** Max concurrent cloud requests — fallback default when a pool has no explicit limit. */
   cloudConcurrency: number;
   /** Max concurrent local requests. Default 1 (sequential) to avoid contention; <=0 = unlimited. */

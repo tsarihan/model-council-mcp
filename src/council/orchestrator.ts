@@ -27,8 +27,8 @@ import { runDialectic } from './dialectic.js';
 import { runPooled } from './pool.js';
 import { checkVisionPooled, Member, ProgressReporter, queryMembers, withPhase } from './query.js';
 import { loadState, saveState, VisionCacheEntry, VISION_CACHE_TTL_MS } from '../state.js';
-import { harnessLadder, toolDialectRisk } from '../harness.js';
-import { probeHarness, rememberedHarness, routedId } from '../probe.js';
+import { HarnessKind, harnessLadder, toolDialectRisk } from '../harness.js';
+import { probeHarness, rememberRoundSuccess, rememberedHarness, routedId } from '../probe.js';
 
 // ─── Model classification ──────────────────────────────────────────────────────
 
@@ -314,6 +314,7 @@ export class CouncilOrchestrator {
     // member as its real identity (pool key, label, judge candidacy).
     const routedViaHarness: string[] = [];
     const probeNotes: { label: string; risk: string; definite: boolean }[] = [];
+    const routedFrom = new Map<string, ModelId>();
     if (runtime.webAccess) {
       // Probe anything we have no fresh measurement for, ONCE, before routing.
       // A member we know nothing about gets tried rather than written off —
@@ -324,7 +325,13 @@ export class CouncilOrchestrator {
         if (id.provider === 'claude-cli' || id.provider === 'codex-cli' || id.provider === 'grok-cli') continue;
         if (rememberedHarness(id)) continue;
         try {
-          const cap = await probeHarness(id, this.registry, { wantTools: true });
+          const cap = await probeHarness(id, this.registry, {
+            wantTools: true,
+            // The SAME budget a real round gets. A probe held to a tighter
+            // deadline than the work it imitates can only produce a false
+            // negative on a slow model — one cloud model took 400s live.
+            toolTimeoutMs: runtime.requestTimeoutMs,
+          });
           await onProgress?.(`Detected ${modelIdLabel(id)}: harness ${cap.harness}, tools ${cap.tools}`);
           // A harness that drives chat but cannot execute tool calls is still
           // used — it just must not be reported as having researched.
@@ -348,7 +355,13 @@ export class CouncilOrchestrator {
 
       memberIds = memberIds.map(id => {
         const routed = harnessRoute(id, this.registry);
-        if (routed !== id) routedViaHarness.push(`${modelIdLabel(id)} → ${modelIdLabel(routed)}`);
+        if (routed !== id) {
+          routedViaHarness.push(`${modelIdLabel(id)} → ${modelIdLabel(routed)}`);
+          // Keep the pre-route identity: the capability memory is keyed by it
+          // (that is what rememberedHarness() looks up), so learning from this
+          // round's outcome has to map back from the routed label.
+          routedFrom.set(modelIdLabel(routed), id);
+        }
         return routed;
       });
     }
@@ -586,6 +599,19 @@ export class CouncilOrchestrator {
       await queryMembers(question, queryTargets, runtime, {}, images, onProgress),
       'thesis',
     );
+
+    // A member that just answered has demonstrated exactly what a probe
+    // measures — so record it for free rather than paying for a probe next
+    // time. Under web access a successful answer also proves the tool loop
+    // ran, which is the one thing a slow model can never prove within a probe
+    // budget. Only successes are recorded: a round can fail for reasons
+    // (quota, timeout, a bad prompt) that say nothing about capability.
+    for (const r of responses) {
+      if (r.error || !r.response?.trim()) continue;
+      const original = routedFrom.get(r.label);
+      if (!original) continue;
+      rememberRoundSuccess(original, r.modelId.provider as HarnessKind, !!runtime.webAccess);
+    }
 
     // ── Individual mode — done ─────────────────────────────────────────────
     if (mode === 'individual') {

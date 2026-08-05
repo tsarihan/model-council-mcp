@@ -37639,7 +37639,7 @@ async function probeHarness(id, registry3, opts) {
       const out = await provider.complete(
         routed.model,
         [{ role: "user", content: TOOL_PROBE }],
-        { maxTokens: PROBE_MAX_TOKENS, timeoutMs: TOOL_PROBE_TIMEOUT_MS, webSearch: true }
+        { maxTokens: PROBE_MAX_TOKENS, timeoutMs: opts.toolTimeoutMs ?? TOOL_PROBE_TIMEOUT_MS, webSearch: true }
       );
       const text = (out ?? "").trim();
       if (LEAKED_MARKUP.test(text)) {
@@ -37683,6 +37683,13 @@ async function probeHarness(id, registry3, opts) {
   };
   remember(label, entry);
   return entry;
+}
+function rememberRoundSuccess(originalId, harness, toolsProven) {
+  const label = modelIdLabel(originalId);
+  const prior = readMemory(label);
+  const tools = toolsProven || prior?.tools === "ok" ? "ok" : prior?.tools ?? "untested";
+  if (isFresh(prior, Date.now()) && prior.harness === harness && prior.tools === tools) return;
+  remember(label, { harness, chat: true, tools, checkedAt: Date.now() });
 }
 function rememberedHarness(id) {
   const entry = readMemory(modelIdLabel(id));
@@ -37847,12 +37854,19 @@ var CouncilOrchestrator = class {
     }
     const routedViaHarness = [];
     const probeNotes = [];
+    const routedFrom = /* @__PURE__ */ new Map();
     if (runtime.webAccess) {
       for (const id of memberIds) {
         if (id.provider === "claude-cli" || id.provider === "codex-cli" || id.provider === "grok-cli") continue;
         if (rememberedHarness(id)) continue;
         try {
-          const cap = await probeHarness(id, this.registry, { wantTools: true });
+          const cap = await probeHarness(id, this.registry, {
+            wantTools: true,
+            // The SAME budget a real round gets. A probe held to a tighter
+            // deadline than the work it imitates can only produce a false
+            // negative on a slow model — one cloud model took 400s live.
+            toolTimeoutMs: runtime.requestTimeoutMs
+          });
           await onProgress?.(`Detected ${modelIdLabel(id)}: harness ${cap.harness}, tools ${cap.tools}`);
           if (cap.tools !== "ok" && cap.harness !== "none") {
             const r2 = harnessRoute(id, this.registry);
@@ -37869,7 +37883,10 @@ var CouncilOrchestrator = class {
       }
       memberIds = memberIds.map((id) => {
         const routed = harnessRoute(id, this.registry);
-        if (routed !== id) routedViaHarness.push(`${modelIdLabel(id)} \u2192 ${modelIdLabel(routed)}`);
+        if (routed !== id) {
+          routedViaHarness.push(`${modelIdLabel(id)} \u2192 ${modelIdLabel(routed)}`);
+          routedFrom.set(modelIdLabel(routed), id);
+        }
         return routed;
       });
     }
@@ -37979,6 +37996,12 @@ var CouncilOrchestrator = class {
       await queryMembers(question, queryTargets, runtime, {}, images, onProgress),
       "thesis"
     );
+    for (const r2 of responses) {
+      if (r2.error || !r2.response?.trim()) continue;
+      const original = routedFrom.get(r2.label);
+      if (!original) continue;
+      rememberRoundSuccess(original, r2.modelId.provider, !!runtime.webAccess);
+    }
     if (mode === "individual") {
       return attachTimedOut({
         mode: "individual",

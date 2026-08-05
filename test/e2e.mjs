@@ -2082,6 +2082,14 @@ async function main() {
       (wrState2.harnessCapability ?? {})['ollama:small-a']?.checkedAt === firstCheckedAt,
       `${firstCheckedAt} → ${(wrState2.harnessCapability ?? {})['ollama:small-a']?.checkedAt}`);
 
+    // A member that ANSWERS proves what a probe measures, so the capability is
+    // learned from the real round — which is the only way a model too slow to
+    // finish inside any probe budget can ever earn a cached verdict.
+    check('probe: a member that answered is recorded as tool-capable, learned from the round itself',
+      (JSON.parse(readFileSync(join(wrDir, 'state.json'), 'utf8'))
+        .harnessCapability ?? {})['ollama:small-a']?.tools === 'ok',
+      JSON.stringify(JSON.parse(readFileSync(join(wrDir, 'state.json'), 'utf8')).harnessCapability));
+
     // The persisted default must also apply, and a per-call false must win.
     await wrClient.callTool({ name: 'configure_council', arguments: { web_access: true } });
     const wrCfg = parseToolResult(await wrClient.callTool({ name: 'get_council_config', arguments: {} }));

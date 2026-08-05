@@ -36,11 +36,13 @@ import {
 /** Kept tight: a probe must never cost what a real member round costs. */
 const PROBE_TIMEOUT_MS = 45_000;
 /**
- * The TOOL probe gets a much bigger budget than the chat probe. It is a real
- * agentic round trip — the model decides to call a tool, the CLI executes a
- * live web search, the model then reads results and answers — and 45s was
- * measured to be too short for that on a local model, which recorded a
- * TIMEOUT as a permanent "tools: unsupported". Slow is not incapable.
+ * Fallback tool-probe budget when the caller passes none. The probe performs
+ * exactly the work a real round performs — the model decides to call a tool,
+ * the CLI runs a live search, the model reads results and answers — so callers
+ * should hand it the SAME allowance a real round gets (`requestTimeoutMs`);
+ * anything less turns "slow" into "incapable". Measured live: 45s branded a
+ * capable model unsupported, and one cloud model took 400s to research a single
+ * question, so even a generous fixed constant is the wrong shape here.
  */
 const TOOL_PROBE_TIMEOUT_MS = 180_000;
 const PROBE_MAX_TOKENS = 256;
@@ -99,6 +101,12 @@ export interface ProbeOptions {
   wantTools: boolean;
   /** Skip the memory and re-measure (used by an explicit "re-detect" path). */
   force?: boolean;
+  /**
+   * Budget for the TOOL probe — pass the same `requestTimeoutMs` a real round
+   * gets. A probe held to a tighter deadline than the work it is imitating can
+   * only ever produce a false negative on a slow model.
+   */
+  toolTimeoutMs?: number;
 }
 
 /**
@@ -157,7 +165,7 @@ export async function probeHarness(
       const out = await provider.complete(
         routed.model,
         [{ role: 'user', content: TOOL_PROBE }],
-        { maxTokens: PROBE_MAX_TOKENS, timeoutMs: TOOL_PROBE_TIMEOUT_MS, webSearch: true },
+        { maxTokens: PROBE_MAX_TOKENS, timeoutMs: opts.toolTimeoutMs ?? TOOL_PROBE_TIMEOUT_MS, webSearch: true },
       );
       const text = (out ?? '').trim();
       if (LEAKED_MARKUP.test(text)) {
@@ -212,6 +220,41 @@ export async function probeHarness(
   };
   remember(label, entry);
   return entry;
+}
+
+/**
+ * Record a capability learned from a REAL council round rather than a probe.
+ *
+ * A member that just researched successfully has demonstrated everything a
+ * probe would have measured — the harness drove it, and a tool call executed —
+ * so paying for a separate probe to learn the same fact is waste. It also
+ * settles the one case a probe cannot: a model slower than any sane probe
+ * budget (one took 400s live) would time out forever and never earn a cached
+ * verdict, yet answers perfectly well when given a real round's allowance.
+ *
+ * Deliberately only ever writes a POSITIVE result. A member that errored in a
+ * round failed for reasons a round cannot distinguish — quota, a timeout, a bad
+ * prompt — and turning that into "this model cannot use tools" is exactly the
+ * false-verdict trap the timeout fix removed.
+ */
+export function rememberRoundSuccess(originalId: ModelId, harness: HarnessKind, toolsProven: boolean): void {
+  const label = modelIdLabel(originalId);
+  const prior = readMemory(label);
+  // Never downgrade a stronger fact: a prior 'ok' stays 'ok' even if this
+  // round only proved chat.
+  const tools: HarnessCapability['tools'] =
+    toolsProven || prior?.tools === 'ok' ? 'ok' : (prior?.tools ?? 'untested');
+
+  // Write ONLY when this round actually establishes something new. Rewriting
+  // an unchanged entry every round would churn state.json on every ask and,
+  // worse, keep resetting `checkedAt` — turning it from "when this fact was
+  // established" into "when we last happened to ask", which is not a
+  // measurement and would let a stale fact live forever by being re-touched.
+  // An entry that expires while still true costs nothing: the next round
+  // re-establishes it here, for free.
+  if (isFresh(prior, Date.now()) && prior.harness === harness && prior.tools === tools) return;
+
+  remember(label, { harness, chat: true, tools, checkedAt: Date.now() });
 }
 
 /**

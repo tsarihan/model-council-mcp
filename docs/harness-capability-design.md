@@ -96,6 +96,23 @@ permanently condemning a model that was merely slow. Timeouts now record
 the fix, the same model returned `tools: ok`. This mirrors the vision cache,
 which already refuses to cache inconclusive probes.
 
+**Probes get a real round's budget, and rounds teach the probe.** Two changes
+after live measurement showed a fixed probe budget cannot work:
+
+- The tool probe now runs with the caller's `requestTimeoutMs` — the same
+  allowance a real round gets. A probe held to a tighter deadline than the work
+  it imitates can only manufacture false negatives.
+- A member that **answers a real round** has already demonstrated everything a
+  probe would measure, so the capability is recorded from that round for free
+  (`rememberRoundSuccess`). This is the only way a model too slow to finish
+  inside any probe budget — one cloud model took **400s** for a single
+  researched answer — can ever earn a cached verdict.
+
+Only *successes* are learned this way. A failed round says nothing reliable
+about capability (quota, timeout, a bad prompt all look alike), and the write
+happens only when the fact actually changes, so `checkedAt` keeps meaning "when
+this was established" rather than "when we last asked".
+
 **Measured beats seeded.** `rememberedHarness()` is consulted before the matrix,
 and a member proven unable to execute tool calls is reported in
 `webRouting.fromMemory` rather than `researched` — reporting it as researched

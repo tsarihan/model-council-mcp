@@ -3047,6 +3047,35 @@ console.log('▶ learned per-member timeouts: slow is not broken');
     }));
     check('one pathological run cannot grant an unbounded lease on the council wall-clock',
       learnedTimeoutFloorMs(id) === LEARNED_TIMEOUT_CEILING_MS);
+
+    // Workload awareness. The two figures are kept apart because the workloads
+    // differ by more than the models do — a model that answers a question in
+    // 8s can legitimately need minutes to review a repo.
+    const cap = (plain, hvy) => writeFileSync(stFile, JSON.stringify({
+      version: 1,
+      harnessCapability: {
+        'ollama:slowpoke': {
+          harness: 'claude-cli', chat: true, tools: 'ok', checkedAt: Date.now(),
+          ...(plain ? { slowestOkMs: plain } : {}),
+          ...(hvy ? { slowestOkHeavyMs: hvy } : {}),
+        },
+      },
+    }));
+
+    cap(8000, 240000);
+    check('a plain call is not given the repo-review budget',
+      learnedTimeoutFloorMs(id, false) === Math.round(8000 * LEARNED_TIMEOUT_HEADROOM));
+    check('a heavy call gets the heavy figure, not the trivial one',
+      learnedTimeoutFloorMs(id, true) === Math.round(240000 * LEARNED_TIMEOUT_HEADROOM));
+
+    // The asymmetry: heavy work is a superset of plain work, so a plain
+    // measurement bounds heavy from below — but never the reverse.
+    cap(400000, 0);
+    check('a slow plain measurement raises the HEAVY floor too (heavy cannot be faster than plain)',
+      learnedTimeoutFloorMs(id, true) === Math.round(400000 * LEARNED_TIMEOUT_HEADROOM));
+    cap(0, 400000);
+    check('a slow HEAVY measurement never inflates the plain floor (it is not evidence about a short question)',
+      learnedTimeoutFloorMs(id, false) === undefined);
   } finally {
     if (prevState === undefined) delete process.env.MODEL_COUNCIL_STATE;
     else process.env.MODEL_COUNCIL_STATE = prevState;

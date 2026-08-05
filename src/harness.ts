@@ -69,6 +69,23 @@ export interface HarnessCapability {
    * recorded, so a timeout can never inflate its own future budget.
    */
   slowestOkMs?: number;
+  /**
+   * Slowest successful round on a HEAVY call — one carrying full_repo_access
+   * or web_access, where the member also has to read a repo tree or several
+   * fetched pages before answering.
+   *
+   * Kept separate from `slowestOkMs` because the two workloads differ by far
+   * more than the models do: a model whose slowest plain answer took 8s can
+   * legitimately need minutes to review a repo, so a single learned figure
+   * either under-serves the heavy call (one guaranteed timeout before it
+   * learns) or over-serves every trivial one.
+   *
+   * The asymmetry is deliberate and load-bearing: heavy work is a superset of
+   * plain work, so a PLAIN measurement is a valid lower bound for heavy and is
+   * used as one — but a heavy measurement is NOT evidence about a short
+   * question and never raises the plain floor.
+   */
+  slowestOkHeavyMs?: number;
 }
 
 /** How long a learned result is trusted — a backend upgrade can change the answer. */

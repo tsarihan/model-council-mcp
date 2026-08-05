@@ -419,7 +419,7 @@ export class CouncilOrchestrator {
     {
       const floors: Record<string, number> = {};
       for (const m of members) {
-        const floor = learnedTimeoutFloorMs(m.modelId);
+        const floor = learnedTimeoutFloorMs(m.modelId, heavy);
         if (floor && floor > runtime.requestTimeoutMs) floors[modelIdLabel(m.modelId)] = floor;
       }
       if (Object.keys(floors).length) runtime.memberTimeoutMs = floors;
@@ -635,7 +635,7 @@ export class CouncilOrchestrator {
       if (r.error || !r.response?.trim()) continue;
       const original = routedFrom.get(r.label);
       if (!original) continue;
-      rememberRoundSuccess(original, r.modelId.provider as HarnessKind, !!runtime.webAccess, r.latencyMs);
+      rememberRoundSuccess(original, r.modelId.provider as HarnessKind, !!runtime.webAccess, r.latencyMs, heavy);
     }
 
     // ── Individual mode — done ─────────────────────────────────────────────

@@ -153,10 +153,22 @@ Two consequences, both implemented:
    `repoRequestTimeoutMs`; `web_access` now does too. Both pull far more
    content than a plain question, so treating web as a "text-only" call was
    giving the short budget to some of the longest work.
-2. **Per-member floors are learned, not configured.** `slowestOkMs` on each
-   capability entry records the slowest *successful* round for that model;
-   `learnedTimeoutFloorMs()` returns it with 1.5× headroom, capped at 30 min.
-   A member that has demonstrably needed 400s is never again cut off at 300.
+2. **Per-member floors are learned, not configured — and per workload.** Each
+   capability entry records `slowestOkMs` (plain calls) and `slowestOkHeavyMs`
+   (`full_repo_access` / `web_access`) separately, because the workloads differ
+   by more than the models do: a member answering in 8s can need minutes for a
+   repo review, so one figure either under-serves the heavy call or over-serves
+   every trivial one. `learnedTimeoutFloorMs(id, heavy)` returns the right one
+   with 1.5× headroom, capped at 30 min.
+
+   The asymmetry is load-bearing: heavy work is a **superset** of plain work,
+   so a plain measurement is a valid lower bound for heavy and is used as one —
+   a model known to need 400s for a question will not review a repo faster. The
+   reverse is not evidence, so a heavy figure never raises the plain floor.
+
+   Old entries written before the split keep working: their single `slowestOkMs`
+   is read as the plain figure, and a heavy call falls back to the configured
+   heavy budget until it measures its own.
 
 Only successes raise a floor. If a timeout could raise it, the budget that
 caused the failure would justify itself, and a genuinely broken member would

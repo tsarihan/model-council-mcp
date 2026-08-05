@@ -242,6 +242,8 @@ export function rememberRoundSuccess(
   harness: HarnessKind,
   toolsProven: boolean,
   latencyMs?: number,
+  /** Was this a heavy round (full_repo_access / web_access)? */
+  heavy = false,
 ): void {
   const label = modelIdLabel(originalId);
   const prior = readMemory(label);
@@ -260,8 +262,12 @@ export function rememberRoundSuccess(
   // Keep the slowest success ever seen — that is the number that must not be
   // undercut next time. It only ever grows from a SUCCESS, so a timeout can
   // never inflate the budget that caused it.
-  const slowestOkMs = Math.max(prior?.slowestOkMs ?? 0, latencyMs ?? 0) || undefined;
-  const slowerThanKnown = (slowestOkMs ?? 0) > (prior?.slowestOkMs ?? 0);
+  const priorPlain = prior?.slowestOkMs ?? 0;
+  const priorHeavy = prior?.slowestOkHeavyMs ?? 0;
+  const slowestOkMs = (heavy ? priorPlain : Math.max(priorPlain, latencyMs ?? 0)) || undefined;
+  const slowestOkHeavyMs = (heavy ? Math.max(priorHeavy, latencyMs ?? 0) : priorHeavy) || undefined;
+  const slowerThanKnown =
+    (slowestOkMs ?? 0) > priorPlain || (slowestOkHeavyMs ?? 0) > priorHeavy;
 
   if (
     !slowerThanKnown &&
@@ -280,6 +286,7 @@ export function rememberRoundSuccess(
       ? prior.checkedAt
       : Date.now(),
     ...(slowestOkMs ? { slowestOkMs } : {}),
+    ...(slowestOkHeavyMs ? { slowestOkHeavyMs } : {}),
   });
 }
 
@@ -294,10 +301,19 @@ export function rememberRoundSuccess(
 export const LEARNED_TIMEOUT_HEADROOM = 1.5;
 export const LEARNED_TIMEOUT_CEILING_MS = 30 * 60 * 1000;
 
-export function learnedTimeoutFloorMs(id: ModelId): number | undefined {
+export function learnedTimeoutFloorMs(id: ModelId, heavy = false): number | undefined {
   const entry = readMemory(modelIdLabel(id));
-  if (!entry?.slowestOkMs) return undefined;
-  return Math.min(Math.round(entry.slowestOkMs * LEARNED_TIMEOUT_HEADROOM), LEARNED_TIMEOUT_CEILING_MS);
+  if (!entry) return undefined;
+  // Heavy work is a superset of plain work, so a plain measurement is a valid
+  // LOWER BOUND for a heavy call and is used as one — a model already known to
+  // need 400s to answer a question will not review a repo in less. The reverse
+  // is not evidence: a long repo review says nothing about a short question,
+  // so a heavy figure never inflates the plain floor.
+  const observed = heavy
+    ? Math.max(entry.slowestOkHeavyMs ?? 0, entry.slowestOkMs ?? 0)
+    : (entry.slowestOkMs ?? 0);
+  if (!observed) return undefined;
+  return Math.min(Math.round(observed * LEARNED_TIMEOUT_HEADROOM), LEARNED_TIMEOUT_CEILING_MS);
 }
 
 /**

@@ -37690,12 +37690,15 @@ async function probeHarness(id, registry3, opts) {
   remember(label, entry);
   return entry;
 }
-function rememberRoundSuccess(originalId, harness, toolsProven, latencyMs) {
+function rememberRoundSuccess(originalId, harness, toolsProven, latencyMs, heavy = false) {
   const label = modelIdLabel(originalId);
   const prior = readMemory(label);
   const tools = toolsProven || prior?.tools === "ok" ? "ok" : prior?.tools ?? "untested";
-  const slowestOkMs = Math.max(prior?.slowestOkMs ?? 0, latencyMs ?? 0) || void 0;
-  const slowerThanKnown = (slowestOkMs ?? 0) > (prior?.slowestOkMs ?? 0);
+  const priorPlain = prior?.slowestOkMs ?? 0;
+  const priorHeavy = prior?.slowestOkHeavyMs ?? 0;
+  const slowestOkMs = (heavy ? priorPlain : Math.max(priorPlain, latencyMs ?? 0)) || void 0;
+  const slowestOkHeavyMs = (heavy ? Math.max(priorHeavy, latencyMs ?? 0) : priorHeavy) || void 0;
+  const slowerThanKnown = (slowestOkMs ?? 0) > priorPlain || (slowestOkHeavyMs ?? 0) > priorHeavy;
   if (!slowerThanKnown && isFresh(prior, Date.now()) && prior.harness === harness && prior.tools === tools) return;
   remember(label, {
     harness,
@@ -37708,15 +37711,18 @@ function rememberRoundSuccess(originalId, harness, toolsProven, latencyMs) {
     // fact whose evidence is unchanged, and make "did we re-probe?" impossible
     // to answer from the record.
     checkedAt: prior && isFresh(prior, Date.now()) && prior.harness === harness && prior.tools === tools ? prior.checkedAt : Date.now(),
-    ...slowestOkMs ? { slowestOkMs } : {}
+    ...slowestOkMs ? { slowestOkMs } : {},
+    ...slowestOkHeavyMs ? { slowestOkHeavyMs } : {}
   });
 }
 var LEARNED_TIMEOUT_HEADROOM = 1.5;
 var LEARNED_TIMEOUT_CEILING_MS = 30 * 60 * 1e3;
-function learnedTimeoutFloorMs(id) {
+function learnedTimeoutFloorMs(id, heavy = false) {
   const entry = readMemory(modelIdLabel(id));
-  if (!entry?.slowestOkMs) return void 0;
-  return Math.min(Math.round(entry.slowestOkMs * LEARNED_TIMEOUT_HEADROOM), LEARNED_TIMEOUT_CEILING_MS);
+  if (!entry) return void 0;
+  const observed = heavy ? Math.max(entry.slowestOkHeavyMs ?? 0, entry.slowestOkMs ?? 0) : entry.slowestOkMs ?? 0;
+  if (!observed) return void 0;
+  return Math.min(Math.round(observed * LEARNED_TIMEOUT_HEADROOM), LEARNED_TIMEOUT_CEILING_MS);
 }
 function rememberedHarness(id) {
   const entry = readMemory(modelIdLabel(id));
@@ -37948,7 +37954,7 @@ var CouncilOrchestrator = class {
     {
       const floors = {};
       for (const m2 of members) {
-        const floor = learnedTimeoutFloorMs(m2.modelId);
+        const floor = learnedTimeoutFloorMs(m2.modelId, heavy);
         if (floor && floor > runtime.requestTimeoutMs) floors[modelIdLabel(m2.modelId)] = floor;
       }
       if (Object.keys(floors).length) runtime.memberTimeoutMs = floors;
@@ -38040,7 +38046,7 @@ var CouncilOrchestrator = class {
       if (r2.error || !r2.response?.trim()) continue;
       const original = routedFrom.get(r2.label);
       if (!original) continue;
-      rememberRoundSuccess(original, r2.modelId.provider, !!runtime.webAccess, r2.latencyMs);
+      rememberRoundSuccess(original, r2.modelId.provider, !!runtime.webAccess, r2.latencyMs, heavy);
     }
     if (mode === "individual") {
       return attachTimedOut({

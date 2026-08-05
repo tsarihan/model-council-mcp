@@ -38893,7 +38893,7 @@ var JobStore = class {
   }
   /** Register a running job and return its record (id is a UUID). Throws if too many jobs are already running. */
   start(question, meta) {
-    const running = [...this.jobs.values()].filter((j2) => j2.status === "running").length;
+    const running = [...this.jobs.values()].filter((j2) => j2.status === "running" && j2.pid === process.pid).length;
     if (running >= MAX_RUNNING_JOBS) {
       throw new Error(
         `Too many background council runs in flight (${running}/${MAX_RUNNING_JOBS}). Wait for one to finish (get_council_result) before starting another.`

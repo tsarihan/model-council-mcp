@@ -2236,6 +2236,29 @@ async function main() {
     const finished = parseToolResult(await jp2Client.callTool({ name: 'get_council_result', arguments: { job_id: 'live-job' } }));
     check('jobs: polling a sibling-owned job reads its freshest disk state (done, with result)',
       finished.status === 'done' && finished.result?.mode === 'individual', JSON.stringify(finished).slice(0, 200));
+    // Admission must be bounded by THIS process's own jobs. Twenty live
+    // foreign running jobs (another session's ultracode streams) must not
+    // deny this server its first async ask.
+    for (let i = 0; i < 20; i++) {
+      writeFileSync(join(`${jpState}.jobs`, `foreign-${String(i).padStart(2, '0')}.json`), JSON.stringify({
+        id: `foreign-${String(i).padStart(2, '0')}`, pid: process.pid, status: 'running',
+        question: 'sibling stream review', startedAt: Date.now() - 1000,
+      }));
+    }
+    const jp2bTransport = new StdioClientTransport({
+      command: 'node', args: [serverEntry],
+      env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: jpState },
+    });
+    const jp2bClient = new Client({ name: 'jobs2b-e2e', version: '1.0.0' }, { capabilities: {} });
+    await jp2bClient.connect(jp2bTransport);
+    await jp2bClient.callTool({ name: 'configure_council', arguments: { models: ['ollama:small-a'], response_mode: 'individual' } });
+    const admitted = parseToolResult(await jp2bClient.callTool({
+      name: 'ask_council_async', arguments: { question: 'my own job', mode: 'individual' },
+    }));
+    check('jobs: 20 live FOREIGN running jobs do not deny this server its own async admission',
+      admitted.status === 'running' && typeof admitted.job_id === 'string', JSON.stringify(admitted));
+    await jp2bClient.close();
+
     await jp2Client.close();
 
     // Retention prefers evicting errors over a done-but-unfetched result —

@@ -159,7 +159,14 @@ export class JobStore {
 
   /** Register a running job and return its record (id is a UUID). Throws if too many jobs are already running. */
   start(question: string, meta: { mode?: string; memberCount?: number }): Job {
-    const running = [...this.jobs.values()].filter(j => j.status === 'running').length;
+    // Count only THIS process's running jobs. A booting server loads sibling
+    // sessions' live jobs into memory (for cross-session polling), and with
+    // the user's ultracode streams keeping ~20 async reviews in flight, a
+    // status-only count would deny admission to a fresh session over work it
+    // doesn't own and can't finish — the cap exists to bound THIS process's
+    // fan-outs, not to ration the machine.
+    const running = [...this.jobs.values()]
+      .filter(j => j.status === 'running' && j.pid === process.pid).length;
     if (running >= MAX_RUNNING_JOBS) {
       throw new Error(
         `Too many background council runs in flight (${running}/${MAX_RUNNING_JOBS}). ` +

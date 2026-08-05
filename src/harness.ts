@@ -53,6 +53,22 @@ export interface HarnessCapability {
   checkedAt: number;
   /** Short human reason, so `council_status` can explain a routing decision. */
   note?: string;
+  /**
+   * Slowest SUCCESSFUL round observed for this model, in ms.
+   *
+   * Throughput across a mixed council spans ~20x — a local model on this
+   * hardware runs around 10 tok/s, Ollama cloud around 200, the hosted APIs
+   * 20-50 — so one fixed per-completion timeout is wrong by construction: it
+   * is either far too generous for the fast members or a guillotine for the
+   * slow ones. And the workloads that matter most (repo review, long
+   * documents, long web pages) are exactly the ones that multiply output
+   * length, so the spread widens precisely when it hurts.
+   *
+   * Rather than ask the user to tune per model, remember what each one has
+   * actually needed and never cut it off below that. Only successes are
+   * recorded, so a timeout can never inflate its own future budget.
+   */
+  slowestOkMs?: number;
 }
 
 /** How long a learned result is trusted — a backend upgrade can change the answer. */

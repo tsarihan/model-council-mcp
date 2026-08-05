@@ -3,7 +3,7 @@
  * concurrency derivation, poolKey bucketing, and persistent state round-trip.
  * Runs against the built dist/ modules (pure functions — no server needed).
  */
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 // grok-cli fails closed by default (unmitigated RCE, see grok-cli.ts); tests
 // exercise the provider deliberately, so acknowledge it here.
 process.env.GROK_CLI_UNSAFE_ACCEPT_RCE = 'true';
@@ -17,6 +17,9 @@ import { poolKey } from '../dist/council/query.js';
 import {
   harnessLadder, seededHarness, toolDialectRisk, isFresh, HARNESS_CACHE_TTL_MS,
 } from '../dist/harness.js';
+import {
+  learnedTimeoutFloorMs, LEARNED_TIMEOUT_HEADROOM, LEARNED_TIMEOUT_CEILING_MS,
+} from '../dist/probe.js';
 import {
   ANTHROPIC_MIN_THINKING_BUDGET, CLAUDE_CLI_EFFORTS, CODEX_CLI_EFFORTS, EFFORT_ORDER,
   GROK_CLI_EFFORTS, OLLAMA_EFFORTS, OPENAI_EFFORTS, clampEffort, effortToThinkingBudget,
@@ -3009,6 +3012,46 @@ console.log('▶ harness matrix: prefer claude-cli, fall back to codex only when
     !isFresh({ harness: 'claude-cli', chat: true, tools: 'ok', checkedAt: now - HARNESS_CACHE_TTL_MS - 1 }, now));
   check('a malformed learned entry is treated as unknown, not as a verdict',
     !isFresh(undefined, now) && !isFresh({ harness: 'claude-cli', chat: true, tools: 'ok', checkedAt: NaN }, now));
+}
+
+console.log('▶ learned per-member timeouts: slow is not broken');
+{
+  // Throughput across a mixed council spans ~20x (local ~10 tok/s vs Ollama
+  // cloud ~200), so one deadline either wastes the fast members' patience or
+  // guillotines the slow ones on exactly the long-output work.
+  const stDir = mkdtempSync(join(tmpdir(), 'mc-unit-floor-'));
+  const stFile = join(stDir, 'state.json');
+  const prevState = process.env.MODEL_COUNCIL_STATE;
+  process.env.MODEL_COUNCIL_STATE = stFile;
+  try {
+    const id = { provider: 'ollama', model: 'slowpoke' };
+    check('no history means no floor — the configured timeout stands',
+      learnedTimeoutFloorMs(id) === undefined);
+
+    writeFileSync(stFile, JSON.stringify({
+      version: 1,
+      harnessCapability: {
+        'ollama:slowpoke': { harness: 'claude-cli', chat: true, tools: 'ok', checkedAt: Date.now(), slowestOkMs: 400000 },
+      },
+    }));
+    // 400s was a real measurement in this session — a model that slow must not
+    // be held to a budget it has already been proven to exceed.
+    check('a member that genuinely needed 400s is given at least that again, with headroom',
+      learnedTimeoutFloorMs(id) === Math.round(400000 * LEARNED_TIMEOUT_HEADROOM));
+
+    writeFileSync(stFile, JSON.stringify({
+      version: 1,
+      harnessCapability: {
+        'ollama:slowpoke': { harness: 'claude-cli', chat: true, tools: 'ok', checkedAt: Date.now(), slowestOkMs: 99 * 60 * 1000 },
+      },
+    }));
+    check('one pathological run cannot grant an unbounded lease on the council wall-clock',
+      learnedTimeoutFloorMs(id) === LEARNED_TIMEOUT_CEILING_MS);
+  } finally {
+    if (prevState === undefined) delete process.env.MODEL_COUNCIL_STATE;
+    else process.env.MODEL_COUNCIL_STATE = prevState;
+    rmSync(stDir, { recursive: true, force: true });
+  }
 }
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);

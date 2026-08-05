@@ -141,6 +141,16 @@ export interface RuntimeConfig {
    * ask_council calls can't leak this into each other.
    */
   fullRepoAccess?: string;
+  /**
+   * Per-member completion timeouts (ms), keyed by model-id label, for THIS
+   * call only — set on the same shallow clone as fullRepoAccess and never on
+   * the shared config. Exists because members differ in throughput by ~20x, so
+   * a single timeout either wastes the fast members' patience or cuts the slow
+   * ones off mid-answer. Values are learned from what each model has actually
+   * needed (see probe.ts's learnedTimeoutFloorMs); a member with no history
+   * falls back to requestTimeoutMs.
+   */
+  memberTimeoutMs?: Record<string, number>;
 }
 
 // ─── Raw responses ────────────────────────────────────────────────────────────

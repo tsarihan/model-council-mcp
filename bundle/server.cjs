@@ -36556,7 +36556,13 @@ async function queryMembersVarying(promptFor, members, runtime, opts = {}, image
           [userMessage],
           {
             maxTokens: runtime.maxTokens,
-            timeoutMs: runtime.requestTimeoutMs,
+            // A member that has historically needed longer gets longer. Slow
+            // is not broken: on this hardware a local model runs ~10 tok/s
+            // against ~200 for Ollama cloud, so holding both to one deadline
+            // guarantees the slow one is cut off on exactly the long-output
+            // work (repo review, long documents, fetched web pages) where it
+            // was most worth waiting for.
+            timeoutMs: runtime.memberTimeoutMs?.[label] ?? runtime.requestTimeoutMs,
             fullRepoAccess: runtime.fullRepoAccess,
             // Council-wide reasoning depth. Set here rather than at each call
             // site so EVERY member round inherits it — the initial fan-out,
@@ -37684,12 +37690,33 @@ async function probeHarness(id, registry3, opts) {
   remember(label, entry);
   return entry;
 }
-function rememberRoundSuccess(originalId, harness, toolsProven) {
+function rememberRoundSuccess(originalId, harness, toolsProven, latencyMs) {
   const label = modelIdLabel(originalId);
   const prior = readMemory(label);
   const tools = toolsProven || prior?.tools === "ok" ? "ok" : prior?.tools ?? "untested";
-  if (isFresh(prior, Date.now()) && prior.harness === harness && prior.tools === tools) return;
-  remember(label, { harness, chat: true, tools, checkedAt: Date.now() });
+  const slowestOkMs = Math.max(prior?.slowestOkMs ?? 0, latencyMs ?? 0) || void 0;
+  const slowerThanKnown = (slowestOkMs ?? 0) > (prior?.slowestOkMs ?? 0);
+  if (!slowerThanKnown && isFresh(prior, Date.now()) && prior.harness === harness && prior.tools === tools) return;
+  remember(label, {
+    harness,
+    chat: true,
+    tools,
+    // Preserve the ESTABLISHMENT time when all we learned is that the model
+    // can be slower than we had seen. `checkedAt` answers "when was this
+    // capability measured", and refining a latency figure does not re-measure
+    // the capability — bumping it there would quietly extend the TTL of a
+    // fact whose evidence is unchanged, and make "did we re-probe?" impossible
+    // to answer from the record.
+    checkedAt: prior && isFresh(prior, Date.now()) && prior.harness === harness && prior.tools === tools ? prior.checkedAt : Date.now(),
+    ...slowestOkMs ? { slowestOkMs } : {}
+  });
+}
+var LEARNED_TIMEOUT_HEADROOM = 1.5;
+var LEARNED_TIMEOUT_CEILING_MS = 30 * 60 * 1e3;
+function learnedTimeoutFloorMs(id) {
+  const entry = readMemory(modelIdLabel(id));
+  if (!entry?.slowestOkMs) return void 0;
+  return Math.min(Math.round(entry.slowestOkMs * LEARNED_TIMEOUT_HEADROOM), LEARNED_TIMEOUT_CEILING_MS);
 }
 function rememberedHarness(id) {
   const entry = readMemory(modelIdLabel(id));
@@ -37838,7 +37865,12 @@ var CouncilOrchestrator = class {
     const maxRounds = maxRoundsOverride ?? this.config.maxDeconflictRounds;
     const verbose = verboseOverride ?? this.runtime.verbose;
     const judgeModelIdPref = this.config.judgeModelId;
-    const baseRuntime = fullRepoAccessRepo ? { ...this.runtime, fullRepoAccess: fullRepoAccessRepo, requestTimeoutMs: this.runtime.repoRequestTimeoutMs } : this.runtime;
+    const heavy = !!fullRepoAccessRepo || !!(webAccessOverride ?? this.runtime.webAccess);
+    const baseRuntime = fullRepoAccessRepo || heavy ? {
+      ...this.runtime,
+      ...fullRepoAccessRepo ? { fullRepoAccess: fullRepoAccessRepo } : {},
+      requestTimeoutMs: Math.max(this.runtime.requestTimeoutMs, this.runtime.repoRequestTimeoutMs)
+    } : this.runtime;
     const runtime = {
       ...baseRuntime,
       ...effortOverride ? { reasoningEffort: effortOverride } : {},
@@ -37912,6 +37944,14 @@ var CouncilOrchestrator = class {
       throw new Error(
         autoUsed || this.config.autoCouncil ? "No Ollama chat models found to form a council. Pull a model (e.g. `ollama pull llama3`) or set council models via configure_council." : "Council has no reachable members. Use configure_council or set COUNCIL_MODELS."
       );
+    }
+    {
+      const floors = {};
+      for (const m2 of members) {
+        const floor = learnedTimeoutFloorMs(m2.modelId);
+        if (floor && floor > runtime.requestTimeoutMs) floors[modelIdLabel(m2.modelId)] = floor;
+      }
+      if (Object.keys(floors).length) runtime.memberTimeoutMs = floors;
     }
     let webRouting;
     if (runtime.webAccess) {
@@ -38000,7 +38040,7 @@ var CouncilOrchestrator = class {
       if (r2.error || !r2.response?.trim()) continue;
       const original = routedFrom.get(r2.label);
       if (!original) continue;
-      rememberRoundSuccess(original, r2.modelId.provider, !!runtime.webAccess);
+      rememberRoundSuccess(original, r2.modelId.provider, !!runtime.webAccess, r2.latencyMs);
     }
     if (mode === "individual") {
       return attachTimedOut({

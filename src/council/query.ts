@@ -341,7 +341,13 @@ export async function queryMembersVarying(
           [userMessage],
           {
             maxTokens: runtime.maxTokens,
-            timeoutMs: runtime.requestTimeoutMs,
+            // A member that has historically needed longer gets longer. Slow
+            // is not broken: on this hardware a local model runs ~10 tok/s
+            // against ~200 for Ollama cloud, so holding both to one deadline
+            // guarantees the slow one is cut off on exactly the long-output
+            // work (repo review, long documents, fetched web pages) where it
+            // was most worth waiting for.
+            timeoutMs: runtime.memberTimeoutMs?.[label] ?? runtime.requestTimeoutMs,
             fullRepoAccess: runtime.fullRepoAccess,
             // Council-wide reasoning depth. Set here rather than at each call
             // site so EVERY member round inherits it — the initial fan-out,

@@ -237,7 +237,12 @@ export async function probeHarness(
  * prompt — and turning that into "this model cannot use tools" is exactly the
  * false-verdict trap the timeout fix removed.
  */
-export function rememberRoundSuccess(originalId: ModelId, harness: HarnessKind, toolsProven: boolean): void {
+export function rememberRoundSuccess(
+  originalId: ModelId,
+  harness: HarnessKind,
+  toolsProven: boolean,
+  latencyMs?: number,
+): void {
   const label = modelIdLabel(originalId);
   const prior = readMemory(label);
   // Never downgrade a stronger fact: a prior 'ok' stays 'ok' even if this
@@ -252,9 +257,47 @@ export function rememberRoundSuccess(originalId: ModelId, harness: HarnessKind, 
   // measurement and would let a stale fact live forever by being re-touched.
   // An entry that expires while still true costs nothing: the next round
   // re-establishes it here, for free.
-  if (isFresh(prior, Date.now()) && prior.harness === harness && prior.tools === tools) return;
+  // Keep the slowest success ever seen — that is the number that must not be
+  // undercut next time. It only ever grows from a SUCCESS, so a timeout can
+  // never inflate the budget that caused it.
+  const slowestOkMs = Math.max(prior?.slowestOkMs ?? 0, latencyMs ?? 0) || undefined;
+  const slowerThanKnown = (slowestOkMs ?? 0) > (prior?.slowestOkMs ?? 0);
 
-  remember(label, { harness, chat: true, tools, checkedAt: Date.now() });
+  if (
+    !slowerThanKnown &&
+    isFresh(prior, Date.now()) && prior.harness === harness && prior.tools === tools
+  ) return;
+
+  remember(label, {
+    harness, chat: true, tools,
+    // Preserve the ESTABLISHMENT time when all we learned is that the model
+    // can be slower than we had seen. `checkedAt` answers "when was this
+    // capability measured", and refining a latency figure does not re-measure
+    // the capability — bumping it there would quietly extend the TTL of a
+    // fact whose evidence is unchanged, and make "did we re-probe?" impossible
+    // to answer from the record.
+    checkedAt: prior && isFresh(prior, Date.now()) && prior.harness === harness && prior.tools === tools
+      ? prior.checkedAt
+      : Date.now(),
+    ...(slowestOkMs ? { slowestOkMs } : {}),
+  });
+}
+
+/**
+ * Per-member timeout floor learned from history: a member that has genuinely
+ * needed N ms before is given at least that again, with headroom. Returns
+ * undefined when nothing has been measured, so the configured timeout stands.
+ *
+ * Capped so one pathological run cannot grant a member an unbounded lease on
+ * the whole council's wall-clock.
+ */
+export const LEARNED_TIMEOUT_HEADROOM = 1.5;
+export const LEARNED_TIMEOUT_CEILING_MS = 30 * 60 * 1000;
+
+export function learnedTimeoutFloorMs(id: ModelId): number | undefined {
+  const entry = readMemory(modelIdLabel(id));
+  if (!entry?.slowestOkMs) return undefined;
+  return Math.min(Math.round(entry.slowestOkMs * LEARNED_TIMEOUT_HEADROOM), LEARNED_TIMEOUT_CEILING_MS);
 }
 
 /**

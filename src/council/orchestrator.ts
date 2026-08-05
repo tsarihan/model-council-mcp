@@ -28,7 +28,7 @@ import { runPooled } from './pool.js';
 import { checkVisionPooled, Member, ProgressReporter, queryMembers, withPhase } from './query.js';
 import { loadState, saveState, VisionCacheEntry, VISION_CACHE_TTL_MS } from '../state.js';
 import { HarnessKind, harnessLadder, toolDialectRisk } from '../harness.js';
-import { probeHarness, rememberRoundSuccess, rememberedHarness, routedId } from '../probe.js';
+import { learnedTimeoutFloorMs, probeHarness, rememberRoundSuccess, rememberedHarness, routedId } from '../probe.js';
 
 // ─── Model classification ──────────────────────────────────────────────────────
 
@@ -288,8 +288,19 @@ export class CouncilOrchestrator {
     // tree) materially outlast a flat text completion.
     // A per-call reasoning_effort rides on the same clone, for the same reason:
     // it must not leak into a concurrent ask_council that didn't ask for it.
-    const baseRuntime: RuntimeConfig = fullRepoAccessRepo
-      ? { ...this.runtime, fullRepoAccess: fullRepoAccessRepo, requestTimeoutMs: this.runtime.repoRequestTimeoutMs }
+    // full_repo_access AND web access both make a member consume far more
+    // content than a plain question does — a repo tree, or several fetched
+    // pages — and output length scales with it. They get the same longer
+    // per-completion budget for the same reason; web access previously kept
+    // the SHORT text budget, which is the wrong end of a 20x throughput
+    // spread for exactly the calls most likely to run long.
+    const heavy = !!fullRepoAccessRepo || !!(webAccessOverride ?? this.runtime.webAccess);
+    const baseRuntime: RuntimeConfig = fullRepoAccessRepo || heavy
+      ? {
+          ...this.runtime,
+          ...(fullRepoAccessRepo ? { fullRepoAccess: fullRepoAccessRepo } : {}),
+          requestTimeoutMs: Math.max(this.runtime.requestTimeoutMs, this.runtime.repoRequestTimeoutMs),
+        }
       : this.runtime;
     const runtime: RuntimeConfig = {
       ...baseRuntime,
@@ -398,6 +409,20 @@ export class CouncilOrchestrator {
           ? 'No Ollama chat models found to form a council. Pull a model (e.g. `ollama pull llama3`) or set council models via configure_council.'
           : 'Council has no reachable members. Use configure_council or set COUNCIL_MODELS.',
       );
+    }
+
+    // ── Per-member timeout floors ─────────────────────────────────────────
+    // Members differ in throughput by roughly 20x on this hardware (a local
+    // model ~10 tok/s, Ollama cloud ~200, hosted APIs 20-50), so one deadline
+    // cannot fit them all. A member that has genuinely needed longer before is
+    // given at least that again — learned, not configured.
+    {
+      const floors: Record<string, number> = {};
+      for (const m of members) {
+        const floor = learnedTimeoutFloorMs(m.modelId);
+        if (floor && floor > runtime.requestTimeoutMs) floors[modelIdLabel(m.modelId)] = floor;
+      }
+      if (Object.keys(floors).length) runtime.memberTimeoutMs = floors;
     }
 
     // ── Web routing report ────────────────────────────────────────────────
@@ -610,7 +635,7 @@ export class CouncilOrchestrator {
       if (r.error || !r.response?.trim()) continue;
       const original = routedFrom.get(r.label);
       if (!original) continue;
-      rememberRoundSuccess(original, r.modelId.provider as HarnessKind, !!runtime.webAccess);
+      rememberRoundSuccess(original, r.modelId.provider as HarnessKind, !!runtime.webAccess, r.latencyMs);
     }
 
     // ── Individual mode — done ─────────────────────────────────────────────

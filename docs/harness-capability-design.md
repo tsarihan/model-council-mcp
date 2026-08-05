@@ -139,3 +139,25 @@ already survives plugin updates — the same reason tiers and `visionCapability`
 persist today. The shipped matrix may change under it, so learned entries win
 for a model the matrix doesn't mention, and the matrix wins when it names a
 model explicitly (it can be corrected by a pull; a stale probe cannot).
+
+## Timeouts across a heterogeneous council
+
+Measured on this hardware: local models ~10 tok/s, Ollama cloud ~200, hosted
+APIs 20–50. That ~20× spread means one fixed per-completion timeout cannot be
+right for everyone — and it widens exactly where it hurts, because repo review,
+long documents and fetched web pages all multiply output length.
+
+Two consequences, both implemented:
+
+1. **Heavy calls get the heavy budget.** `full_repo_access` already swapped in
+   `repoRequestTimeoutMs`; `web_access` now does too. Both pull far more
+   content than a plain question, so treating web as a "text-only" call was
+   giving the short budget to some of the longest work.
+2. **Per-member floors are learned, not configured.** `slowestOkMs` on each
+   capability entry records the slowest *successful* round for that model;
+   `learnedTimeoutFloorMs()` returns it with 1.5× headroom, capped at 30 min.
+   A member that has demonstrably needed 400s is never again cut off at 300.
+
+Only successes raise a floor. If a timeout could raise it, the budget that
+caused the failure would justify itself, and a genuinely broken member would
+ratchet its own lease upward forever.

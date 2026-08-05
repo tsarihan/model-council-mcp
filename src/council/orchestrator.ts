@@ -27,6 +27,7 @@ import { runDialectic } from './dialectic.js';
 import { runPooled } from './pool.js';
 import { checkVisionPooled, Member, ProgressReporter, queryMembers, withPhase } from './query.js';
 import { loadState, saveState, VisionCacheEntry, VISION_CACHE_TTL_MS } from '../state.js';
+import { harnessLadder, toolDialectRisk } from '../harness.js';
 
 // ─── Model classification ──────────────────────────────────────────────────────
 
@@ -142,22 +143,36 @@ function canResearch(type: ProviderType): boolean {
 }
 
 /**
- * The claude-CLI harness drives ANY Anthropic-Messages-compatible endpoint
- * (see claude-cli.ts's header), and Ollama serves one natively — so a bare
- * `ollama:*` member, which alone could never search, becomes able to research
- * simply by being addressed through the harness server instead. This is the
- * same re-pointing `migrateCloudToHarness` already does for curated cloud
- * models, applied per-call rather than persisted: nothing about the configured
- * council changes, only how it is reached for THIS ask.
+ * Re-point a member through whichever harness can actually drive its engine, so
+ * a member that could work is never left unable to just because its own
+ * provider has no tool loop.
  *
- * Returns the id unchanged when the harness isn't registered, so a failed
- * re-point degrades to "answers from memory, and says so" rather than dropping
- * the member.
+ * Driven by the shipped matrix (harness.ts): claude-cli first for anything that
+ * speaks — or might speak — the Anthropic Messages API, codex-cli's custom
+ * provider for engines that provably cannot. The whole ladder is tried in
+ * order, so an unregistered first choice falls through instead of giving up,
+ * and an id is returned unchanged only when NOTHING can drive it — which
+ * degrades to "answers from memory, and says so", never to a dropped member.
+ *
+ * Per-call, not persisted: nothing about the configured council changes, only
+ * how it is reached for THIS ask.
  */
 function harnessRoute(id: ModelId, registry: ProviderRegistry): ModelId {
-  if (id.provider !== 'ollama') return id;
-  const routed: ModelId = { provider: 'claude-cli', serverId: 'claude-cli-ollama', model: id.model };
-  return registry.resolve(routed) ? routed : id;
+  // Already on a harness-capable provider — nothing to re-point.
+  if (id.provider === 'claude-cli' || id.provider === 'codex-cli' || id.provider === 'grok-cli') return id;
+
+  for (const kind of harnessLadder(id.provider)) {
+    if (kind === 'none') break;
+    // The harness server registered for this engine: `claude-cli-ollama` for
+    // Ollama, `claude-cli-<serverId>` / `codex-cli-<serverId>` for a named
+    // self-hosted endpoint (see config.ts).
+    const serverId = id.provider === 'ollama' && kind === 'claude-cli'
+      ? 'claude-cli-ollama'
+      : `${kind}-${id.serverId ?? id.provider}`;
+    const routed: ModelId = { provider: kind, serverId, model: id.model };
+    if (registry.resolve(routed)) return routed;
+  }
+  return id;
 }
 
 // ─── Main orchestrator ────────────────────────────────────────────────────────
@@ -347,7 +362,19 @@ export class CouncilOrchestrator {
       };
       for (const m of members) {
         const label = modelIdLabel(m.modelId);
-        if (canResearch(m.provider.config.type)) webRouting.researched.push(label);
+        if (canResearch(m.provider.config.type)) {
+          webRouting.researched.push(label);
+          // A model can be granted the tool and still be unable to use it —
+          // its tool-call dialect may not be one the harness can execute.
+          // Surface the known risk rather than letting "researched" imply a
+          // search definitely ran (claude-cli.ts refuses the leaked-markup
+          // reply, so the member errors visibly, but the warning is cheaper).
+          const risk = toolDialectRisk(m.modelId.model);
+          if (risk) {
+            webRouting.toolDialectWarnings = webRouting.toolDialectWarnings ?? [];
+            webRouting.toolDialectWarnings.push({ label, risk });
+          }
+        }
         else {
           webRouting.fromMemory.push({
             label,

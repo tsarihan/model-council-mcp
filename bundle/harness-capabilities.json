@@ -1,0 +1,60 @@
+{
+  "version": 2,
+  "note": "Which harness each inference engine can be driven through. Editable and pullable reference data, exactly like subscriptions.json. Seeded so we don't re-probe what is already known; anything absent or null is PROBED, never refused.",
+  "rule": "Always prefer the claude-cli harness. Use codex-cli only because an engine cannot speak the Anthropic Messages API — never as a preference.",
+  "codexRequiresResponsesApi": "VERIFIED LIVE against codex 0.144.6: `wire_api = \"chat\"` is REJECTED at config load ('no longer supported', see openai/codex#7782). Codex now speaks ONLY the OpenAI RESPONSES API, so the codex harness can reach an engine only if it serves /v1/responses — serving /v1/chat/completions is NOT sufficient. This narrows the fallback considerably and is why several engines below have no harness at all until probed.",
+  "providers": {
+    "ollama": {
+      "anthropicMessages": true,
+      "openaiResponses": false,
+      "harness": "claude-cli",
+      "evidence": "Anthropic: verified live here — POST /v1/messages returns authentically Anthropic-shaped JSON with real thinking blocks. Responses: verified live — POST /v1/responses does not answer (connection refused by the route), while /v1/chat/completions returns 200. Ollama needs no codex fallback anyway."
+    },
+    "vllm": {
+      "anthropicMessages": true,
+      "openaiResponses": true,
+      "harness": "claude-cli",
+      "evidence": "Anthropic: vllm/entrypoints/anthropic/ registered unconditionally; Claude Code integration documented (https://docs.vllm.ai/en/latest/serving/integrations/claude_code/). Responses: /v1/responses documented in the OpenAI-compatible server. Both harnesses work; claude-cli is preferred per the rule."
+    },
+    "sglang": {
+      "anthropicMessages": false,
+      "openaiResponses": null,
+      "harness": "codex-cli",
+      "evidence": "Anthropic /v1/messages is an open feature request, not shipped (https://github.com/sgl-project/sglang/issues/9594). Responses API support is UNCONFIRMED — null, so the codex harness is probed rather than assumed. If neither answers, members still respond via a flattened completion."
+    },
+    "trtllm": {
+      "anthropicMessages": null,
+      "openaiResponses": null,
+      "harness": "codex-cli",
+      "evidence": "Neither endpoint confirmed in TRT-LLM's serving docs. Both null = probe both, in preference order."
+    },
+    "openai": {
+      "anthropicMessages": false,
+      "openaiResponses": true,
+      "harness": "codex-cli",
+      "needsApiKeyEnv": "OPENAI_API_KEY",
+      "evidence": "The Responses API is OpenAI's own; codex targets it natively."
+    },
+    "xai": {
+      "anthropicMessages": false,
+      "openaiResponses": null,
+      "harness": "codex-cli",
+      "needsApiKeyEnv": "XAI_API_KEY",
+      "evidence": "xAI is chat-completions-first; Responses support unconfirmed, so probe."
+    },
+    "anthropic": {
+      "anthropicMessages": true,
+      "openaiResponses": false,
+      "harness": "claude-cli",
+      "needsApiKeyEnv": "ANTHROPIC_API_KEY"
+    }
+  },
+  "modelNotes": {
+    "note": "Chat working does NOT mean tool-calling works — the harness only executes calls it can parse, and models differ in tool-call dialect. These are known-quirk hints; the real answer is always the probe recorded in state.json.",
+    "toolDialectRisk": [
+      { "match": "^kimi", "risk": "emits native <|open|>tools markup as plain text instead of an executable tool call (observed live at high reasoning effort)" },
+      { "match": "^qwen", "risk": "JSON-style tool calls that may not map onto the harness's expected tool_use blocks" },
+      { "match": "^(deepseek|glm)", "risk": "tool-call dialect varies by build; probe before trusting web access" }
+    ]
+  }
+}

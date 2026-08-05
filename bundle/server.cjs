@@ -24685,813 +24685,69 @@ function effortToThinkingBudget(effort, maxTokens) {
   return budget;
 }
 
-// src/config.ts
-var DEFAULT_PORTS = {
-  vllm: 8e3,
-  trtllm: 8e3,
-  sglang: 3e4
-};
-function parseOpenAICompatibleServers(raw, type) {
-  if (!raw?.trim()) return [];
-  const defaultPort = DEFAULT_PORTS[type] ?? 8e3;
-  return raw.split(",").map((entry) => entry.trim()).filter(Boolean).map((entry) => {
-    const firstColon = entry.indexOf(":");
-    if (firstColon === -1) {
-      return buildServer(type, entry, `http://localhost:${defaultPort}`);
-    }
-    const name = entry.substring(0, firstColon);
-    const rest = entry.substring(firstColon + 1);
-    if (rest.startsWith("http://") || rest.startsWith("https://")) {
-      return buildServer(type, name, rest);
-    }
-    const parts = rest.split(":");
-    const host = parts[0];
-    let port = defaultPort;
-    if (parts[1] !== void 0) {
-      const n2 = strictParseInt(parts[1]);
-      port = n2 !== void 0 && n2 > 0 && n2 <= 65535 ? n2 : defaultPort;
-    }
-    return buildServer(type, name, `http://${host}:${port}`);
-  });
-}
-function normalizeUrl(u2) {
-  return /^https?:\/\//i.test(u2) ? u2 : `http://${u2}`;
-}
-function redactUrlUserinfo(url) {
+// src/harness.ts
+var import_node_fs3 = require("node:fs");
+var import_node_path3 = require("node:path");
+var import_node_url2 = require("node:url");
+var import_meta2 = {};
+var HARNESS_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1e3;
+var FALLBACK = { version: 1, providers: {} };
+function moduleDir2() {
   try {
-    const u2 = new URL(url);
-    if (u2.username || u2.password) {
-      u2.username = "";
-      u2.password = "";
-      return u2.toString();
-    }
-    return url;
+    if (typeof __dirname === "string") return __dirname;
   } catch {
-    return url.replace(/(\/\/)[^/@]*@/, "$1");
   }
+  return (0, import_node_path3.dirname)((0, import_node_url2.fileURLToPath)(import_meta2.url));
 }
-function buildServer(type, name, baseUrl) {
-  return {
-    id: `${type}-${name}`,
-    type,
-    baseUrl,
-    // Redact any basic-auth creds embedded in the URL from the human-visible
-    // label (baseUrl itself is kept raw for the actual connection).
-    label: `${type.toUpperCase()} \u203A ${name}  (${redactUrlUserinfo(baseUrl)})`
-  };
-}
-var KNOWN_PROVIDERS = /* @__PURE__ */ new Set([
-  "ollama",
-  "openai",
-  "anthropic",
-  "xai",
-  "vllm",
-  "trtllm",
-  "sglang",
-  "claude-cli",
-  "codex-cli",
-  "grok-cli"
-]);
-function parseModelId(str2) {
-  const colonIdx = str2.indexOf(":");
-  if (colonIdx === -1) return null;
-  const providerPart = str2.substring(0, colonIdx);
-  const model = str2.substring(colonIdx + 1);
-  if (!model) return null;
-  const slashIdx = providerPart.indexOf("/");
-  const provider = slashIdx === -1 ? providerPart : providerPart.substring(0, slashIdx);
-  if (!KNOWN_PROVIDERS.has(provider)) return null;
-  const serverId = slashIdx === -1 ? void 0 : providerPart.substring(slashIdx + 1);
-  return { provider, serverId, model };
-}
-function modelIdLabel(m2) {
-  const prefix = m2.serverId ? `${m2.provider}/${m2.serverId}` : m2.provider;
-  return `${prefix}:${m2.model}`;
-}
-function envClean(name) {
-  const v2 = process.env[name];
-  if (v2 === void 0) return void 0;
-  const trimmed = v2.trim();
-  if (trimmed === "") return void 0;
-  if (trimmed.includes("${")) return void 0;
-  return trimmed;
-}
-function strictParseInt(raw) {
-  if (raw === void 0) return void 0;
-  const trimmed = raw.trim();
-  if (!/^-?\d+$/.test(trimmed)) return void 0;
-  const n2 = parseInt(trimmed, 10);
-  return Number.isFinite(n2) ? n2 : void 0;
-}
-function envInt(name, fallback) {
-  return strictParseInt(envClean(name)) ?? fallback;
-}
-function envBool(name, fallback) {
-  const v2 = envClean(name);
-  if (v2 === void 0) return fallback;
-  return ["true", "1", "yes", "on"].includes(v2.toLowerCase());
-}
-function loadConfig() {
-  const servers = [];
-  const subs = loadSubscriptions();
-  const state = loadState();
-  const resolveTier = (provider, envName, def) => {
-    const valid = validTiers(provider, subs);
-    const stateVal = state.tiers?.[provider];
-    if (stateVal !== void 0 && valid.includes(stateVal)) return stateVal;
-    const envVal = envClean(envName);
-    if (envVal !== void 0 && valid.includes(envVal)) return envVal;
-    return valid.includes(def) ? def : valid[0] ?? def;
-  };
-  const tiers = {
-    chatgpt: resolveTier("chatgpt", "CHATGPT_TIER", "plus"),
-    claude: resolveTier("claude", "CLAUDE_TIER", "pro"),
-    grok: resolveTier("grok", "GROK_TIER", "free"),
-    ollama: resolveTier("ollama", "OLLAMA_TIER", "pro")
-  };
-  const ollamaAddr = envClean("OLLAMA_ADDRESS");
-  servers.push({
-    id: "ollama",
-    type: "ollama",
-    baseUrl: ollamaAddr ? normalizeUrl(ollamaAddr) : "http://localhost:11434",
-    label: "Ollama (local)"
-  });
-  const openaiKey = envClean("OPENAI_API_KEY");
-  if (openaiKey) {
-    servers.push({
-      id: "openai",
-      type: "openai",
-      baseUrl: "https://api.openai.com/v1",
-      apiKey: openaiKey,
-      label: "OpenAI"
-    });
-  }
-  const anthropicKey = envClean("ANTHROPIC_API_KEY");
-  if (anthropicKey) {
-    servers.push({
-      id: "anthropic",
-      type: "anthropic",
-      baseUrl: "https://api.anthropic.com",
-      apiKey: anthropicKey,
-      label: "Anthropic"
-    });
-  }
-  const xaiKey = envClean("XAI_API_KEY");
-  if (xaiKey) {
-    servers.push({
-      id: "xai",
-      type: "xai",
-      baseUrl: "https://api.x.ai/v1",
-      apiKey: xaiKey,
-      label: "Grok (xAI)"
-    });
-  }
-  servers.push(
-    ...parseOpenAICompatibleServers(envClean("VLLM_SERVERS"), "vllm"),
-    ...parseOpenAICompatibleServers(envClean("TRTLLM_SERVERS"), "trtllm"),
-    ...parseOpenAICompatibleServers(envClean("SGLANG_SERVERS"), "sglang")
-  );
-  if (tierAllowsCloud("claude", tiers.claude, subs) || envBool("CLAUDE_CLI", false)) {
-    const defModels = (Array.isArray(subs.providers.claude.models) ? subs.providers.claude.models.join(",") : "") || "opus,sonnet";
-    const cliModels = (envClean("CLAUDE_CLI_MODELS") ?? defModels).split(",").map((s2) => s2.trim()).filter(Boolean);
-    servers.push({
-      id: "claude-cli",
-      type: "claude-cli",
-      baseUrl: "(subscription via claude CLI)",
-      label: "Claude (subscription CLI)",
-      command: envClean("CLAUDE_CLI_PATH") ?? "claude",
-      models: cliModels.length ? cliModels : ["opus", "sonnet"]
-    });
-  }
-  const claudeCliOllamaModels = (envClean("CLAUDE_CLI_OLLAMA_MODELS") ?? "").split(",").map((s2) => s2.trim()).filter(Boolean);
-  {
-    const harnessAddr = envClean("CLAUDE_CLI_OLLAMA_ADDRESS") ?? ollamaAddr;
-    servers.push({
-      id: "claude-cli-ollama",
-      type: "claude-cli",
-      baseUrl: "(Ollama via claude CLI harness)",
-      label: "Ollama (via claude CLI harness)",
-      command: envClean("CLAUDE_CLI_PATH") ?? "claude",
-      models: claudeCliOllamaModels,
-      anthropicBaseUrl: normalizeUrl(harnessAddr ?? "http://localhost:11434")
-    });
-  }
-  if (tierAllowsCloud("chatgpt", tiers.chatgpt, subs) || envBool("CODEX_CLI", false)) {
-    const defModels = (Array.isArray(subs.providers.chatgpt.models) ? subs.providers.chatgpt.models.join(",") : "") || "default";
-    const codexModels = (envClean("CODEX_CLI_MODELS") ?? defModels).split(",").map((s2) => s2.trim()).filter(Boolean);
-    servers.push({
-      id: "codex-cli",
-      type: "codex-cli",
-      baseUrl: "(subscription via codex CLI)",
-      label: "Codex (ChatGPT subscription CLI)",
-      command: envClean("CODEX_CLI_PATH") ?? "codex",
-      models: codexModels.length ? codexModels : ["default"]
-    });
-  }
-  if (tierAllowsCloud("grok", tiers.grok, subs) || envBool("GROK_CLI", false)) {
-    const defModels = (Array.isArray(subs.providers.grok.models) ? subs.providers.grok.models.join(",") : "") || "grok-4.5";
-    const grokModels = (envClean("GROK_CLI_MODELS") ?? defModels).split(",").map((s2) => s2.trim()).filter(Boolean);
-    servers.push({
-      id: "grok-cli",
-      type: "grok-cli",
-      baseUrl: "(subscription via grok CLI)",
-      label: "Grok (X.AI subscription CLI)",
-      command: envClean("GROK_CLI_PATH") ?? "grok",
-      models: grokModels.length ? grokModels : ["grok-4.5"]
-    });
-  }
-  const warnings = [];
-  const councilModelsRaw = envClean("COUNCIL_MODELS");
-  const councilModelEntries = (councilModelsRaw ?? "").split(",").map((s2) => s2.trim()).filter(Boolean);
-  const members = councilModelEntries.flatMap((s2) => {
-    const id = parseModelId(s2);
-    return id ? [{ modelId: id }] : [];
-  });
-  if (councilModelEntries.length > 0 && members.length === 0) {
-    warnings.push(
-      `COUNCIL_MODELS was set but none of its entries parsed (expected "provider:model", e.g. "ollama:llama3"): ${councilModelEntries.join(", ")} \u2014 falling back to auto-population.`
-    );
-  }
-  const judgeStr = envClean("JUDGE_MODEL");
-  if (judgeStr && judgeStr !== "auto" && !parseModelId(judgeStr)) {
-    warnings.push(
-      `JUDGE_MODEL="${judgeStr}" is not a valid model id (expected "provider:model" or "provider/serverId:model") \u2014 falling back to automatic judge selection.`
-    );
-  }
-  const judgeModelId = judgeStr && judgeStr !== "auto" ? parseModelId(judgeStr) ?? void 0 : void 0;
-  const modeRaw = envClean("RESPONSE_MODE");
-  const responseMode = modeRaw === "individual" || modeRaw === "categorized" || modeRaw === "deconflicted" || modeRaw === "pooled" || modeRaw === "dialectic" ? modeRaw : "categorized";
-  const maxDeconflictRounds = Math.max(
-    1,
-    Math.min(10, strictParseInt(envClean("MAX_DECONFLICT_ROUNDS")) ?? 3)
-  );
-  const effortRaw = envClean("REASONING_EFFORT");
-  if (effortRaw !== void 0 && !isReasoningEffort(effortRaw)) {
-    warnings.push(
-      `REASONING_EFFORT="${effortRaw}" is not a valid level (expected one of ${EFFORT_ORDER.join(", ")}) \u2014 falling back to each model's own default.`
-    );
-  }
-  const reasoningEffort = isReasoningEffort(effortRaw) ? effortRaw : void 0;
-  const autoRaw = (envClean("AUTO_COUNCIL") ?? "true").toLowerCase();
-  const autoCouncil = !["false", "0", "no", "off"].includes(autoRaw);
-  const cloudOverrideRaw = envClean("CLOUD_CONCURRENCY");
-  const localOverrideRaw = envClean("LOCAL_CONCURRENCY");
-  const cloudOverride = strictParseInt(cloudOverrideRaw);
-  const localOverride = strictParseInt(localOverrideRaw);
-  const poolLimits = resolvePoolLimits(tiers, { cloud: cloudOverride, local: localOverride }, subs);
-  const runtime = {
-    // Output-token budget per completion. Clamped per-model to fit the server's
-    // context window (clampMaxTokens) on Ollama and OpenAI-compatible providers,
-    // so a generous default gives longer answers on large-context models without
-    // risking an over-context request; CLI members ignore it (subscription-
-    // managed). 32K is a generous-but-bounded default (raise via MAX_TOKENS for
-    // even longer answers — slower/costlier, multiplied across members × rounds).
-    maxTokens: Math.max(1, envInt("MAX_TOKENS", 32768)),
-    reasoningEffort,
-    webAccess: envBool("WEB_ACCESS", false),
-    cloudConcurrency: cloudOverride ?? subs.defaults.cloudConcurrency,
-    localConcurrency: localOverride ?? subs.defaults.localConcurrency,
-    poolLimits,
-    retries: Math.max(1, envInt("COMPLETION_RETRIES", 3)),
-    // 5 min default for text-only calls: local Ollama models run sequentially
-    // (local_concurrency=1), so a single completion on a busy box can take a
-    // while, and a too-tight cap cuts member answers mid-generation. Raise via
-    // REQUEST_TIMEOUT_MS (or set_council_timeouts).
-    requestTimeoutMs: Math.max(1e3, envInt("REQUEST_TIMEOUT_MS", 3e5)),
-    // 10 min default when full_repo_access is set: the CLI member Read/Grep/
-    // Globs the repo tree, materially longer than a flat text completion.
-    repoRequestTimeoutMs: Math.max(1e3, envInt("REPO_REQUEST_TIMEOUT_MS", 6e5)),
-    verbose: envBool("DECONFLICT_VERBOSE", false)
-  };
-  return {
-    servers,
-    council: {
-      members,
-      judgeModelId,
-      responseMode,
-      maxDeconflictRounds,
-      autoCouncil
-    },
-    runtime,
-    tiers,
-    warnings
-  };
-}
-
-// src/providers/base.ts
-var PROBE_IMAGE_BASE64 = "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";
-function neutralizeFileMentions(text) {
-  if (!text) return text;
-  return text.replace(
-    /(?<!\w)@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|secrets|secret|token|tokens|credentials|credential|password|passwd|otp|apikey|key|keys)\b|[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@)|@[~./\\]|@[\w.\-:]*[/\\]|@[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|@(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|secrets|secret|token|tokens|credentials|credential|password|passwd|otp|apikey|key|keys)\b|@[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@))/g,
-    "@\u200B"
-  );
-}
-var DEFAULT_COMPLETION_TIMEOUT_MS = 12e4;
-function isTimeoutError(err) {
-  if (!err) return false;
-  const name = err.name ?? "";
-  if (name === "TimeoutError" || name === "AbortError" || name === "APIConnectionTimeoutError") return true;
-  return /\btimed out\b|\btimeout\b/i.test(String(err.message ?? err));
-}
-var QuotaExceededError = class extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "QuotaExceededError";
-  }
-};
-var QUOTA_EXHAUSTED_PATTERNS = [
-  /\busage limit\b/i,
-  // grok "reached your free Grok Build usage limit", claude CLI
-  /\bquota\b/i,
-  // OpenAI insufficient_quota / "exceeded your current quota"
-  /\bcredit balance is too low\b/i,
-  // Anthropic billing
-  /\bout of credits?\b/i,
-  /\bbilling\b.*\b(hard limit|required)\b/i,
-  /\bplan limit\b|\bupgrade to\b.*\b(continue|higher)\b/i
-];
-function isQuotaError(err) {
-  if (!err) return false;
-  if (err instanceof QuotaExceededError) return true;
-  const e2 = err;
-  const msg = String(e2.message ?? err);
-  if (/\bper[- ]?(minute|second|hour|day)\b|\bretry after\b|\btry again\b|\btemporarily\b|\bslow down\b/i.test(msg)) {
-    return false;
-  }
-  return QUOTA_EXHAUSTED_PATTERNS.some((re2) => re2.test(msg));
-}
-var MAX_CLI_OUTPUT_BYTES = 8 * 1024 * 1024;
-var CappedBuffer = class {
-  chunks = [];
-  bytes = 0;
-  cap;
-  constructor(cap = MAX_CLI_OUTPUT_BYTES) {
-    this.cap = cap;
-  }
-  append(chunk) {
-    if (this.bytes >= this.cap) return;
-    const chunkBytes = Buffer.byteLength(chunk, "utf8");
-    if (this.bytes + chunkBytes <= this.cap) {
-      this.chunks.push(chunk);
-      this.bytes += chunkBytes;
-      return;
-    }
-    const remaining = this.cap - this.bytes;
-    const buf = Buffer.from(chunk, "utf8").subarray(0, remaining);
-    this.chunks.push(buf.toString("utf8"));
-    this.bytes = this.cap;
-  }
-  toString() {
-    return this.chunks.join("");
-  }
-};
-var REASON_TAG = "think|thinking";
-function stripThinkBlocks(text) {
-  if (!text) return text;
-  const trimmed = text.trim();
-  const unfenced = trimmed.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
-  for (const candidate of [trimmed, unfenced]) {
-    if (!candidate.startsWith("{") && !candidate.startsWith("[")) continue;
+var cached3 = null;
+function loadHarnessCapabilities() {
+  if (cached3) return cached3;
+  const dir = moduleDir2();
+  for (const p2 of [
+    (0, import_node_path3.join)(dir, "harness-capabilities.json"),
+    // bundled / dist
+    (0, import_node_path3.join)(dir, "..", "config", "harness-capabilities.json"),
+    (0, import_node_path3.join)(dir, "..", "..", "config", "harness-capabilities.json")
+  ]) {
     try {
-      const v2 = JSON.parse(candidate);
-      if (v2 !== null && typeof v2 === "object") return trimmed;
-    } catch {
-    }
-  }
-  let out = text.replace(new RegExp(`<(?:${REASON_TAG})>[\\s\\S]*?</(?:${REASON_TAG})>`, "gi"), "");
-  const m2 = out.match(new RegExp(`</(?:${REASON_TAG})>(?![\\s\\S]*</(?:${REASON_TAG})>)`, "i"));
-  if (m2 && m2.index !== void 0) {
-    const after = out.slice(m2.index + m2[0].length);
-    out = after.trim() ? after : out.slice(0, m2.index);
-  }
-  return out.trim();
-}
-function assertJsonShape(v2, required2) {
-  if (v2 === null || typeof v2 !== "object" || Array.isArray(v2)) {
-    throw new Error("judge JSON has an unexpected top-level shape");
-  }
-  for (const [key, kind3] of Object.entries(required2)) {
-    const val = v2[key];
-    if (kind3 === "array" && !Array.isArray(val)) {
-      throw new Error(
-        `judge JSON: required field "${key}" is ${val === void 0 ? "missing" : "not an array"}`
-      );
-    }
-  }
-}
-function extractJsonCandidates(text) {
-  const out = [];
-  let i2 = 0;
-  while (i2 < text.length) {
-    const start = text.indexOf("{", i2);
-    if (start === -1) break;
-    let depth = 0, inStr = false, esc2 = false, end = -1;
-    for (let j2 = start; j2 < text.length; j2++) {
-      const c2 = text[j2];
-      if (inStr) {
-        if (esc2) esc2 = false;
-        else if (c2 === "\\") esc2 = true;
-        else if (c2 === '"') inStr = false;
-      } else if (c2 === '"') inStr = true;
-      else if (c2 === "{") depth++;
-      else if (c2 === "}") {
-        depth--;
-        if (depth === 0) {
-          end = j2;
-          break;
-        }
+      const parsed = JSON.parse((0, import_node_fs3.readFileSync)(p2, "utf8"));
+      if (parsed && typeof parsed === "object" && parsed.providers) {
+        cached3 = parsed;
+        return cached3;
       }
-    }
-    if (end === -1) break;
-    out.push(text.slice(start, end + 1));
-    i2 = end + 1;
-  }
-  return out;
-}
-function looksLikeSchemaEcho(v2) {
-  if (v2 === null || typeof v2 !== "object") return false;
-  const o2 = v2;
-  if (typeof o2.type === "string" && o2.properties && typeof o2.properties === "object") return true;
-  let placeholders = 0, strings = 0;
-  const walk = (x2, depth) => {
-    if (depth > 6 || x2 === null) return;
-    if (typeof x2 === "string") {
-      strings++;
-      if (/^<.+>$/.test(x2.trim())) placeholders++;
-      return;
-    }
-    if (Array.isArray(x2)) {
-      for (const i2 of x2) walk(i2, depth + 1);
-      return;
-    }
-    if (typeof x2 === "object") {
-      for (const i2 of Object.values(x2)) walk(i2, depth + 1);
-    }
-  };
-  walk(o2, 0);
-  return strings > 0 && placeholders / strings >= 0.5;
-}
-function parseJudgeJson(raw, required2) {
-  const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
-  const candidates = extractJsonCandidates(stripped);
-  const valid = [];
-  let lastErr;
-  for (const c2 of candidates) {
-    try {
-      const obj = JSON.parse(c2);
-      assertJsonShape(obj, required2);
-      valid.push({ obj, echo: looksLikeSchemaEcho(obj) });
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-  if (valid.length) {
-    const real = valid.filter((v2) => !v2.echo);
-    return (real.length ? real : valid)[(real.length ? real : valid).length - 1].obj;
-  }
-  throw lastErr instanceof Error ? lastErr : new Error("judge reply contained no shape-valid JSON object");
-}
-var IMAGE_TOKEN_ESTIMATE = 1500;
-function estimatePromptTokens(messages) {
-  const chars = messages.reduce((n2, m2) => n2 + (m2.content?.length ?? 0), 0);
-  const imageCount = messages.reduce((n2, m2) => n2 + (m2.images?.length ?? 0), 0);
-  return Math.ceil(chars / 3) + 4 * messages.length + imageCount * IMAGE_TOKEN_ESTIMATE;
-}
-var PromptTooLargeError = class extends Error {
-  constructor(message = "prompt exceeds the model's context window") {
-    super(message);
-    this.name = "PromptTooLargeError";
-  }
-};
-function clampMaxTokens(requested, maxModelLen, messages) {
-  if (!maxModelLen || maxModelLen <= 0) return requested;
-  const MIN_OUTPUT = 16;
-  const budget = maxModelLen - estimatePromptTokens(messages) - 64;
-  if (budget < MIN_OUTPUT) {
-    throw new PromptTooLargeError(
-      `prompt (~${estimatePromptTokens(messages)} tokens) leaves no room for a response within the model's ${maxModelLen}-token context window`
-    );
-  }
-  return Math.min(requested, budget);
-}
-
-// src/vision-challenge.ts
-var import_node_zlib = require("node:zlib");
-var FONT_5X7 = {
-  "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
-  "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
-  "2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
-  "3": ["11111", "00010", "00100", "00010", "00001", "10001", "01110"],
-  "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
-  "5": ["11111", "10000", "11110", "00001", "00001", "10001", "01110"],
-  "6": ["00110", "01000", "10000", "11110", "10001", "10001", "01110"],
-  "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
-  "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
-  "9": ["01110", "10001", "10001", "01111", "00001", "00010", "01100"]
-};
-var crcTable = null;
-function getCrcTable() {
-  if (crcTable) return crcTable;
-  const table = new Uint32Array(256);
-  for (let n2 = 0; n2 < 256; n2++) {
-    let c2 = n2;
-    for (let k2 = 0; k2 < 8; k2++) c2 = c2 & 1 ? 3988292384 ^ c2 >>> 1 : c2 >>> 1;
-    table[n2] = c2 >>> 0;
-  }
-  crcTable = table;
-  return table;
-}
-function crc32(buf) {
-  const table = getCrcTable();
-  let crc = 4294967295;
-  for (let i2 = 0; i2 < buf.length; i2++) crc = table[(crc ^ buf[i2]) & 255] ^ crc >>> 8;
-  return (crc ^ 4294967295) >>> 0;
-}
-function pngChunk(type, data) {
-  const typeBuf = Buffer.from(type, "ascii");
-  const len = Buffer.alloc(4);
-  len.writeUInt32BE(data.length, 0);
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])), 0);
-  return Buffer.concat([len, typeBuf, data, crc]);
-}
-var PNG_SIG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-function renderDigitsPNG(digits) {
-  const SCALE = 14;
-  const DIGIT_W = 5 * SCALE;
-  const DIGIT_H = 7 * SCALE;
-  const GAP = SCALE * 2;
-  const PAD = SCALE * 3;
-  const width = digits.length * DIGIT_W + (digits.length - 1) * GAP + PAD * 2;
-  const height = DIGIT_H + PAD * 2;
-  const stride = 1 + width * 3;
-  const raw = Buffer.alloc(height * stride, 255);
-  for (let y2 = 0; y2 < height; y2++) raw[y2 * stride] = 0;
-  const setPixel = (x2, y2) => {
-    if (x2 < 0 || x2 >= width || y2 < 0 || y2 >= height) return;
-    const off = y2 * stride + 1 + x2 * 3;
-    raw[off] = 0;
-    raw[off + 1] = 0;
-    raw[off + 2] = 0;
-  };
-  digits.split("").forEach((ch, di) => {
-    const font = FONT_5X7[ch];
-    if (!font) return;
-    const ox = PAD + di * (DIGIT_W + GAP);
-    for (let fy = 0; fy < 7; fy++) {
-      for (let fx = 0; fx < 5; fx++) {
-        if (font[fy][fx] !== "1") continue;
-        for (let sy = 0; sy < SCALE; sy++) {
-          for (let sx = 0; sx < SCALE; sx++) setPixel(ox + fx * SCALE + sx, PAD + fy * SCALE + sy);
-        }
-      }
-    }
-  });
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width, 0);
-  ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8;
-  ihdr[9] = 2;
-  ihdr[10] = 0;
-  ihdr[11] = 0;
-  ihdr[12] = 0;
-  return Buffer.concat([
-    PNG_SIG,
-    pngChunk("IHDR", ihdr),
-    pngChunk("IDAT", (0, import_node_zlib.deflateSync)(raw)),
-    pngChunk("IEND", Buffer.alloc(0))
-  ]);
-}
-var CHALLENGE_CODES = [
-  "3456",
-  "8974",
-  "1203",
-  "6712",
-  "9045",
-  "2589",
-  "7361",
-  "4820",
-  "5197",
-  "8034"
-];
-var CHALLENGE_IMAGES = CHALLENGE_CODES.map((code) => ({
-  code,
-  base64: renderDigitsPNG(code).toString("base64"),
-  mimeType: "image/png"
-}));
-var CHALLENGE_PROMPT = "Reply with ONLY the 4-digit number shown in the attached image. No other text, no punctuation, no explanation \u2014 just the four digits.";
-function pickChallenges(n2) {
-  const pool = [...CHALLENGE_IMAGES];
-  const out = [];
-  for (let i2 = 0; i2 < n2 && pool.length; i2++) {
-    const idx = Math.floor(Math.random() * pool.length);
-    out.push(pool.splice(idx, 1)[0]);
-  }
-  return out;
-}
-function matchesCode(response, code) {
-  const normalized = response.replace(/[\s,-]/g, "");
-  const runs = normalized.match(/\d+/g) ?? [];
-  return runs.includes(code);
-}
-async function verifyVisionChallenge(ask) {
-  const challenges = pickChallenges(2);
-  let sawCleanWrongAnswer = false;
-  for (const challenge of challenges) {
-    let response;
-    try {
-      response = await ask(challenge);
     } catch {
-      continue;
     }
-    if (!response?.trim()) continue;
-    if (matchesCode(response, challenge.code)) return "pass";
-    sawCleanWrongAnswer = true;
   }
-  return sawCleanWrongAnswer ? "fail" : "inconclusive";
+  cached3 = FALLBACK;
+  return cached3;
 }
-
-// src/providers/ollama.ts
-function toOllamaMessages(messages) {
-  return messages.map((m2) => ({
-    role: m2.role,
-    content: m2.content,
-    ...m2.images?.length ? { images: m2.images.map((img) => img.base64) } : {}
-  }));
+function seededHarness(provider) {
+  const entry = loadHarnessCapabilities().providers[provider];
+  if (!entry) return "claude-cli";
+  if (entry.anthropicMessages !== false) return "claude-cli";
+  return entry.openaiResponses !== false ? "codex-cli" : "none";
 }
-var OllamaProvider = class {
-  serverId;
-  config;
-  /** Per-model /api/show result (context length + vision capability); undefined = not yet fetched. */
-  showCache = /* @__PURE__ */ new Map();
-  /** Per-model OCR-challenge-verified vision result; only set once definitive. */
-  visionVerifiedCache = /* @__PURE__ */ new Map();
-  constructor(config2) {
-    this.config = config2;
-    this.serverId = config2.id;
-  }
-  /**
-   * Fetch and cache /api/show for `model` once, extracting both the advertised
-   * context length (`model_info`'s arch-prefixed `*.context_length`) and the
-   * `capabilities` array (vision support shows up as `"vision"`). A transient
-   * failure (unreachable host) is NOT cached, so a network blip doesn't
-   * permanently mislabel a model — it's simply retried on the next call.
-   */
-  async fetchShow(model) {
-    const cached3 = this.showCache.get(model);
-    if (cached3) return cached3;
-    const res = await fetch(`${this.config.baseUrl}/api/show`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model }),
-      signal: AbortSignal.timeout(5e3)
-    });
-    if (!res.ok) throw new Error(`Ollama /api/show failed (${res.status})`);
-    const data = await res.json();
-    const info = data.model_info ?? {};
-    const key = Object.keys(info).find((k2) => k2.endsWith(".context_length"));
-    const ctxLen = key && typeof info[key] === "number" ? info[key] : null;
-    const vision = Array.isArray(data.capabilities) && data.capabilities.includes("vision");
-    const result = { ctxLen, vision };
-    this.showCache.set(model, result);
-    return result;
-  }
-  /**
-   * The model's advertised context length. Undefined when unknown (e.g. Ollama
-   * cloud models, or the host is unreachable) so callers skip clamping.
-   */
-  async modelContextLen(model) {
+function harnessLadder(provider) {
+  const first = seededHarness(provider);
+  const entry = loadHarnessCapabilities().providers[provider];
+  const ladder = [first];
+  if (first === "claude-cli" && (entry?.openaiResponses ?? true) !== false) ladder.push("codex-cli");
+  return ladder;
+}
+function harnessApiKeyEnv(provider) {
+  return loadHarnessCapabilities().providers[provider]?.needsApiKeyEnv;
+}
+function toolDialectRisk(model) {
+  const risks = loadHarnessCapabilities().modelNotes?.toolDialectRisk ?? [];
+  const bare = model.toLowerCase();
+  for (const r2 of risks) {
     try {
-      return (await this.fetchShow(model)).ctxLen ?? void 0;
+      if (new RegExp(r2.match, "i").test(bare)) return r2.risk;
     } catch {
-      return void 0;
     }
   }
-  /**
-   * Two-stage detection. Stage 1 (`/api/show` capabilities) is a trustworthy
-   * NEGATIVE but not a trustworthy positive — custom/quantized model builds
-   * (MLX conversions, GGUF imports) can drop the vision projector while still
-   * reporting `"vision"` in capabilities (documented upstream: unsloth#2290,
-   * ollama#9967; reproduced live with a local `-mlx` build that claimed vision
-   * but denied ever receiving an image). Stage 2 behaviorally confirms a
-   * stage-1 "yes" with an OCR challenge before it's trusted.
-   */
-  async supportsVision(model) {
-    let metadataVision;
-    try {
-      metadataVision = (await this.fetchShow(model)).vision;
-    } catch {
-      return false;
-    }
-    if (!metadataVision) return false;
-    const cached3 = this.visionVerifiedCache.get(model);
-    if (cached3 !== void 0) return cached3;
-    const outcome = await verifyVisionChallenge(
-      (challenge) => this.complete(
-        model,
-        [{ role: "user", content: CHALLENGE_PROMPT, images: [{ base64: challenge.base64, mimeType: challenge.mimeType }] }],
-        { maxTokens: 2e3, timeoutMs: 6e4 }
-      )
-    );
-    if (outcome === "pass") {
-      this.visionVerifiedCache.set(model, true);
-      return true;
-    }
-    if (outcome === "fail") {
-      this.visionVerifiedCache.set(model, false);
-      return false;
-    }
-    return false;
-  }
-  getVisionCache() {
-    return Object.fromEntries(this.visionVerifiedCache);
-  }
-  seedVisionCache(entries) {
-    for (const [model, vision] of Object.entries(entries)) {
-      if (!this.visionVerifiedCache.has(model)) this.visionVerifiedCache.set(model, vision);
-    }
-  }
-  async ping() {
-    try {
-      const res = await fetch(`${this.config.baseUrl}/api/tags`, {
-        signal: AbortSignal.timeout(5e3)
-      });
-      return res.ok;
-    } catch {
-      return false;
-    }
-  }
-  async listModels() {
-    const res = await fetch(`${this.config.baseUrl}/api/tags`, {
-      signal: AbortSignal.timeout(3e4)
-    });
-    if (!res.ok) throw new Error(`Ollama list failed: ${res.status}`);
-    const data = await res.json();
-    return (data.models ?? []).map((m2) => ({
-      provider: "ollama",
-      serverId: this.serverId === "ollama" ? void 0 : this.serverId,
-      model: m2.name,
-      label: m2.name,
-      paramSize: m2.details?.parameter_size,
-      family: m2.details?.family,
-      diskBytes: m2.size
-    }));
-  }
-  async complete(model, messages, opts = {}) {
-    const numPredict = clampMaxTokens(
-      opts.maxTokens ?? 16e3,
-      await this.modelContextLen(model),
-      messages
-    );
-    const wireMessages = toOllamaMessages(messages);
-    const body = {
-      model,
-      messages: wireMessages,
-      stream: false,
-      options: {
-        temperature: opts.temperature ?? 0.7,
-        num_predict: numPredict
-      },
-      // Reasoning depth. Ollama's scale is low/medium/high/max plus the
-      // booleans (verified against 0.32.5's own error message), so `none` maps
-      // to `think: false` — an explicit "don't think", not an omitted field —
-      // and minimal/xhigh clamp to their nearest neighbours.
-      ...opts.effort ? { think: opts.effort === "none" ? false : clampEffort(opts.effort, OLLAMA_EFFORTS) } : {},
-      // A schema (when supplied) constrains decoding; plain 'json' is the
-      // weaker fallback. NOTE: Ollama :cloud models ignore `format` entirely
-      // (measured), so the caller's parse+shape guard remains the real backstop.
-      ...opts.jsonSchema ? { format: opts.jsonSchema } : opts.jsonMode ? { format: "json" } : {}
-    };
-    const post = (payload) => fetch(`${this.config.baseUrl}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      // Bound a wedged host/model so one member can't stall the whole ask.
-      signal: AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS)
-    });
-    let res = await post(body);
-    if (!res.ok && "think" in body) {
-      const text = await res.text();
-      if (res.status >= 400 && res.status < 500 && /think/i.test(text)) {
-        const { think: _dropped, ...withoutThink } = body;
-        res = await post(withoutThink);
-      } else {
-        const err = new Error(`Ollama complete failed (${res.status}): ${text}`);
-        err.status = res.status;
-        throw err;
-      }
-    }
-    if (!res.ok) {
-      const text = await res.text();
-      const err = new Error(`Ollama complete failed (${res.status}): ${text}`);
-      err.status = res.status;
-      throw err;
-    }
-    const data = await res.json();
-    return stripThinkBlocks(data?.message?.content ?? "");
-  }
-};
+  return void 0;
+}
 
 // node_modules/openai/internal/qs/formats.mjs
 var default_format = "RFC3986";
@@ -26051,7 +25307,7 @@ init_File();
 // node_modules/openai/_shims/node-runtime.mjs
 var import_agentkeepalive = __toESM(require_agentkeepalive(), 1);
 var import_abort_controller = __toESM(require_abort_controller(), 1);
-var import_node_fs3 = require("node:fs");
+var import_node_fs4 = require("node:fs");
 
 // node_modules/form-data-encoder/lib/esm/util/createBoundary.js
 var alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -26278,7 +25534,7 @@ function getRuntime() {
     getMultipartRequestOptions: getMultipartRequestOptions2,
     getDefaultAgent: (url) => url.startsWith("https") ? defaultHttpsAgent : defaultHttpAgent,
     fileFromPath: fileFromPath3,
-    isFsReadStream: (value) => value instanceof import_node_fs3.ReadStream
+    isFsReadStream: (value) => value instanceof import_node_fs4.ReadStream
   };
 }
 
@@ -32089,6 +31345,340 @@ OpenAI.Containers = Containers;
 OpenAI.ContainerListResponsesPage = ContainerListResponsesPage;
 var openai_default = OpenAI;
 
+// src/providers/base.ts
+var PROBE_IMAGE_BASE64 = "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";
+function neutralizeFileMentions(text) {
+  if (!text) return text;
+  return text.replace(
+    /(?<!\w)@(?=[~./\\]|[\w.\-:]*[/\\]|[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|secrets|secret|token|tokens|credentials|credential|password|passwd|otp|apikey|key|keys)\b|[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@)|@[~./\\]|@[\w.\-:]*[/\\]|@[\w-]+\.[A-Za-z0-9]{1,8}(?![\w-])|@(?:Makefile|Dockerfile|Procfile|Rakefile|Gemfile|Jenkinsfile|CMakeLists|LICENSE|README|CHANGELOG|Cargo|secrets|secret|token|tokens|credentials|credential|password|passwd|otp|apikey|key|keys)\b|@[A-Za-z0-9]+[_-][\w-]*(?![\w-]*@))/g,
+    "@\u200B"
+  );
+}
+var DEFAULT_COMPLETION_TIMEOUT_MS = 12e4;
+function isTimeoutError(err) {
+  if (!err) return false;
+  const name = err.name ?? "";
+  if (name === "TimeoutError" || name === "AbortError" || name === "APIConnectionTimeoutError") return true;
+  return /\btimed out\b|\btimeout\b/i.test(String(err.message ?? err));
+}
+var QuotaExceededError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "QuotaExceededError";
+  }
+};
+var QUOTA_EXHAUSTED_PATTERNS = [
+  /\busage limit\b/i,
+  // grok "reached your free Grok Build usage limit", claude CLI
+  /\bquota\b/i,
+  // OpenAI insufficient_quota / "exceeded your current quota"
+  /\bcredit balance is too low\b/i,
+  // Anthropic billing
+  /\bout of credits?\b/i,
+  /\bbilling\b.*\b(hard limit|required)\b/i,
+  /\bplan limit\b|\bupgrade to\b.*\b(continue|higher)\b/i
+];
+function isQuotaError(err) {
+  if (!err) return false;
+  if (err instanceof QuotaExceededError) return true;
+  const e2 = err;
+  const msg = String(e2.message ?? err);
+  if (/\bper[- ]?(minute|second|hour|day)\b|\bretry after\b|\btry again\b|\btemporarily\b|\bslow down\b/i.test(msg)) {
+    return false;
+  }
+  return QUOTA_EXHAUSTED_PATTERNS.some((re2) => re2.test(msg));
+}
+var MAX_CLI_OUTPUT_BYTES = 8 * 1024 * 1024;
+var CappedBuffer = class {
+  chunks = [];
+  bytes = 0;
+  cap;
+  constructor(cap = MAX_CLI_OUTPUT_BYTES) {
+    this.cap = cap;
+  }
+  append(chunk) {
+    if (this.bytes >= this.cap) return;
+    const chunkBytes = Buffer.byteLength(chunk, "utf8");
+    if (this.bytes + chunkBytes <= this.cap) {
+      this.chunks.push(chunk);
+      this.bytes += chunkBytes;
+      return;
+    }
+    const remaining = this.cap - this.bytes;
+    const buf = Buffer.from(chunk, "utf8").subarray(0, remaining);
+    this.chunks.push(buf.toString("utf8"));
+    this.bytes = this.cap;
+  }
+  toString() {
+    return this.chunks.join("");
+  }
+};
+var REASON_TAG = "think|thinking";
+function stripThinkBlocks(text) {
+  if (!text) return text;
+  const trimmed = text.trim();
+  const unfenced = trimmed.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  for (const candidate of [trimmed, unfenced]) {
+    if (!candidate.startsWith("{") && !candidate.startsWith("[")) continue;
+    try {
+      const v2 = JSON.parse(candidate);
+      if (v2 !== null && typeof v2 === "object") return trimmed;
+    } catch {
+    }
+  }
+  let out = text.replace(new RegExp(`<(?:${REASON_TAG})>[\\s\\S]*?</(?:${REASON_TAG})>`, "gi"), "");
+  const m2 = out.match(new RegExp(`</(?:${REASON_TAG})>(?![\\s\\S]*</(?:${REASON_TAG})>)`, "i"));
+  if (m2 && m2.index !== void 0) {
+    const after = out.slice(m2.index + m2[0].length);
+    out = after.trim() ? after : out.slice(0, m2.index);
+  }
+  return out.trim();
+}
+function assertJsonShape(v2, required2) {
+  if (v2 === null || typeof v2 !== "object" || Array.isArray(v2)) {
+    throw new Error("judge JSON has an unexpected top-level shape");
+  }
+  for (const [key, kind3] of Object.entries(required2)) {
+    const val = v2[key];
+    if (kind3 === "array" && !Array.isArray(val)) {
+      throw new Error(
+        `judge JSON: required field "${key}" is ${val === void 0 ? "missing" : "not an array"}`
+      );
+    }
+  }
+}
+function extractJsonCandidates(text) {
+  const out = [];
+  let i2 = 0;
+  while (i2 < text.length) {
+    const start = text.indexOf("{", i2);
+    if (start === -1) break;
+    let depth = 0, inStr = false, esc2 = false, end = -1;
+    for (let j2 = start; j2 < text.length; j2++) {
+      const c2 = text[j2];
+      if (inStr) {
+        if (esc2) esc2 = false;
+        else if (c2 === "\\") esc2 = true;
+        else if (c2 === '"') inStr = false;
+      } else if (c2 === '"') inStr = true;
+      else if (c2 === "{") depth++;
+      else if (c2 === "}") {
+        depth--;
+        if (depth === 0) {
+          end = j2;
+          break;
+        }
+      }
+    }
+    if (end === -1) break;
+    out.push(text.slice(start, end + 1));
+    i2 = end + 1;
+  }
+  return out;
+}
+function looksLikeSchemaEcho(v2) {
+  if (v2 === null || typeof v2 !== "object") return false;
+  const o2 = v2;
+  if (typeof o2.type === "string" && o2.properties && typeof o2.properties === "object") return true;
+  let placeholders = 0, strings = 0;
+  const walk = (x2, depth) => {
+    if (depth > 6 || x2 === null) return;
+    if (typeof x2 === "string") {
+      strings++;
+      if (/^<.+>$/.test(x2.trim())) placeholders++;
+      return;
+    }
+    if (Array.isArray(x2)) {
+      for (const i2 of x2) walk(i2, depth + 1);
+      return;
+    }
+    if (typeof x2 === "object") {
+      for (const i2 of Object.values(x2)) walk(i2, depth + 1);
+    }
+  };
+  walk(o2, 0);
+  return strings > 0 && placeholders / strings >= 0.5;
+}
+function parseJudgeJson(raw, required2) {
+  const stripped = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "").trim();
+  const candidates = extractJsonCandidates(stripped);
+  const valid = [];
+  let lastErr;
+  for (const c2 of candidates) {
+    try {
+      const obj = JSON.parse(c2);
+      assertJsonShape(obj, required2);
+      valid.push({ obj, echo: looksLikeSchemaEcho(obj) });
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  if (valid.length) {
+    const real = valid.filter((v2) => !v2.echo);
+    return (real.length ? real : valid)[(real.length ? real : valid).length - 1].obj;
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("judge reply contained no shape-valid JSON object");
+}
+var IMAGE_TOKEN_ESTIMATE = 1500;
+function estimatePromptTokens(messages) {
+  const chars = messages.reduce((n2, m2) => n2 + (m2.content?.length ?? 0), 0);
+  const imageCount = messages.reduce((n2, m2) => n2 + (m2.images?.length ?? 0), 0);
+  return Math.ceil(chars / 3) + 4 * messages.length + imageCount * IMAGE_TOKEN_ESTIMATE;
+}
+var PromptTooLargeError = class extends Error {
+  constructor(message = "prompt exceeds the model's context window") {
+    super(message);
+    this.name = "PromptTooLargeError";
+  }
+};
+function clampMaxTokens(requested, maxModelLen, messages) {
+  if (!maxModelLen || maxModelLen <= 0) return requested;
+  const MIN_OUTPUT = 16;
+  const budget = maxModelLen - estimatePromptTokens(messages) - 64;
+  if (budget < MIN_OUTPUT) {
+    throw new PromptTooLargeError(
+      `prompt (~${estimatePromptTokens(messages)} tokens) leaves no room for a response within the model's ${maxModelLen}-token context window`
+    );
+  }
+  return Math.min(requested, budget);
+}
+
+// src/vision-challenge.ts
+var import_node_zlib = require("node:zlib");
+var FONT_5X7 = {
+  "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
+  "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
+  "2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
+  "3": ["11111", "00010", "00100", "00010", "00001", "10001", "01110"],
+  "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
+  "5": ["11111", "10000", "11110", "00001", "00001", "10001", "01110"],
+  "6": ["00110", "01000", "10000", "11110", "10001", "10001", "01110"],
+  "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
+  "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
+  "9": ["01110", "10001", "10001", "01111", "00001", "00010", "01100"]
+};
+var crcTable = null;
+function getCrcTable() {
+  if (crcTable) return crcTable;
+  const table = new Uint32Array(256);
+  for (let n2 = 0; n2 < 256; n2++) {
+    let c2 = n2;
+    for (let k2 = 0; k2 < 8; k2++) c2 = c2 & 1 ? 3988292384 ^ c2 >>> 1 : c2 >>> 1;
+    table[n2] = c2 >>> 0;
+  }
+  crcTable = table;
+  return table;
+}
+function crc32(buf) {
+  const table = getCrcTable();
+  let crc = 4294967295;
+  for (let i2 = 0; i2 < buf.length; i2++) crc = table[(crc ^ buf[i2]) & 255] ^ crc >>> 8;
+  return (crc ^ 4294967295) >>> 0;
+}
+function pngChunk(type, data) {
+  const typeBuf = Buffer.from(type, "ascii");
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length, 0);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])), 0);
+  return Buffer.concat([len, typeBuf, data, crc]);
+}
+var PNG_SIG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+function renderDigitsPNG(digits) {
+  const SCALE = 14;
+  const DIGIT_W = 5 * SCALE;
+  const DIGIT_H = 7 * SCALE;
+  const GAP = SCALE * 2;
+  const PAD = SCALE * 3;
+  const width = digits.length * DIGIT_W + (digits.length - 1) * GAP + PAD * 2;
+  const height = DIGIT_H + PAD * 2;
+  const stride = 1 + width * 3;
+  const raw = Buffer.alloc(height * stride, 255);
+  for (let y2 = 0; y2 < height; y2++) raw[y2 * stride] = 0;
+  const setPixel = (x2, y2) => {
+    if (x2 < 0 || x2 >= width || y2 < 0 || y2 >= height) return;
+    const off = y2 * stride + 1 + x2 * 3;
+    raw[off] = 0;
+    raw[off + 1] = 0;
+    raw[off + 2] = 0;
+  };
+  digits.split("").forEach((ch, di) => {
+    const font = FONT_5X7[ch];
+    if (!font) return;
+    const ox = PAD + di * (DIGIT_W + GAP);
+    for (let fy = 0; fy < 7; fy++) {
+      for (let fx = 0; fx < 5; fx++) {
+        if (font[fy][fx] !== "1") continue;
+        for (let sy = 0; sy < SCALE; sy++) {
+          for (let sx = 0; sx < SCALE; sx++) setPixel(ox + fx * SCALE + sx, PAD + fy * SCALE + sy);
+        }
+      }
+    }
+  });
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+  return Buffer.concat([
+    PNG_SIG,
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", (0, import_node_zlib.deflateSync)(raw)),
+    pngChunk("IEND", Buffer.alloc(0))
+  ]);
+}
+var CHALLENGE_CODES = [
+  "3456",
+  "8974",
+  "1203",
+  "6712",
+  "9045",
+  "2589",
+  "7361",
+  "4820",
+  "5197",
+  "8034"
+];
+var CHALLENGE_IMAGES = CHALLENGE_CODES.map((code) => ({
+  code,
+  base64: renderDigitsPNG(code).toString("base64"),
+  mimeType: "image/png"
+}));
+var CHALLENGE_PROMPT = "Reply with ONLY the 4-digit number shown in the attached image. No other text, no punctuation, no explanation \u2014 just the four digits.";
+function pickChallenges(n2) {
+  const pool = [...CHALLENGE_IMAGES];
+  const out = [];
+  for (let i2 = 0; i2 < n2 && pool.length; i2++) {
+    const idx = Math.floor(Math.random() * pool.length);
+    out.push(pool.splice(idx, 1)[0]);
+  }
+  return out;
+}
+function matchesCode(response, code) {
+  const normalized = response.replace(/[\s,-]/g, "");
+  const runs = normalized.match(/\d+/g) ?? [];
+  return runs.includes(code);
+}
+async function verifyVisionChallenge(ask) {
+  const challenges = pickChallenges(2);
+  let sawCleanWrongAnswer = false;
+  for (const challenge of challenges) {
+    let response;
+    try {
+      response = await ask(challenge);
+    } catch {
+      continue;
+    }
+    if (!response?.trim()) continue;
+    if (matchesCode(response, challenge.code)) return "pass";
+    sawCleanWrongAnswer = true;
+  }
+  return sawCleanWrongAnswer ? "fail" : "inconclusive";
+}
+
 // src/providers/openai-compatible.ts
 function openaiBaseURL(baseUrl) {
   const base = baseUrl.replace(/\/+$/, "");
@@ -32140,8 +31730,8 @@ var OpenAICompatibleProvider = class {
    * returns undefined when unknown so callers skip clamping.
    */
   async maxModelLen(model) {
-    const cached3 = this.maxLenCache.get(model);
-    if (cached3 !== void 0) return cached3 ?? void 0;
+    const cached4 = this.maxLenCache.get(model);
+    if (cached4 !== void 0) return cached4 ?? void 0;
     let listedOk = false;
     try {
       const list = await this.client.models.list({ timeout: 1e4 });
@@ -32175,8 +31765,8 @@ var OpenAICompatibleProvider = class {
    * non-vision Qwen2.5-0.5B-Instruct). That's what stage 2 is for.
    */
   async probeAcceptsImage(model) {
-    const cached3 = this.acceptCache.get(model);
-    if (cached3 !== void 0) return cached3;
+    const cached4 = this.acceptCache.get(model);
+    if (cached4 !== void 0) return cached4;
     try {
       await this.client.chat.completions.create(
         {
@@ -32329,6 +31919,507 @@ var OpenAICompatibleProvider = class {
   }
 };
 
+// src/config.ts
+var DEFAULT_PORTS = {
+  vllm: 8e3,
+  trtllm: 8e3,
+  sglang: 3e4
+};
+function parseOpenAICompatibleServers(raw, type) {
+  if (!raw?.trim()) return [];
+  const defaultPort = DEFAULT_PORTS[type] ?? 8e3;
+  return raw.split(",").map((entry) => entry.trim()).filter(Boolean).map((entry) => {
+    const firstColon = entry.indexOf(":");
+    if (firstColon === -1) {
+      return buildServer(type, entry, `http://localhost:${defaultPort}`);
+    }
+    const name = entry.substring(0, firstColon);
+    const rest = entry.substring(firstColon + 1);
+    if (rest.startsWith("http://") || rest.startsWith("https://")) {
+      return buildServer(type, name, rest);
+    }
+    const parts = rest.split(":");
+    const host = parts[0];
+    let port = defaultPort;
+    if (parts[1] !== void 0) {
+      const n2 = strictParseInt(parts[1]);
+      port = n2 !== void 0 && n2 > 0 && n2 <= 65535 ? n2 : defaultPort;
+    }
+    return buildServer(type, name, `http://${host}:${port}`);
+  });
+}
+function normalizeUrl(u2) {
+  return /^https?:\/\//i.test(u2) ? u2 : `http://${u2}`;
+}
+function redactUrlUserinfo(url) {
+  try {
+    const u2 = new URL(url);
+    if (u2.username || u2.password) {
+      u2.username = "";
+      u2.password = "";
+      return u2.toString();
+    }
+    return url;
+  } catch {
+    return url.replace(/(\/\/)[^/@]*@/, "$1");
+  }
+}
+function buildServer(type, name, baseUrl) {
+  return {
+    id: `${type}-${name}`,
+    type,
+    baseUrl,
+    // Redact any basic-auth creds embedded in the URL from the human-visible
+    // label (baseUrl itself is kept raw for the actual connection).
+    label: `${type.toUpperCase()} \u203A ${name}  (${redactUrlUserinfo(baseUrl)})`
+  };
+}
+var KNOWN_PROVIDERS = /* @__PURE__ */ new Set([
+  "ollama",
+  "openai",
+  "anthropic",
+  "xai",
+  "vllm",
+  "trtllm",
+  "sglang",
+  "claude-cli",
+  "codex-cli",
+  "grok-cli"
+]);
+function parseModelId(str2) {
+  const colonIdx = str2.indexOf(":");
+  if (colonIdx === -1) return null;
+  const providerPart = str2.substring(0, colonIdx);
+  const model = str2.substring(colonIdx + 1);
+  if (!model) return null;
+  const slashIdx = providerPart.indexOf("/");
+  const provider = slashIdx === -1 ? providerPart : providerPart.substring(0, slashIdx);
+  if (!KNOWN_PROVIDERS.has(provider)) return null;
+  const serverId = slashIdx === -1 ? void 0 : providerPart.substring(slashIdx + 1);
+  return { provider, serverId, model };
+}
+function modelIdLabel(m2) {
+  const prefix = m2.serverId ? `${m2.provider}/${m2.serverId}` : m2.provider;
+  return `${prefix}:${m2.model}`;
+}
+function envClean(name) {
+  const v2 = process.env[name];
+  if (v2 === void 0) return void 0;
+  const trimmed = v2.trim();
+  if (trimmed === "") return void 0;
+  if (trimmed.includes("${")) return void 0;
+  return trimmed;
+}
+function strictParseInt(raw) {
+  if (raw === void 0) return void 0;
+  const trimmed = raw.trim();
+  if (!/^-?\d+$/.test(trimmed)) return void 0;
+  const n2 = parseInt(trimmed, 10);
+  return Number.isFinite(n2) ? n2 : void 0;
+}
+function envInt(name, fallback) {
+  return strictParseInt(envClean(name)) ?? fallback;
+}
+function envBool(name, fallback) {
+  const v2 = envClean(name);
+  if (v2 === void 0) return fallback;
+  return ["true", "1", "yes", "on"].includes(v2.toLowerCase());
+}
+function loadConfig() {
+  const servers = [];
+  const subs = loadSubscriptions();
+  const state = loadState();
+  const resolveTier = (provider, envName, def) => {
+    const valid = validTiers(provider, subs);
+    const stateVal = state.tiers?.[provider];
+    if (stateVal !== void 0 && valid.includes(stateVal)) return stateVal;
+    const envVal = envClean(envName);
+    if (envVal !== void 0 && valid.includes(envVal)) return envVal;
+    return valid.includes(def) ? def : valid[0] ?? def;
+  };
+  const tiers = {
+    chatgpt: resolveTier("chatgpt", "CHATGPT_TIER", "plus"),
+    claude: resolveTier("claude", "CLAUDE_TIER", "pro"),
+    grok: resolveTier("grok", "GROK_TIER", "free"),
+    ollama: resolveTier("ollama", "OLLAMA_TIER", "pro")
+  };
+  const ollamaAddr = envClean("OLLAMA_ADDRESS");
+  servers.push({
+    id: "ollama",
+    type: "ollama",
+    baseUrl: ollamaAddr ? normalizeUrl(ollamaAddr) : "http://localhost:11434",
+    label: "Ollama (local)"
+  });
+  const openaiKey = envClean("OPENAI_API_KEY");
+  if (openaiKey) {
+    servers.push({
+      id: "openai",
+      type: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: openaiKey,
+      label: "OpenAI"
+    });
+  }
+  const anthropicKey = envClean("ANTHROPIC_API_KEY");
+  if (anthropicKey) {
+    servers.push({
+      id: "anthropic",
+      type: "anthropic",
+      baseUrl: "https://api.anthropic.com",
+      apiKey: anthropicKey,
+      label: "Anthropic"
+    });
+  }
+  const xaiKey = envClean("XAI_API_KEY");
+  if (xaiKey) {
+    servers.push({
+      id: "xai",
+      type: "xai",
+      baseUrl: "https://api.x.ai/v1",
+      apiKey: xaiKey,
+      label: "Grok (xAI)"
+    });
+  }
+  servers.push(
+    ...parseOpenAICompatibleServers(envClean("VLLM_SERVERS"), "vllm"),
+    ...parseOpenAICompatibleServers(envClean("TRTLLM_SERVERS"), "trtllm"),
+    ...parseOpenAICompatibleServers(envClean("SGLANG_SERVERS"), "sglang")
+  );
+  if (tierAllowsCloud("claude", tiers.claude, subs) || envBool("CLAUDE_CLI", false)) {
+    const defModels = (Array.isArray(subs.providers.claude.models) ? subs.providers.claude.models.join(",") : "") || "opus,sonnet";
+    const cliModels = (envClean("CLAUDE_CLI_MODELS") ?? defModels).split(",").map((s2) => s2.trim()).filter(Boolean);
+    servers.push({
+      id: "claude-cli",
+      type: "claude-cli",
+      baseUrl: "(subscription via claude CLI)",
+      label: "Claude (subscription CLI)",
+      command: envClean("CLAUDE_CLI_PATH") ?? "claude",
+      models: cliModels.length ? cliModels : ["opus", "sonnet"]
+    });
+  }
+  const claudeCliOllamaModels = (envClean("CLAUDE_CLI_OLLAMA_MODELS") ?? "").split(",").map((s2) => s2.trim()).filter(Boolean);
+  {
+    const harnessAddr = envClean("CLAUDE_CLI_OLLAMA_ADDRESS") ?? ollamaAddr;
+    servers.push({
+      id: "claude-cli-ollama",
+      type: "claude-cli",
+      baseUrl: "(Ollama via claude CLI harness)",
+      label: "Ollama (via claude CLI harness)",
+      command: envClean("CLAUDE_CLI_PATH") ?? "claude",
+      models: claudeCliOllamaModels,
+      anthropicBaseUrl: normalizeUrl(harnessAddr ?? "http://localhost:11434")
+    });
+  }
+  if (tierAllowsCloud("chatgpt", tiers.chatgpt, subs) || envBool("CODEX_CLI", false)) {
+    const defModels = (Array.isArray(subs.providers.chatgpt.models) ? subs.providers.chatgpt.models.join(",") : "") || "default";
+    const codexModels = (envClean("CODEX_CLI_MODELS") ?? defModels).split(",").map((s2) => s2.trim()).filter(Boolean);
+    servers.push({
+      id: "codex-cli",
+      type: "codex-cli",
+      baseUrl: "(subscription via codex CLI)",
+      label: "Codex (ChatGPT subscription CLI)",
+      command: envClean("CODEX_CLI_PATH") ?? "codex",
+      models: codexModels.length ? codexModels : ["default"]
+    });
+  }
+  if (tierAllowsCloud("grok", tiers.grok, subs) || envBool("GROK_CLI", false)) {
+    const defModels = (Array.isArray(subs.providers.grok.models) ? subs.providers.grok.models.join(",") : "") || "grok-4.5";
+    const grokModels = (envClean("GROK_CLI_MODELS") ?? defModels).split(",").map((s2) => s2.trim()).filter(Boolean);
+    servers.push({
+      id: "grok-cli",
+      type: "grok-cli",
+      baseUrl: "(subscription via grok CLI)",
+      label: "Grok (X.AI subscription CLI)",
+      command: envClean("GROK_CLI_PATH") ?? "grok",
+      models: grokModels.length ? grokModels : ["grok-4.5"]
+    });
+  }
+  for (const srv of [...servers]) {
+    if (srv.type !== "vllm" && srv.type !== "trtllm" && srv.type !== "sglang") continue;
+    const ladder = harnessLadder(srv.type);
+    if (ladder.includes("claude-cli")) {
+      servers.push({
+        id: `claude-cli-${srv.id}`,
+        type: "claude-cli",
+        baseUrl: `(${srv.id} via claude CLI harness)`,
+        label: `${srv.label} (via claude CLI harness)`,
+        command: envClean("CLAUDE_CLI_PATH") ?? "claude",
+        models: [],
+        anthropicBaseUrl: srv.baseUrl
+      });
+    }
+    if (ladder.includes("codex-cli")) {
+      servers.push({
+        id: `codex-cli-${srv.id}`,
+        type: "codex-cli",
+        baseUrl: `(${srv.id} via codex CLI harness)`,
+        label: `${srv.label} (via codex CLI harness)`,
+        command: envClean("CODEX_CLI_PATH") ?? "codex",
+        models: [],
+        openaiBaseUrl: openaiBaseURL(srv.baseUrl),
+        ...harnessApiKeyEnv(srv.type) ? { openaiApiKeyEnv: harnessApiKeyEnv(srv.type) } : {}
+      });
+    }
+  }
+  const warnings = [];
+  const councilModelsRaw = envClean("COUNCIL_MODELS");
+  const councilModelEntries = (councilModelsRaw ?? "").split(",").map((s2) => s2.trim()).filter(Boolean);
+  const members = councilModelEntries.flatMap((s2) => {
+    const id = parseModelId(s2);
+    return id ? [{ modelId: id }] : [];
+  });
+  if (councilModelEntries.length > 0 && members.length === 0) {
+    warnings.push(
+      `COUNCIL_MODELS was set but none of its entries parsed (expected "provider:model", e.g. "ollama:llama3"): ${councilModelEntries.join(", ")} \u2014 falling back to auto-population.`
+    );
+  }
+  const judgeStr = envClean("JUDGE_MODEL");
+  if (judgeStr && judgeStr !== "auto" && !parseModelId(judgeStr)) {
+    warnings.push(
+      `JUDGE_MODEL="${judgeStr}" is not a valid model id (expected "provider:model" or "provider/serverId:model") \u2014 falling back to automatic judge selection.`
+    );
+  }
+  const judgeModelId = judgeStr && judgeStr !== "auto" ? parseModelId(judgeStr) ?? void 0 : void 0;
+  const modeRaw = envClean("RESPONSE_MODE");
+  const responseMode = modeRaw === "individual" || modeRaw === "categorized" || modeRaw === "deconflicted" || modeRaw === "pooled" || modeRaw === "dialectic" ? modeRaw : "categorized";
+  const maxDeconflictRounds = Math.max(
+    1,
+    Math.min(10, strictParseInt(envClean("MAX_DECONFLICT_ROUNDS")) ?? 3)
+  );
+  const effortRaw = envClean("REASONING_EFFORT");
+  if (effortRaw !== void 0 && !isReasoningEffort(effortRaw)) {
+    warnings.push(
+      `REASONING_EFFORT="${effortRaw}" is not a valid level (expected one of ${EFFORT_ORDER.join(", ")}) \u2014 falling back to each model's own default.`
+    );
+  }
+  const reasoningEffort = isReasoningEffort(effortRaw) ? effortRaw : void 0;
+  const autoRaw = (envClean("AUTO_COUNCIL") ?? "true").toLowerCase();
+  const autoCouncil = !["false", "0", "no", "off"].includes(autoRaw);
+  const cloudOverrideRaw = envClean("CLOUD_CONCURRENCY");
+  const localOverrideRaw = envClean("LOCAL_CONCURRENCY");
+  const cloudOverride = strictParseInt(cloudOverrideRaw);
+  const localOverride = strictParseInt(localOverrideRaw);
+  const poolLimits = resolvePoolLimits(tiers, { cloud: cloudOverride, local: localOverride }, subs);
+  const runtime = {
+    // Output-token budget per completion. Clamped per-model to fit the server's
+    // context window (clampMaxTokens) on Ollama and OpenAI-compatible providers,
+    // so a generous default gives longer answers on large-context models without
+    // risking an over-context request; CLI members ignore it (subscription-
+    // managed). 32K is a generous-but-bounded default (raise via MAX_TOKENS for
+    // even longer answers — slower/costlier, multiplied across members × rounds).
+    maxTokens: Math.max(1, envInt("MAX_TOKENS", 32768)),
+    reasoningEffort,
+    webAccess: envBool("WEB_ACCESS", false),
+    cloudConcurrency: cloudOverride ?? subs.defaults.cloudConcurrency,
+    localConcurrency: localOverride ?? subs.defaults.localConcurrency,
+    poolLimits,
+    retries: Math.max(1, envInt("COMPLETION_RETRIES", 3)),
+    // 5 min default for text-only calls: local Ollama models run sequentially
+    // (local_concurrency=1), so a single completion on a busy box can take a
+    // while, and a too-tight cap cuts member answers mid-generation. Raise via
+    // REQUEST_TIMEOUT_MS (or set_council_timeouts).
+    requestTimeoutMs: Math.max(1e3, envInt("REQUEST_TIMEOUT_MS", 3e5)),
+    // 10 min default when full_repo_access is set: the CLI member Read/Grep/
+    // Globs the repo tree, materially longer than a flat text completion.
+    repoRequestTimeoutMs: Math.max(1e3, envInt("REPO_REQUEST_TIMEOUT_MS", 6e5)),
+    verbose: envBool("DECONFLICT_VERBOSE", false)
+  };
+  return {
+    servers,
+    council: {
+      members,
+      judgeModelId,
+      responseMode,
+      maxDeconflictRounds,
+      autoCouncil
+    },
+    runtime,
+    tiers,
+    warnings
+  };
+}
+
+// src/providers/ollama.ts
+function toOllamaMessages(messages) {
+  return messages.map((m2) => ({
+    role: m2.role,
+    content: m2.content,
+    ...m2.images?.length ? { images: m2.images.map((img) => img.base64) } : {}
+  }));
+}
+var OllamaProvider = class {
+  serverId;
+  config;
+  /** Per-model /api/show result (context length + vision capability); undefined = not yet fetched. */
+  showCache = /* @__PURE__ */ new Map();
+  /** Per-model OCR-challenge-verified vision result; only set once definitive. */
+  visionVerifiedCache = /* @__PURE__ */ new Map();
+  constructor(config2) {
+    this.config = config2;
+    this.serverId = config2.id;
+  }
+  /**
+   * Fetch and cache /api/show for `model` once, extracting both the advertised
+   * context length (`model_info`'s arch-prefixed `*.context_length`) and the
+   * `capabilities` array (vision support shows up as `"vision"`). A transient
+   * failure (unreachable host) is NOT cached, so a network blip doesn't
+   * permanently mislabel a model — it's simply retried on the next call.
+   */
+  async fetchShow(model) {
+    const cached4 = this.showCache.get(model);
+    if (cached4) return cached4;
+    const res = await fetch(`${this.config.baseUrl}/api/show`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model }),
+      signal: AbortSignal.timeout(5e3)
+    });
+    if (!res.ok) throw new Error(`Ollama /api/show failed (${res.status})`);
+    const data = await res.json();
+    const info = data.model_info ?? {};
+    const key = Object.keys(info).find((k2) => k2.endsWith(".context_length"));
+    const ctxLen = key && typeof info[key] === "number" ? info[key] : null;
+    const vision = Array.isArray(data.capabilities) && data.capabilities.includes("vision");
+    const result = { ctxLen, vision };
+    this.showCache.set(model, result);
+    return result;
+  }
+  /**
+   * The model's advertised context length. Undefined when unknown (e.g. Ollama
+   * cloud models, or the host is unreachable) so callers skip clamping.
+   */
+  async modelContextLen(model) {
+    try {
+      return (await this.fetchShow(model)).ctxLen ?? void 0;
+    } catch {
+      return void 0;
+    }
+  }
+  /**
+   * Two-stage detection. Stage 1 (`/api/show` capabilities) is a trustworthy
+   * NEGATIVE but not a trustworthy positive — custom/quantized model builds
+   * (MLX conversions, GGUF imports) can drop the vision projector while still
+   * reporting `"vision"` in capabilities (documented upstream: unsloth#2290,
+   * ollama#9967; reproduced live with a local `-mlx` build that claimed vision
+   * but denied ever receiving an image). Stage 2 behaviorally confirms a
+   * stage-1 "yes" with an OCR challenge before it's trusted.
+   */
+  async supportsVision(model) {
+    let metadataVision;
+    try {
+      metadataVision = (await this.fetchShow(model)).vision;
+    } catch {
+      return false;
+    }
+    if (!metadataVision) return false;
+    const cached4 = this.visionVerifiedCache.get(model);
+    if (cached4 !== void 0) return cached4;
+    const outcome = await verifyVisionChallenge(
+      (challenge) => this.complete(
+        model,
+        [{ role: "user", content: CHALLENGE_PROMPT, images: [{ base64: challenge.base64, mimeType: challenge.mimeType }] }],
+        { maxTokens: 2e3, timeoutMs: 6e4 }
+      )
+    );
+    if (outcome === "pass") {
+      this.visionVerifiedCache.set(model, true);
+      return true;
+    }
+    if (outcome === "fail") {
+      this.visionVerifiedCache.set(model, false);
+      return false;
+    }
+    return false;
+  }
+  getVisionCache() {
+    return Object.fromEntries(this.visionVerifiedCache);
+  }
+  seedVisionCache(entries) {
+    for (const [model, vision] of Object.entries(entries)) {
+      if (!this.visionVerifiedCache.has(model)) this.visionVerifiedCache.set(model, vision);
+    }
+  }
+  async ping() {
+    try {
+      const res = await fetch(`${this.config.baseUrl}/api/tags`, {
+        signal: AbortSignal.timeout(5e3)
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+  async listModels() {
+    const res = await fetch(`${this.config.baseUrl}/api/tags`, {
+      signal: AbortSignal.timeout(3e4)
+    });
+    if (!res.ok) throw new Error(`Ollama list failed: ${res.status}`);
+    const data = await res.json();
+    return (data.models ?? []).map((m2) => ({
+      provider: "ollama",
+      serverId: this.serverId === "ollama" ? void 0 : this.serverId,
+      model: m2.name,
+      label: m2.name,
+      paramSize: m2.details?.parameter_size,
+      family: m2.details?.family,
+      diskBytes: m2.size
+    }));
+  }
+  async complete(model, messages, opts = {}) {
+    const numPredict = clampMaxTokens(
+      opts.maxTokens ?? 16e3,
+      await this.modelContextLen(model),
+      messages
+    );
+    const wireMessages = toOllamaMessages(messages);
+    const body = {
+      model,
+      messages: wireMessages,
+      stream: false,
+      options: {
+        temperature: opts.temperature ?? 0.7,
+        num_predict: numPredict
+      },
+      // Reasoning depth. Ollama's scale is low/medium/high/max plus the
+      // booleans (verified against 0.32.5's own error message), so `none` maps
+      // to `think: false` — an explicit "don't think", not an omitted field —
+      // and minimal/xhigh clamp to their nearest neighbours.
+      ...opts.effort ? { think: opts.effort === "none" ? false : clampEffort(opts.effort, OLLAMA_EFFORTS) } : {},
+      // A schema (when supplied) constrains decoding; plain 'json' is the
+      // weaker fallback. NOTE: Ollama :cloud models ignore `format` entirely
+      // (measured), so the caller's parse+shape guard remains the real backstop.
+      ...opts.jsonSchema ? { format: opts.jsonSchema } : opts.jsonMode ? { format: "json" } : {}
+    };
+    const post = (payload) => fetch(`${this.config.baseUrl}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      // Bound a wedged host/model so one member can't stall the whole ask.
+      signal: AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS)
+    });
+    let res = await post(body);
+    if (!res.ok && "think" in body) {
+      const text = await res.text();
+      if (res.status >= 400 && res.status < 500 && /think/i.test(text)) {
+        const { think: _dropped, ...withoutThink } = body;
+        res = await post(withoutThink);
+      } else {
+        const err = new Error(`Ollama complete failed (${res.status}): ${text}`);
+        err.status = res.status;
+        throw err;
+      }
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      const err = new Error(`Ollama complete failed (${res.status}): ${text}`);
+      err.status = res.status;
+      throw err;
+    }
+    const data = await res.json();
+    return stripThinkBlocks(data?.message?.content ?? "");
+  }
+};
+
 // node_modules/@anthropic-ai/sdk/error.mjs
 var error_exports2 = {};
 __export(error_exports2, {
@@ -32392,7 +32483,7 @@ function setShims2(shims, options = { auto: false }) {
 var nf2 = __toESM(require_lib2(), 1);
 var import_agentkeepalive2 = __toESM(require_agentkeepalive(), 1);
 var import_abort_controller2 = __toESM(require_abort_controller(), 1);
-var import_node_fs4 = require("node:fs");
+var import_node_fs5 = require("node:fs");
 var import_node_stream2 = require("node:stream");
 
 // node_modules/@anthropic-ai/sdk/_shims/MultipartBody.mjs
@@ -32446,7 +32537,7 @@ function getRuntime2() {
     getMultipartRequestOptions: getMultipartRequestOptions4,
     getDefaultAgent: (url) => url.startsWith("https") ? defaultHttpsAgent2 : defaultHttpAgent2,
     fileFromPath: fileFromPath5,
-    isFsReadStream: (value) => value instanceof import_node_fs4.ReadStream
+    isFsReadStream: (value) => value instanceof import_node_fs5.ReadStream
   };
 }
 
@@ -35313,8 +35404,8 @@ var AnthropicProvider = class {
    * call only, without poisoning the cache.
    */
   async probeAcceptsImage(model) {
-    const cached3 = this.acceptCache.get(model);
-    if (cached3 !== void 0) return cached3;
+    const cached4 = this.acceptCache.get(model);
+    if (cached4 !== void 0) return cached4;
     try {
       await this.client.messages.create(
         {
@@ -35433,9 +35524,9 @@ Respond with valid JSON only.`.trim() : systemParts || void 0;
 
 // src/providers/claude-cli.ts
 var import_node_child_process = require("node:child_process");
-var import_node_fs5 = require("node:fs");
+var import_node_fs6 = require("node:fs");
 var import_node_os2 = require("node:os");
-var import_node_path3 = require("node:path");
+var import_node_path4 = require("node:path");
 var DEFAULT_MODELS = ["opus", "sonnet"];
 var DEFAULT_TIMEOUT_MS = 3e5;
 var MIME_EXT = {
@@ -35533,8 +35624,8 @@ var ClaudeCliProvider = class {
    * every other provider and correct if the mechanism ever regresses.
    */
   async supportsVision(model) {
-    const cached3 = this.visionVerifiedCache.get(model);
-    if (cached3 !== void 0) return cached3;
+    const cached4 = this.visionVerifiedCache.get(model);
+    if (cached4 !== void 0) return cached4;
     const outcome = await verifyVisionChallenge(
       (challenge) => this.complete(
         model,
@@ -35569,10 +35660,10 @@ var ClaudeCliProvider = class {
     let imagePaths = [];
     try {
       if (images.length > 0) {
-        imageDir = (0, import_node_fs5.mkdtempSync)((0, import_node_path3.join)((0, import_node_os2.tmpdir)(), "claude-council-img-"));
+        imageDir = (0, import_node_fs6.mkdtempSync)((0, import_node_path4.join)((0, import_node_os2.tmpdir)(), "claude-council-img-"));
         imagePaths = images.map((img, i2) => {
-          const path = (0, import_node_path3.join)(imageDir, `image-${i2}.${MIME_EXT[img.mimeType]}`);
-          (0, import_node_fs5.writeFileSync)(path, Buffer.from(img.base64, "base64"));
+          const path = (0, import_node_path4.join)(imageDir, `image-${i2}.${MIME_EXT[img.mimeType]}`);
+          (0, import_node_fs6.writeFileSync)(path, Buffer.from(img.base64, "base64"));
           return path;
         });
       }
@@ -35630,7 +35721,7 @@ var ClaudeCliProvider = class {
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       let scratchCwd;
       if (addDirs.length === 0) {
-        scratchCwd = (0, import_node_fs5.mkdtempSync)((0, import_node_path3.join)((0, import_node_os2.tmpdir)(), "claude-council-cwd-"));
+        scratchCwd = (0, import_node_fs6.mkdtempSync)((0, import_node_path4.join)((0, import_node_os2.tmpdir)(), "claude-council-cwd-"));
       }
       try {
         var { code, stdout, stderr } = await this.run(
@@ -35642,7 +35733,7 @@ var ClaudeCliProvider = class {
       } finally {
         if (scratchCwd) {
           try {
-            (0, import_node_fs5.rmSync)(scratchCwd, { recursive: true, force: true });
+            (0, import_node_fs6.rmSync)(scratchCwd, { recursive: true, force: true });
           } catch {
           }
         }
@@ -35675,7 +35766,7 @@ var ClaudeCliProvider = class {
     } finally {
       if (imageDir) {
         try {
-          (0, import_node_fs5.rmSync)(imageDir, { recursive: true, force: true });
+          (0, import_node_fs6.rmSync)(imageDir, { recursive: true, force: true });
         } catch {
         }
       }
@@ -35728,10 +35819,11 @@ var ClaudeCliProvider = class {
 
 // src/providers/codex-cli.ts
 var import_node_child_process2 = require("node:child_process");
-var import_node_fs6 = require("node:fs");
+var import_node_fs7 = require("node:fs");
 var import_node_os3 = require("node:os");
-var import_node_path4 = require("node:path");
+var import_node_path5 = require("node:path");
 var DEFAULT_MODELS2 = ["default"];
+var CUSTOM_PROVIDER_ID = "model_council_endpoint";
 var DEFAULT_TIMEOUT_MS2 = 3e5;
 var MIME_EXT2 = {
   "image/png": "png",
@@ -35757,10 +35849,15 @@ var CodexCliProvider = class {
   models;
   /** Per-model OCR-challenge-verified vision result; only set once definitive. */
   visionVerifiedCache = /* @__PURE__ */ new Map();
+  /** Set only in custom-provider mode (see the file header); undefined = ChatGPT subscription. */
+  openaiBaseUrl;
+  openaiApiKeyEnv;
   constructor(config2) {
     this.config = config2;
     this.serverId = config2.id;
     this.command = config2.command?.trim() || "codex";
+    this.openaiBaseUrl = config2.openaiBaseUrl?.trim() || void 0;
+    this.openaiApiKeyEnv = config2.openaiApiKeyEnv?.trim() || void 0;
     this.models = config2.models && config2.models.length ? config2.models : DEFAULT_MODELS2;
   }
   async ping() {
@@ -35772,10 +35869,12 @@ var CodexCliProvider = class {
     }
   }
   async listModels() {
+    const addr = this.openaiBaseUrl ? redactUrlUserinfo(this.openaiBaseUrl) : void 0;
     return this.models.map((m2) => ({
       provider: "codex-cli",
+      ...addr ? { serverId: this.serverId } : {},
       model: m2,
-      label: `Codex ${m2} (ChatGPT subscription)`
+      label: addr ? `${m2} (via codex CLI harness, ${addr})` : `Codex ${m2} (ChatGPT subscription)`
     }));
   }
   /**
@@ -35787,8 +35886,8 @@ var CodexCliProvider = class {
    * every other provider.
    */
   async supportsVision(model) {
-    const cached3 = this.visionVerifiedCache.get(model);
-    if (cached3 !== void 0) return cached3;
+    const cached4 = this.visionVerifiedCache.get(model);
+    if (cached4 !== void 0) return cached4;
     const outcome = await verifyVisionChallenge(
       (challenge) => this.complete(
         model,
@@ -35831,8 +35930,8 @@ var CodexCliProvider = class {
     ].filter(Boolean).join("\n\n");
     let dir;
     try {
-      dir = (0, import_node_fs6.mkdtempSync)((0, import_node_path4.join)((0, import_node_os3.tmpdir)(), "codex-council-"));
-      const outFile = (0, import_node_path4.join)(dir, "out.txt");
+      dir = (0, import_node_fs7.mkdtempSync)((0, import_node_path5.join)((0, import_node_os3.tmpdir)(), "codex-council-"));
+      const outFile = (0, import_node_path5.join)(dir, "out.txt");
       const args = [
         "exec",
         "--sandbox",
@@ -35852,6 +35951,21 @@ var CodexCliProvider = class {
       if (model && model !== "default") {
         args.push("-m", model);
       }
+      if (this.openaiBaseUrl) {
+        args.push(
+          "-c",
+          `model_provider=${CUSTOM_PROVIDER_ID}`,
+          "-c",
+          `model_providers.${CUSTOM_PROVIDER_ID}.name="${this.config.label.replace(/"/g, "")}"`,
+          "-c",
+          `model_providers.${CUSTOM_PROVIDER_ID}.base_url="${this.openaiBaseUrl}"`,
+          "-c",
+          `model_providers.${CUSTOM_PROVIDER_ID}.wire_api="responses"`
+        );
+        if (this.openaiApiKeyEnv) {
+          args.push("-c", `model_providers.${CUSTOM_PROVIDER_ID}.env_key="${this.openaiApiKeyEnv}"`);
+        }
+      }
       if (opts.webSearch) {
         args.push("-c", "tools.web_search=true");
       }
@@ -35860,8 +35974,8 @@ var CodexCliProvider = class {
       }
       const images = messages.find((m2) => m2.role === "user" && m2.images?.length)?.images ?? [];
       images.forEach((img, i2) => {
-        const path = (0, import_node_path4.join)(dir, `image-${i2}.${MIME_EXT2[img.mimeType]}`);
-        (0, import_node_fs6.writeFileSync)(path, Buffer.from(img.base64, "base64"));
+        const path = (0, import_node_path5.join)(dir, `image-${i2}.${MIME_EXT2[img.mimeType]}`);
+        (0, import_node_fs7.writeFileSync)(path, Buffer.from(img.base64, "base64"));
         args.push("-i", path);
       });
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS2;
@@ -35873,7 +35987,7 @@ var CodexCliProvider = class {
       }
       let out = "";
       try {
-        out = (0, import_node_fs6.readFileSync)(outFile, "utf8");
+        out = (0, import_node_fs7.readFileSync)(outFile, "utf8");
       } catch {
         out = "";
       }
@@ -35888,7 +36002,7 @@ var CodexCliProvider = class {
     } finally {
       if (dir) {
         try {
-          (0, import_node_fs6.rmSync)(dir, { recursive: true, force: true });
+          (0, import_node_fs7.rmSync)(dir, { recursive: true, force: true });
         } catch {
         }
       }
@@ -35897,8 +36011,14 @@ var CodexCliProvider = class {
   run(args, input, timeoutMs) {
     return new Promise((resolve4, reject) => {
       const env = { ...process.env };
-      delete env.OPENAI_API_KEY;
-      delete env.CODEX_API_KEY;
+      if (this.openaiBaseUrl) {
+        for (const v2 of ["OPENAI_API_KEY", "CODEX_API_KEY"]) {
+          if (v2 !== this.openaiApiKeyEnv) delete env[v2];
+        }
+      } else {
+        delete env.OPENAI_API_KEY;
+        delete env.CODEX_API_KEY;
+      }
       const child = (0, import_node_child_process2.spawn)(this.command, args, {
         env,
         stdio: ["pipe", "pipe", "pipe"],
@@ -35940,9 +36060,9 @@ var CodexCliProvider = class {
 
 // src/providers/grok-cli.ts
 var import_node_child_process3 = require("node:child_process");
-var import_node_fs7 = require("node:fs");
+var import_node_fs8 = require("node:fs");
 var import_node_os4 = require("node:os");
-var import_node_path5 = require("node:path");
+var import_node_path6 = require("node:path");
 var DEFAULT_MODELS3 = ["grok-4.5"];
 var DEFAULT_TIMEOUT_MS3 = 3e5;
 function killTree3(child) {
@@ -35993,8 +36113,8 @@ var GrokCliProvider = class {
    * rather than a hardcoded assumption, consistent with every other provider.
    */
   async supportsVision(model) {
-    const cached3 = this.visionVerifiedCache.get(model);
-    if (cached3 !== void 0) return cached3;
+    const cached4 = this.visionVerifiedCache.get(model);
+    if (cached4 !== void 0) return cached4;
     const outcome = await verifyVisionChallenge(
       (challenge) => this.complete(
         model,
@@ -36042,12 +36162,12 @@ var GrokCliProvider = class {
     let promptDir;
     let runDir;
     try {
-      runDir = (0, import_node_fs7.mkdtempSync)((0, import_node_path5.join)((0, import_node_os4.tmpdir)(), "grok-council-cwd-"));
+      runDir = (0, import_node_fs8.mkdtempSync)((0, import_node_path6.join)((0, import_node_os4.tmpdir)(), "grok-council-cwd-"));
       let promptArgs;
       if (images.length === 0) {
-        promptDir = (0, import_node_fs7.mkdtempSync)((0, import_node_path5.join)((0, import_node_os4.tmpdir)(), "grok-council-prompt-"));
-        const promptFile = (0, import_node_path5.join)(promptDir, "prompt.txt");
-        (0, import_node_fs7.writeFileSync)(promptFile, convo, "utf8");
+        promptDir = (0, import_node_fs8.mkdtempSync)((0, import_node_path6.join)((0, import_node_os4.tmpdir)(), "grok-council-prompt-"));
+        const promptFile = (0, import_node_path6.join)(promptDir, "prompt.txt");
+        (0, import_node_fs8.writeFileSync)(promptFile, convo, "utf8");
         promptArgs = ["--prompt-file", promptFile];
       } else {
         const blocks = [
@@ -36132,13 +36252,13 @@ var GrokCliProvider = class {
     } finally {
       if (runDir) {
         try {
-          (0, import_node_fs7.rmSync)(runDir, { recursive: true, force: true });
+          (0, import_node_fs8.rmSync)(runDir, { recursive: true, force: true });
         } catch {
         }
       }
       if (promptDir) {
         try {
-          (0, import_node_fs7.rmSync)(promptDir, { recursive: true, force: true });
+          (0, import_node_fs8.rmSync)(promptDir, { recursive: true, force: true });
         } catch {
         }
       }
@@ -37520,9 +37640,14 @@ function canResearch(type) {
   return type === "claude-cli" || type === "codex-cli" || type === "grok-cli";
 }
 function harnessRoute(id, registry3) {
-  if (id.provider !== "ollama") return id;
-  const routed = { provider: "claude-cli", serverId: "claude-cli-ollama", model: id.model };
-  return registry3.resolve(routed) ? routed : id;
+  if (id.provider === "claude-cli" || id.provider === "codex-cli" || id.provider === "grok-cli") return id;
+  for (const kind3 of harnessLadder(id.provider)) {
+    if (kind3 === "none") break;
+    const serverId = id.provider === "ollama" && kind3 === "claude-cli" ? "claude-cli-ollama" : `${kind3}-${id.serverId ?? id.provider}`;
+    const routed = { provider: kind3, serverId, model: id.model };
+    if (registry3.resolve(routed)) return routed;
+  }
+  return id;
 }
 var CouncilOrchestrator = class {
   registry;
@@ -37640,8 +37765,14 @@ var CouncilOrchestrator = class {
       };
       for (const m2 of members) {
         const label = modelIdLabel(m2.modelId);
-        if (canResearch(m2.provider.config.type)) webRouting.researched.push(label);
-        else {
+        if (canResearch(m2.provider.config.type)) {
+          webRouting.researched.push(label);
+          const risk = toolDialectRisk(m2.modelId.model);
+          if (risk) {
+            webRouting.toolDialectWarnings = webRouting.toolDialectWarnings ?? [];
+            webRouting.toolDialectWarnings.push({ label, risk });
+          }
+        } else {
           webRouting.fromMemory.push({
             label,
             reason: `${m2.provider.config.type} returns a single completion with no tool loop, so it cannot run a search`
@@ -37833,9 +37964,9 @@ var CouncilOrchestrator = class {
 
 // src/detect.ts
 var import_node_child_process4 = require("node:child_process");
-var import_node_fs8 = require("node:fs");
+var import_node_fs9 = require("node:fs");
 var import_node_os5 = require("node:os");
-var import_node_path6 = require("node:path");
+var import_node_path7 = require("node:path");
 var isCloudModel = (m2) => m2.endsWith(":cloud") || m2.endsWith("-cloud");
 function runCli(command, args, opts = { timeoutMs: 8e3 }) {
   return new Promise((resolve4) => {
@@ -37951,7 +38082,7 @@ async function detectClaude(tiers, subs) {
   if (!tierAllowsCloud("claude", tiers.claude, subs)) {
     return { installed: true, usable: false };
   }
-  const probeDir = (0, import_node_fs8.mkdtempSync)((0, import_node_path6.join)((0, import_node_os5.tmpdir)(), "claude-detect-cwd-"));
+  const probeDir = (0, import_node_fs9.mkdtempSync)((0, import_node_path7.join)((0, import_node_os5.tmpdir)(), "claude-detect-cwd-"));
   let probe;
   try {
     probe = await runCli(
@@ -37973,7 +38104,7 @@ async function detectClaude(tiers, subs) {
     );
   } finally {
     try {
-      (0, import_node_fs8.rmSync)(probeDir, { recursive: true, force: true });
+      (0, import_node_fs9.rmSync)(probeDir, { recursive: true, force: true });
     } catch {
     }
   }
@@ -37997,7 +38128,7 @@ async function detectGrok(tiers, subs) {
   if (process.env.GROK_CLI_UNSAFE_ACCEPT_RCE !== "true" || !quotaOptIn) {
     return { installed: true, usable: false };
   }
-  const probeDir = (0, import_node_fs8.mkdtempSync)((0, import_node_path6.join)((0, import_node_os5.tmpdir)(), "grok-detect-cwd-"));
+  const probeDir = (0, import_node_fs9.mkdtempSync)((0, import_node_path7.join)((0, import_node_os5.tmpdir)(), "grok-detect-cwd-"));
   let probe;
   try {
     probe = await runCli(
@@ -38016,7 +38147,7 @@ async function detectGrok(tiers, subs) {
     );
   } finally {
     try {
-      (0, import_node_fs8.rmSync)(probeDir, { recursive: true, force: true });
+      (0, import_node_fs9.rmSync)(probeDir, { recursive: true, force: true });
     } catch {
     }
   }
@@ -38088,13 +38219,13 @@ function quotaWarning(report, tiers, subs) {
 // src/context.ts
 var import_promises = require("node:fs/promises");
 var import_node_crypto = require("node:crypto");
-var import_node_path8 = require("node:path");
+var import_node_path9 = require("node:path");
 
 // src/git.ts
 var import_node_child_process5 = require("node:child_process");
 var import_node_util = require("node:util");
-var import_node_fs9 = require("node:fs");
-var import_node_path7 = require("node:path");
+var import_node_fs10 = require("node:fs");
+var import_node_path8 = require("node:path");
 var import_node_os6 = require("node:os");
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process5.execFile);
 var MAX_DIFF_BYTES = 512 * 1024;
@@ -38132,8 +38263,8 @@ async function filterNeutralizeEnv(repoPath) {
   return env;
 }
 async function emptyTreeHash(repoPath) {
-  const cached3 = emptyTreeHashCache.get(repoPath);
-  if (cached3) return cached3;
+  const cached4 = emptyTreeHashCache.get(repoPath);
+  if (cached4) return cached4;
   let hash;
   try {
     const { stdout } = await execFileAsync(
@@ -38163,7 +38294,7 @@ function diffArgsForRef(ref) {
 }
 function tryRealpath(path) {
   try {
-    return (0, import_node_fs9.realpathSync)(path);
+    return (0, import_node_fs10.realpathSync)(path);
   } catch {
     return path;
   }
@@ -38173,9 +38304,9 @@ function samePath(a2, b2) {
   return caseInsensitive ? a2.toLowerCase() === b2.toLowerCase() : a2 === b2;
 }
 async function assertGitRepo(repoPath) {
-  const resolved = (0, import_node_path7.resolve)(repoPath);
+  const resolved = (0, import_node_path8.resolve)(repoPath);
   const canonical = tryRealpath(resolved);
-  if (samePath(canonical, tryRealpath((0, import_node_path7.resolve)((0, import_node_os6.homedir)())))) {
+  if (samePath(canonical, tryRealpath((0, import_node_path8.resolve)((0, import_node_os6.homedir)())))) {
     throw new Error(
       `"${repoPath}" resolves to your home directory \u2014 refusing to grant it as a repo root even though it is a valid git work tree. Point at a narrower project directory instead.`
     );
@@ -38207,7 +38338,7 @@ async function buildGitDiff(input) {
       `git_ref "${ref}" looks like a git option, not a revision/range \u2014 refusing it. Use "uncommitted" | "staged" | "unstaged", or a revision/range like "main..HEAD".`
     );
   }
-  const repoPath = await assertGitRepo((0, import_node_path7.resolve)(input.repo?.trim() || process.cwd()));
+  const repoPath = await assertGitRepo((0, import_node_path8.resolve)(input.repo?.trim() || process.cwd()));
   const filterEnv = await filterNeutralizeEnv(repoPath);
   const args = [...GLOBAL_SAFETY_ARGS, ...diffArgsForRef(ref)];
   const attrSource = await emptyTreeHash(repoPath);
@@ -38274,8 +38405,8 @@ ${diff}`);
   let total = 0;
   for (const raw of files) {
     if (typeof raw !== "string" || !raw.trim()) continue;
-    const path = (0, import_node_path8.resolve)(raw);
-    if (IMAGE_EXTENSIONS.has((0, import_node_path8.extname)(path).toLowerCase())) {
+    const path = (0, import_node_path9.resolve)(raw);
+    if (IMAGE_EXTENSIONS.has((0, import_node_path9.extname)(path).toLowerCase())) {
       throw new Error(
         `${raw} looks like an image \u2014 "files" reads text and would send garbled data. Use the "images" parameter instead.`
       );
@@ -38329,7 +38460,7 @@ ${question}`;
 
 // src/images.ts
 var import_promises2 = require("node:fs/promises");
-var import_node_path9 = require("node:path");
+var import_node_path10 = require("node:path");
 var MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 var MAX_TOTAL_IMAGE_BYTES = 24 * 1024 * 1024;
 var MAX_IMAGES = 6;
@@ -38349,8 +38480,8 @@ async function loadImages(paths) {
   let total = 0;
   for (const raw of paths) {
     if (typeof raw !== "string" || !raw.trim()) continue;
-    const path = (0, import_node_path9.resolve)(raw);
-    const ext = (0, import_node_path9.extname)(path).toLowerCase();
+    const path = (0, import_node_path10.resolve)(raw);
+    const ext = (0, import_node_path10.extname)(path).toLowerCase();
     const mimeType = EXT_TO_MIME[ext];
     if (!mimeType) {
       throw new Error(
@@ -38447,25 +38578,25 @@ var JobStore = class {
 };
 
 // src/index.ts
-var import_node_fs10 = require("node:fs");
-var import_node_path10 = require("node:path");
-var import_meta2 = {};
+var import_node_fs11 = require("node:fs");
+var import_node_path11 = require("node:path");
+var import_meta3 = {};
 var MC_VERSION = (() => {
   const readV = (p2) => {
     try {
-      const v2 = JSON.parse((0, import_node_fs10.readFileSync)(p2, "utf8")).version;
+      const v2 = JSON.parse((0, import_node_fs11.readFileSync)(p2, "utf8")).version;
       return typeof v2 === "string" ? v2 : null;
     } catch {
       return null;
     }
   };
   try {
-    const v2 = readV(new URL("../package.json", import_meta2.url));
+    const v2 = readV(new URL("../package.json", import_meta3.url));
     if (v2) return v2;
   } catch {
   }
   if (process.argv[1]) {
-    const v2 = readV((0, import_node_path10.join)((0, import_node_path10.dirname)(process.argv[1]), "..", "package.json"));
+    const v2 = readV((0, import_node_path11.join)((0, import_node_path11.dirname)(process.argv[1]), "..", "package.json"));
     if (v2) return v2;
   }
   return "0.0.0";

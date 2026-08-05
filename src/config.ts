@@ -17,6 +17,8 @@ import {
 } from './subscriptions.js';
 import { loadState } from './state.js';
 import { EFFORT_ORDER, isReasoningEffort } from './providers/effort.js';
+import { harnessApiKeyEnv, harnessLadder } from './harness.js';
+import { openaiBaseURL } from './providers/openai-compatible.js';
 
 export interface AppConfig {
   servers: ServerConfig[];
@@ -403,6 +405,45 @@ export function loadConfig(): AppConfig {
       command: envClean('GROK_CLI_PATH') ?? 'grok',
       models: grokModels.length ? grokModels : ['grok-4.5'],
     });
+  }
+
+  // ── Harness servers for every self-hosted endpoint ────────────────────────
+  // Zero-config: a member on ANY registered engine should be able to get a real
+  // agentic tool loop (repo access, web search) without the user wiring
+  // anything. So for each OpenAI-compatible server above, register the harness
+  // the shipped matrix says that engine can take — claude-cli when it serves
+  // the Anthropic Messages API (vLLM does; verified), codex-cli's custom
+  // provider when it does not (SGLang, TRT-LLM).
+  //
+  // Registration is free: constructing a provider opens no connection and
+  // makes no call, so an unreachable endpoint costs nothing until something
+  // actually routes to it. Ollama already has its harness registered above.
+  for (const srv of [...servers]) {
+    if (srv.type !== 'vllm' && srv.type !== 'trtllm' && srv.type !== 'sglang') continue;
+    const ladder = harnessLadder(srv.type);
+    if (ladder.includes('claude-cli')) {
+      servers.push({
+        id: `claude-cli-${srv.id}`,
+        type: 'claude-cli',
+        baseUrl: `(${srv.id} via claude CLI harness)`,
+        label: `${srv.label} (via claude CLI harness)`,
+        command: envClean('CLAUDE_CLI_PATH') ?? 'claude',
+        models: [],
+        anthropicBaseUrl: srv.baseUrl,
+      });
+    }
+    if (ladder.includes('codex-cli')) {
+      servers.push({
+        id: `codex-cli-${srv.id}`,
+        type: 'codex-cli',
+        baseUrl: `(${srv.id} via codex CLI harness)`,
+        label: `${srv.label} (via codex CLI harness)`,
+        command: envClean('CODEX_CLI_PATH') ?? 'codex',
+        models: [],
+        openaiBaseUrl: openaiBaseURL(srv.baseUrl),
+        ...(harnessApiKeyEnv(srv.type) ? { openaiApiKeyEnv: harnessApiKeyEnv(srv.type) } : {}),
+      });
+    }
   }
 
   // ── Council members ───────────────────────────────────────────────────────

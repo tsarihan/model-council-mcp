@@ -15,6 +15,9 @@ import {
 } from '../dist/subscriptions.js';
 import { poolKey } from '../dist/council/query.js';
 import {
+  harnessLadder, seededHarness, toolDialectRisk, isFresh, HARNESS_CACHE_TTL_MS,
+} from '../dist/harness.js';
+import {
   ANTHROPIC_MIN_THINKING_BUDGET, CLAUDE_CLI_EFFORTS, CODEX_CLI_EFFORTS, EFFORT_ORDER,
   GROK_CLI_EFFORTS, OLLAMA_EFFORTS, OPENAI_EFFORTS, clampEffort, effortToThinkingBudget,
   isReasoningEffort,
@@ -2958,6 +2961,54 @@ console.log('▶ reasoning effort: canonical scale, per-backend clamping, Anthro
   check('anthropic: a max_tokens too small for a valid budget disables thinking rather than sending an illegal one',
     effortToThinkingBudget('max', 1024) === undefined &&
     effortToThinkingBudget('low', 900) === undefined);
+}
+
+console.log('▶ harness matrix: prefer claude-cli, fall back to codex only when the engine cannot speak Anthropic');
+{
+  // The rule: claude-cli unless the engine PROVABLY cannot speak Anthropic
+  // Messages. Ollama and vLLM both can (verified), so neither ever routes to
+  // codex first, whatever else they support.
+  check('ollama and vllm prefer the claude-cli harness',
+    seededHarness('ollama') === 'claude-cli' && seededHarness('vllm') === 'claude-cli');
+  // sglang has no /v1/messages (open upstream request), so codex is its first
+  // and only candidate.
+  check('sglang falls back to codex-cli (no Anthropic Messages endpoint)',
+    seededHarness('sglang') === 'codex-cli');
+  // UNCONFIRMED must not be read as UNSUPPORTED — "we have not checked" still
+  // tries the preferred harness rather than skipping to the fallback.
+  check('an unconfirmed Anthropic endpoint still tries claude-cli first (null !== false)',
+    seededHarness('trtllm') === 'claude-cli');
+  check('a provider absent from the matrix is tried, not refused',
+    seededHarness('some-new-engine') === 'claude-cli');
+
+  // Ollama serves no /v1/responses (verified live), and codex now REQUIRES it —
+  // so offering codex as its fallback would be a route that cannot work.
+  check('ollama gets no codex fallback: it serves no /v1/responses and codex now requires one',
+    harnessLadder('ollama').join(',') === 'claude-cli');
+  check('vllm gets both, in preference order (it serves BOTH endpoints)',
+    harnessLadder('vllm').join(',') === 'claude-cli,codex-cli');
+  check('every ladder starts with the preferred harness or the only possible one',
+    ['ollama','vllm','sglang','trtllm','openai','xai','anthropic']
+      .every(p => harnessLadder(p)[0] === seededHarness(p)));
+  check('no ladder is ever empty — something is always attempted',
+    ['ollama','vllm','sglang','trtllm','openai','xai','anthropic','unknown-engine']
+      .every(p => harnessLadder(p).length > 0));
+
+  // Tool-call dialect is advisory metadata, matched on the model name.
+  check('known tool-dialect risks are surfaced for the models that have them',
+    /markup/i.test(toolDialectRisk('kimi-k3:cloud') ?? '') && !!toolDialectRisk('qwen3.6:27b'));
+  check('a model with no known quirk gets no warning',
+    toolDialectRisk('gemma4:12b') === undefined);
+
+  // Learned entries age out so a backend upgrade that ADDS support is not
+  // locked out by an old "no" — same reasoning as the vision cache TTL.
+  const now = Date.now();
+  check('a fresh learned entry is trusted',
+    isFresh({ harness: 'claude-cli', chat: true, tools: 'ok', checkedAt: now - 1000 }, now));
+  check('an expired learned entry is re-probed rather than believed',
+    !isFresh({ harness: 'claude-cli', chat: true, tools: 'ok', checkedAt: now - HARNESS_CACHE_TTL_MS - 1 }, now));
+  check('a malformed learned entry is treated as unknown, not as a verdict',
+    !isFresh(undefined, now) && !isFresh({ harness: 'claude-cli', chat: true, tools: 'ok', checkedAt: NaN }, now));
 }
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);

@@ -40,24 +40,39 @@ members bill per token through the harness exactly as they do today.
 
 1. **claude-cli harness** — `ANTHROPIC_BASE_URL=<endpoint>` + `--model <name>`.
    Works against anything serving the Anthropic **Messages** API.
-2. **codex-cli harness** — custom provider, for OpenAI-compatible endpoints:
+2. **codex-cli harness** — custom provider, for engines serving the OpenAI
+   **Responses** API:
    `-c model_provider=mc -c model_providers.mc.base_url=<url>/v1`
-   `-c model_providers.mc.wire_api=chat -c model_providers.mc.name=…`
-   `wire_api=chat` is REQUIRED: codex's default provider assumes the Responses
-   API, which most self-hosted servers do not serve.
+   `-c model_providers.mc.wire_api=responses -c model_providers.mc.name=…`
+   plus `-c model_providers.mc.env_key=NAME` (a variable NAME, so the secret
+   never lands in argv).
+
+   **CORRECTED after live testing.** The documented advice everywhere is
+   `wire_api="chat"`. Codex 0.144.6 **rejects it at config load**: *"`wire_api =
+   \"chat\"` is no longer supported … set `wire_api = \"responses\"`"*
+   ([openai/codex#7782](https://github.com/openai/codex/discussions/7782)). So
+   the codex harness reaches an engine only if it serves `/v1/responses` —
+   being "OpenAI-compatible" via `/v1/chat/completions` is **not** enough. That
+   narrows the fallback a lot, and it is why the matrix tracks
+   `openaiResponses` rather than `openaiChat`.
 3. **No harness** — single flattened completion. Still answers; reported as
    `fromMemory` rather than silently presented as researched.
 
 ## Seed matrix (researched, not assumed)
 
-| Provider | Anthropic `/v1/messages` | OpenAI `/v1/chat/completions` | Preferred harness |
+| Provider | Anthropic `/v1/messages` | OpenAI `/v1/responses` (what codex needs) | Harness |
 |---|---|---|---|
-| `ollama` | **yes** — verified live in this repo (real `thinking` blocks returned) | yes | claude-cli |
-| `vllm` | **yes** — `vllm/entrypoints/anthropic/` registered unconditionally; documented for Claude Code | yes | claude-cli |
-| `sglang` | **no** — open feature request (sgl-project/sglang#9594) | yes | codex-cli |
-| `trtllm` | not found — assume no until probed | yes | codex-cli |
-| `openai` / `xai` | no | yes | codex-cli |
+| `ollama` | **yes** — verified live (real `thinking` blocks) | **no** — verified live (route does not answer; `/v1/chat/completions` returns 200) | claude-cli (no fallback needed, or possible) |
+| `vllm` | **yes** — `entrypoints/anthropic/` registered unconditionally; Claude Code documented | **yes** — documented | claude-cli, codex as fallback |
+| `sglang` | **no** — open request (sgl-project/sglang#9594) | unconfirmed → probe | codex-cli, else none |
+| `trtllm` | unconfirmed → probe | unconfirmed → probe | claude-cli first, then codex |
+| `openai` | no | **yes** (its own API) | codex-cli |
+| `xai` | no | unconfirmed → probe | codex-cli, else none |
 | `anthropic` (API key) | yes (native) | no | claude-cli |
+
+`null` in the matrix means **unconfirmed, so probe** — never "unsupported".
+"We have not checked" is not "it cannot", which is why `trtllm` still tries the
+preferred harness first.
 
 Anything absent from this table is **probed**, not refused.
 

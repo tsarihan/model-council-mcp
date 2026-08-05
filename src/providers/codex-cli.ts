@@ -51,8 +51,16 @@ import { CappedBuffer, ChatImage, ChatMessage, CompletionOptions, Provider , neu
 import { CODEX_CLI_EFFORTS, clampEffort } from './effort.js';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
 import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
+import { redactUrlUserinfo } from '../config.js';
 
 const DEFAULT_MODELS = ['default'];
+
+/**
+ * Provider id registered on the fly in custom-provider mode. A fixed, private
+ * name so it can never collide with a provider the user configured in their
+ * own ~/.codex/config.toml.
+ */
+const CUSTOM_PROVIDER_ID = 'model_council_endpoint';
 const DEFAULT_TIMEOUT_MS = 300_000;
 
 const MIME_EXT: Record<ChatImage['mimeType'], string> = {
@@ -90,10 +98,16 @@ export class CodexCliProvider implements Provider {
   /** Per-model OCR-challenge-verified vision result; only set once definitive. */
   private visionVerifiedCache = new Map<string, boolean>();
 
+  /** Set only in custom-provider mode (see the file header); undefined = ChatGPT subscription. */
+  private readonly openaiBaseUrl?: string;
+  private readonly openaiApiKeyEnv?: string;
+
   constructor(config: ServerConfig) {
     this.config = config;
     this.serverId = config.id;
     this.command = config.command?.trim() || 'codex';
+    this.openaiBaseUrl = config.openaiBaseUrl?.trim() || undefined;
+    this.openaiApiKeyEnv = config.openaiApiKeyEnv?.trim() || undefined;
     this.models =
       config.models && config.models.length ? config.models : DEFAULT_MODELS;
   }
@@ -108,10 +122,15 @@ export class CodexCliProvider implements Provider {
   }
 
   async listModels(): Promise<ModelInfo[]> {
+    // A custom-provider member is NOT the ChatGPT subscription — it is someone
+    // else's model reached through codex's harness — so it must never be
+    // labelled as one. Same discipline as the claude-cli Ollama harness.
+    const addr = this.openaiBaseUrl ? redactUrlUserinfo(this.openaiBaseUrl) : undefined;
     return this.models.map(m => ({
       provider: 'codex-cli' as ProviderType,
+      ...(addr ? { serverId: this.serverId } : {}),
       model: m,
-      label: `Codex ${m} (ChatGPT subscription)`,
+      label: addr ? `${m} (via codex CLI harness, ${addr})` : `Codex ${m} (ChatGPT subscription)`,
     }));
   }
 
@@ -216,6 +235,32 @@ export class CodexCliProvider implements Provider {
       if (model && model !== 'default') {
         args.push('-m', model);
       }
+      // CUSTOM-PROVIDER MODE: point codex at an OpenAI-compatible endpoint so
+      // an engine that cannot speak the Anthropic Messages API still gets a
+      // real agentic tool loop (and therefore web search) instead of a
+      // flattened, tool-less completion.
+      //
+      // `wire_api: "responses"` — and ONLY that. Verified live against codex
+      // 0.144.6: `wire_api = "chat"` is now REJECTED at config load ("no
+      // longer supported", openai/codex#7782). So this harness can reach an
+      // engine only if it serves /v1/responses; merely being
+      // "OpenAI-compatible" via /v1/chat/completions is not enough, which is
+      // why harness-capabilities.json tracks openaiResponses specifically.
+      //
+      // The API key is passed as env_key (a variable NAME) rather than a
+      // value, so codex reads the secret from its own environment and it never
+      // appears in argv, where the whole process table could read it.
+      if (this.openaiBaseUrl) {
+        args.push(
+          '-c', `model_provider=${CUSTOM_PROVIDER_ID}`,
+          '-c', `model_providers.${CUSTOM_PROVIDER_ID}.name="${this.config.label.replace(/"/g, '')}"`,
+          '-c', `model_providers.${CUSTOM_PROVIDER_ID}.base_url="${this.openaiBaseUrl}"`,
+          '-c', `model_providers.${CUSTOM_PROVIDER_ID}.wire_api="responses"`,
+        );
+        if (this.openaiApiKeyEnv) {
+          args.push('-c', `model_providers.${CUSTOM_PROVIDER_ID}.env_key="${this.openaiApiKeyEnv}"`);
+        }
+      }
       // Reasoning depth. Codex takes nearly the whole canonical scale, but not
       // quite: `minimal` is advertised by the parameter's enum yet REJECTED by
       // the current default model (verified live), so it clamps to `low` here
@@ -287,10 +332,22 @@ export class CodexCliProvider implements Provider {
     timeoutMs: number,
   ): Promise<RunResult> {
     return new Promise((resolve, reject) => {
-      // Force subscription auth: strip credentials so the ChatGPT login is used.
       const env = { ...process.env };
-      delete env.OPENAI_API_KEY;
-      delete env.CODEX_API_KEY;
+      if (this.openaiBaseUrl) {
+        // Custom-provider mode: the endpoint is NOT the ChatGPT subscription,
+        // so the key named by env_key is how we authenticate and must survive.
+        // Only the keys codex would use to reach OpenAI *itself* are cleared,
+        // and only when they aren't the one we were told to use — otherwise a
+        // council pointed at a self-hosted server could silently fall back to
+        // billing the user's OpenAI account.
+        for (const v of ['OPENAI_API_KEY', 'CODEX_API_KEY']) {
+          if (v !== this.openaiApiKeyEnv) delete env[v];
+        }
+      } else {
+        // Subscription mode: strip credentials so the ChatGPT login is used.
+        delete env.OPENAI_API_KEY;
+        delete env.CODEX_API_KEY;
+      }
 
       const child = spawn(this.command, args, {
         env,

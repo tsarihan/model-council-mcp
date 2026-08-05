@@ -205,8 +205,15 @@ export interface WebRouting {
    * API member has no tool loop to grant, so it cannot research at all.
    */
   fromMemory: { label: string; reason: string }[];
-  /** Members re-pointed through the claude-CLI harness so they COULD research. */
+  /** Members re-pointed through a CLI harness so they COULD research. */
   routedViaHarness?: string[];
+  /**
+   * Members granted a search tool whose model has a KNOWN tool-call-dialect
+   * quirk — they may answer from memory anyway, without the grant failing
+   * loudly. Advisory: the provider still refuses a reply that leaked raw
+   * tool-call markup, so a genuine failure surfaces as a member error.
+   */
+  toolDialectWarnings?: { label: string; risk: string }[];
 }
 
 export interface VisionRouting {
@@ -517,4 +524,20 @@ export interface ServerConfig {
    * members are NOT Claude and must never be labelled as such.
    */
   anthropicBaseUrl?: string;
+  /**
+   * codex-cli only: drive an OpenAI-COMPATIBLE endpoint (vLLM, SGLang,
+   * TRT-LLM, or a hosted OpenAI/xAI API) through the `codex` CLI's agentic
+   * harness by registering it as a custom model provider. This is the
+   * fallback for engines that cannot speak the Anthropic Messages API and so
+   * cannot use the preferred claude-cli harness — see harness.ts's rule.
+   * Undefined keeps codex on the user's ChatGPT subscription, as before.
+   */
+  openaiBaseUrl?: string;
+  /**
+   * codex-cli custom-provider mode: name of the env var holding the API key
+   * for `openaiBaseUrl`. Codex reads the KEY ITSELF from the environment
+   * (`env_key`), so the secret is never placed on the command line where it
+   * would be visible in the process table.
+   */
+  openaiApiKeyEnv?: string;
 }

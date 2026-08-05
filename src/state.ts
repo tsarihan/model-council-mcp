@@ -8,6 +8,7 @@ import { readFileSync, writeFileSync, mkdirSync, renameSync, statSync } from 'no
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { ModelId, ReasoningEffort, ResponseMode } from './types.js';
+import type { HarnessCapability } from './harness.js';
 
 export interface CouncilState {
   version: number;
@@ -70,6 +71,19 @@ export interface CouncilState {
    * makes the model capable, until someone manually edited this file.
    */
   visionCapability?: Record<string, VisionCacheEntry>;
+  /**
+   * What we LEARNED about driving each model through a harness, keyed by
+   * model-id label exactly like `visionCapability`. This is the half of the
+   * capability matrix that can't ship: which harness actually worked here, and
+   * whether that model's tool-calling is usable at all.
+   *
+   * It survives plugin updates for free — state.json lives in ~/.config,
+   * outside the plugin directory — which is the whole point: a model probed
+   * once should never be probed again just because the plugin was upgraded.
+   * Entries carry `checkedAt` and expire (HARNESS_CACHE_TTL_MS) so a backend
+   * upgrade that ADDS support isn't locked out by an old "no".
+   */
+  harnessCapability?: Record<string, HarnessCapability>;
 }
 
 export interface VisionCacheEntry {

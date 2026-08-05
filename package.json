@@ -1,6 +1,6 @@
 {
   "name": "model-council-mcp",
-  "version": "0.2.83",
+  "version": "0.2.84",
   "description": "MCP server: ask a council of local and cloud AI models, get individual, categorized, or fully deconflicted answers",
   "type": "module",
   "main": "dist/index.js",
@@ -8,8 +8,8 @@
     "model-council-mcp": "dist/index.js"
   },
   "scripts": {
-    "build": "tsc && node -e \"require('fs').copyFileSync('config/subscriptions.json','dist/subscriptions.json')\"",
-    "bundle": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=cjs --outfile=bundle/server.cjs && node -e \"require('fs').copyFileSync('config/subscriptions.json','bundle/subscriptions.json')\"",
+    "build": "tsc && node -e \"require('fs').copyFileSync('config/subscriptions.json','dist/subscriptions.json');require('fs').copyFileSync('config/harness-capabilities.json','dist/harness-capabilities.json')\"",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=cjs --outfile=bundle/server.cjs && node -e \"require('fs').copyFileSync('config/subscriptions.json','bundle/subscriptions.json');require('fs').copyFileSync('config/harness-capabilities.json','bundle/harness-capabilities.json')\"",
     "dev": "tsx src/index.ts",
     "test": "npm run build && node test/e2e.mjs",
     "test:bundle": "npm run bundle && SERVER_ENTRY=bundle/server.cjs node test/e2e.mjs",

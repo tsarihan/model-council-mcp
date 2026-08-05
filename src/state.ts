@@ -55,6 +55,11 @@ export interface CouncilState {
    * SEED_HARNESS_TOOL_CONCURRENCY in index.ts — then edited only by the user.
    */
   harnessToolConcurrency?: number;
+  /**
+   * Root for member output files (configure_council `output_file_location`).
+   * Absent = the OS tmpdir.
+   */
+  outputFileLocation?: string;
   /** Reference-data version the user was last welcomed for. */
   welcomedVersion?: string;
   /**

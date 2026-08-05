@@ -40,13 +40,15 @@ import { CouncilState, loadState, saveState, stateFileExists, statePath } from '
 import { loadSubscriptions, validTiers, tierAllowsCloud, SubProvider } from './subscriptions.js';
 import { detectEnvironment, autoPopulatedMembers, quotaWarning, migrateCloudToHarness, runCli } from './detect.js';
 import { buildAugmentedQuestion } from './context.js';
+import { writeCouncilOutput } from './report.js';
 import { assertGitRepo } from './git.js';
 import { loadImages } from './images.js';
 import { CouncilResult, UsageReport } from './types.js';
 import { JobStore } from './jobs.js';
 import { createHash } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, isAbsolute, join } from 'node:path';
 
 // The server version, read from package.json at load so the MCP `version` never
 // drifts from the shipped package (a hardcoded string went stale across releases
@@ -218,6 +220,23 @@ try { lastStateMtimeMs = statSync(statePath()).mtimeMs; } catch { /* no file yet
     orchestrator.updateRuntime({ harnessToolConcurrency: SEED_HARNESS_TOOL_CONCURRENCY });
     saveState({ harnessToolConcurrency: SEED_HARNESS_TOOL_CONCURRENCY });
   }
+  if (typeof st.outputFileLocation === 'string' && isAbsolute(st.outputFileLocation)) {
+    orchestrator.updateRuntime({ outputFileLocation: st.outputFileLocation });
+  }
+  // Sweep stale member-scratch roots (>7 days) so tmp/custom locations don't
+  // accumulate forever. mtime-gated, so live runs from other sessions — and
+  // anything a user is still reading — survive.
+  try {
+    const base = orchestrator.getRuntime().outputFileLocation ?? tmpdir();
+    for (const e of readdirSync(base)) {
+      const name = String(e);
+      if (!name.startsWith('mc-scratch-')) continue;
+      const p = join(base, name);
+      try {
+        if (Date.now() - statSync(p).mtimeMs > 7 * 24 * 60 * 60 * 1000) rmSync(p, { recursive: true, force: true });
+      } catch { /* another session may be racing the same sweep */ }
+    }
+  } catch { /* unreadable base — nothing to sweep */ }
   if (isReasoningEffort(st.reasoningEffort)) {
     orchestrator.updateRuntime({ reasoningEffort: st.reasoningEffort });
   } else if (isFirstRun && appConfig.runtime.reasoningEffort === undefined) {
@@ -363,6 +382,8 @@ async function runCouncil(
     web_access?: boolean;
     no_cache?: boolean;
     member_efforts?: Record<string, string>;
+    output_file?: string;
+    member_file_output?: boolean;
   },
   onProgress?: ProgressReporter,
 ) {
@@ -422,6 +443,7 @@ async function runCouncil(
     effort: (isReasoningEffort(input.reasoning_effort) ? input.reasoning_effort : undefined) ?? rt.reasoningEffort ?? null,
     web: input.web_access ?? rt.webAccess ?? false,
     repo: fullRepoAccessRepo ?? null,
+    memberFiles: input.member_file_output ?? (!!fullRepoAccessRepo || (input.web_access ?? rt.webAccess ?? false)),
     images: images.map(i => createHash('sha256').update(i.base64).digest('hex')),
     members: cfg.members.length ? cfg.members.map(m => modelIdLabel(m.modelId)) : 'auto',
     judge: cfg.judgeModelId ? modelIdLabel(cfg.judgeModelId) : 'auto',
@@ -438,7 +460,25 @@ async function runCouncil(
   // cache in BOTH directions.
   if (!input.no_cache && !fullRepoAccessRepo) {
     const hit = askCacheGet(cacheKey);
-    if (hit) return { ...hit.result, cache: { hit: true as const, ageMs: hit.ageMs } };
+    // A cache hit still honors output_file — the caller asked for a file on
+    // disk, and "the answer was already known" is no reason not to produce it.
+    if (hit) return attachOutputFile({ ...hit.result, cache: { hit: true as const, ageMs: hit.ageMs } }, input.output_file);
+  }
+
+  // ── Member file output ─────────────────────────────────────────────────
+  // Members can stream long findings to disk instead of losing them to
+  // response caps — the point of a big repo/web review. Defaults ON exactly
+  // for those heavy calls; a per-call boolean forces it either way. The root
+  // is created only AFTER the cache check, so a cache hit litters nothing.
+  const wantMemberFiles = input.member_file_output
+    ?? (!!fullRepoAccessRepo || (input.web_access ?? rt.webAccess ?? false));
+  let scratchState: { root: string; dirs: Map<string, string> } | undefined;
+  if (wantMemberFiles) {
+    try {
+      const base = rt.outputFileLocation ?? tmpdir();
+      mkdirSync(base, { recursive: true });
+      scratchState = { root: mkdtempSync(join(base, 'mc-scratch-')), dirs: new Map() };
+    } catch { /* no scratch — members degrade to inline answers, never to an error */ }
   }
 
   const fresh = await orchestrator.ask(
@@ -456,9 +496,48 @@ async function runCouncil(
     isReasoningEffort(input.reasoning_effort) ? input.reasoning_effort : undefined,
     input.web_access,
     input.member_efforts as Record<string, ReasoningEffort> | undefined,
+    scratchState,
   );
-  if (!fullRepoAccessRepo) askCachePut(cacheKey, fresh);
-  return fresh;
+
+  // Collect what members actually wrote. An empty root is removed — "member
+  // files" appearing in a result should always mean there ARE some.
+  let finished = fresh;
+  if (scratchState) {
+    const files: { member: string; path: string; bytes: number }[] = [];
+    for (const [member, dir] of scratchState.dirs) {
+      try {
+        for (const rel of readdirSync(dir, { recursive: true })) {
+          const p = join(dir, String(rel));
+          const st = statSync(p);
+          if (st.isFile()) files.push({ member, path: p, bytes: st.size });
+        }
+      } catch { /* a member's dir vanishing must not cost the answer */ }
+    }
+    files.sort((a, b) => a.member.localeCompare(b.member) || a.path.localeCompare(b.path));
+    if (files.length) {
+      finished = { ...fresh, memberFiles: { root: scratchState.root, files } } as unknown as typeof fresh;
+    } else {
+      try { rmSync(scratchState.root, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+  }
+  if (!fullRepoAccessRepo) askCachePut(cacheKey, finished);
+  return attachOutputFile(finished, input.output_file);
+}
+
+/**
+ * Write the finished result to the caller's output_file (when set) and attach
+ * a receipt. A write failure must NEVER cost the answer — the council already
+ * spent the quota — so errors come back as `outputFile.error` on an otherwise
+ * complete result. Runs AFTER askCachePut so the cached copy stays clean of
+ * per-call receipts (a later hit re-writes its own file, with its own path).
+ */
+function attachOutputFile<T extends object>(result: T, outPath: string | undefined): T {
+  if (typeof outPath !== 'string' || !outPath.trim()) return result;
+  try {
+    return { ...result, outputFile: writeCouncilOutput(outPath, result as Record<string, unknown>) };
+  } catch (e) {
+    return { ...result, outputFile: { path: outPath, error: e instanceof Error ? e.message : String(e) } };
+  }
 }
 
 const labelsToMembers = (labels: unknown[]): CouncilMember[] =>
@@ -645,6 +724,10 @@ const PARAM_ALIASES: Record<string, string> = {
   permodeleffort: 'member_efforts', modelefforts: 'member_efforts',
   effort: 'reasoning_effort', reasoning: 'reasoning_effort',
   toolconcurrency: 'harness_tool_concurrency', tool_concurrency: 'harness_tool_concurrency',
+  outputfile: 'output_file', write_to_file: 'output_file', save_to: 'output_file', savetofile: 'output_file',
+  outputpermodelresultstofile: 'member_file_output', memberfileoutput: 'member_file_output',
+  member_files: 'member_file_output', per_model_files: 'member_file_output', member_scratch: 'member_file_output',
+  outputfilelocation: 'output_file_location',
   harnesstoolconcurrency: 'harness_tool_concurrency', maxtooluseconcurrency: 'harness_tool_concurrency',
   thinking: 'reasoning_effort', effortlevel: 'reasoning_effort',
 };
@@ -797,6 +880,12 @@ const ConfigureCouncilInput = z.object({
         'install/upgrade; persisted. claude-cli members only — codex members spawn no child ' +
         'agents and grok has no equivalent, so it does not apply to them.',
     ),
+  output_file_location: z
+    .string()
+    .optional()
+    .describe(
+      'Absolute directory under which per-ask member scratch directories are created (see ask_council member_file_output). Default: the OS temp directory the server runs in. Persisted; stale run directories older than 7 days are swept at boot.',
+    ),
 }).strict();
 
 const AskCouncilInput = z.object({
@@ -892,6 +981,18 @@ const AskCouncilInput = z.object({
         '(same question, attachments, mode, effort, web access, membership, judge) repeated ' +
         'within 15 minutes returns the cached result instantly, marked with a `cache` block. ' +
         'Only clean results are ever cached; degraded/errored runs always re-run regardless.',
+    ),
+  output_file: z
+    .string()
+    .optional()
+    .describe(
+      'Absolute path to save the full result to, written by the COUNCIL SERVER after the run (members can never write files: their repo/web access is deliberately read-only, and a member told to save results would otherwise silently return only a summary). .json = the complete result object; .md/.markdown/.txt = a rendered report with every member\'s full response, judge output, sources, and usage. Parent directories are created; an existing file is overwritten. Works on ask_council_async too (written when the job completes).',
+    ),
+  member_file_output: z
+    .boolean()
+    .optional()
+    .describe(
+      'Let each member WRITE files: every claude-cli/codex-cli member gets a private, server-created scratch directory (under output_file_location, default the OS tmpdir) and is told to save long findings there as .md files, which are collected after the run and returned as `memberFiles` (and inlined into an output_file report). Built for big repo/web reviews, where full findings otherwise get truncated to fit one response. Default: ON when full_repo_access or web access is on, OFF for plain asks; pass true/false to force either way. Write access is confined per-harness (verified live: claude-cli via a path-scoped permission rule, codex-cli via its workspace-write sandbox) and the repo under review always stays READ-ONLY for members.',
     ),
   web_access: z
     .boolean()
@@ -1038,6 +1139,11 @@ const TOOLS = [
             'parent-session throttle). Seeded to 16 on install/upgrade; persisted. ' +
             'claude-cli members only.',
         },
+        output_file_location: {
+          type: 'string',
+          description:
+            'Absolute directory under which per-ask member scratch directories are created (see ask_council member_file_output). Default: the OS temp directory the server runs in. Persisted; stale run directories older than 7 days are swept at boot.',
+        },
         max_deconflict_rounds: {
           type: 'number',
           description: 'Max deconfliction rounds (1–10, default 3).',
@@ -1153,6 +1259,16 @@ const TOOLS = [
             'the cached result instantly, marked with a `cache` block). Degraded/errored runs ' +
             'are never cached.',
         },
+        member_file_output: {
+          type: 'boolean',
+          description:
+            'Let each member WRITE files: every claude-cli/codex-cli member gets a private, server-created scratch directory (under output_file_location, default the OS tmpdir) and is told to save long findings there as .md files, which are collected after the run and returned as `memberFiles` (and inlined into an output_file report). Built for big repo/web reviews, where full findings otherwise get truncated to fit one response. Default: ON when full_repo_access or web access is on, OFF for plain asks; pass true/false to force either way. Write access is confined per-harness (verified live: claude-cli via a path-scoped permission rule, codex-cli via its workspace-write sandbox) and the repo under review always stays READ-ONLY for members.',
+        },
+        output_file: {
+          type: 'string',
+          description:
+            'Absolute path to save the full result to, written by the COUNCIL SERVER after the run (members can never write files: their repo/web access is deliberately read-only, and a member told to save results would otherwise silently return only a summary). .json = the complete result object; .md/.markdown/.txt = a rendered report with every member\'s full response, judge output, sources, and usage. Parent directories are created; an existing file is overwritten. Works on ask_council_async too (written when the job completes).',
+        },
         web_access: {
           type: 'boolean',
           description:
@@ -1245,6 +1361,16 @@ const TOOLS = [
             'Force a fresh run: skip the repeat-ask cache (identical ask within 15 min returns ' +
             'the cached result instantly, marked with a `cache` block). Degraded/errored runs ' +
             'are never cached.',
+        },
+        member_file_output: {
+          type: 'boolean',
+          description:
+            'Let each member WRITE files: every claude-cli/codex-cli member gets a private, server-created scratch directory (under output_file_location, default the OS tmpdir) and is told to save long findings there as .md files, which are collected after the run and returned as `memberFiles` (and inlined into an output_file report). Built for big repo/web reviews, where full findings otherwise get truncated to fit one response. Default: ON when full_repo_access or web access is on, OFF for plain asks; pass true/false to force either way. Write access is confined per-harness (verified live: claude-cli via a path-scoped permission rule, codex-cli via its workspace-write sandbox) and the repo under review always stays READ-ONLY for members.',
+        },
+        output_file: {
+          type: 'string',
+          description:
+            'Absolute path to save the full result to, written by the COUNCIL SERVER after the run (members can never write files: their repo/web access is deliberately read-only, and a member told to save results would otherwise silently return only a summary). .json = the complete result object; .md/.markdown/.txt = a rendered report with every member\'s full response, judge output, sources, and usage. Parent directories are created; an existing file is overwritten. Works on ask_council_async too (written when the job completes).',
         },
         web_access: {
           type: 'boolean',
@@ -1589,6 +1715,17 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         if (input.harness_tool_concurrency !== undefined) {
           orchestrator.updateRuntime({ harnessToolConcurrency: input.harness_tool_concurrency });
         }
+        if (input.output_file_location !== undefined) {
+          const raw = input.output_file_location.trim();
+          const expanded = raw === '~' || raw.startsWith('~/') ? join(homedir(), raw.slice(2)) : raw;
+          if (!isAbsolute(expanded)) {
+            // Same loud-rejection stance as a bad judge_model: silently
+            // accepting a relative path would scatter member files under the
+            // server's opaque cwd.
+            throw new Error(`output_file_location must be an absolute path (got "${raw}").`);
+          }
+          orchestrator.updateRuntime({ outputFileLocation: expanded });
+        }
 
         orchestrator.updateConfig(update);
         // Only a call that actually expresses MEMBERSHIP intent (touches
@@ -1635,6 +1772,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         }
         if (input.harness_tool_concurrency !== undefined) {
           persistPatch.harnessToolConcurrency = orchestrator.getRuntime().harnessToolConcurrency;
+        }
+        if (input.output_file_location !== undefined) {
+          persistPatch.outputFileLocation = orchestrator.getRuntime().outputFileLocation;
         }
         if (Object.keys(persistPatch).length > 0) {
           saveState(persistPatch);
@@ -1903,6 +2043,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     maxTokens: runtime.maxTokens,
                     reasoningEffort: runtime.reasoningEffort ?? null,
                     harnessToolConcurrency: runtime.harnessToolConcurrency ?? null,
+                    outputFileLocation: runtime.outputFileLocation ?? null,
                     webAccess: runtime.webAccess ?? false,
                     cloudConcurrency: runtime.cloudConcurrency,
                     localConcurrency: runtime.localConcurrency,

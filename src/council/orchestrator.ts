@@ -302,6 +302,7 @@ export class CouncilOrchestrator {
     effortOverride?: ReasoningEffort,
     webAccessOverride?: boolean,
     memberEffortsRaw?: Record<string, ReasoningEffort>,
+    scratchState?: { root: string; dirs: Map<string, string> },
   ): Promise<CouncilResult> {
     // `question` is what MEMBERS see — possibly augmented by buildAugmentedQuestion
     // with untrusted context/files/git-diff content. `judgeQuestion` is the
@@ -347,6 +348,10 @@ export class CouncilOrchestrator {
       // Explicit `false` must be able to turn OFF a configured default, so
       // this tests for undefined rather than truthiness.
       ...(webAccessOverride !== undefined ? { webAccess: webAccessOverride } : {}),
+      // Member write-scratch for THIS ask only. The clone shares the ONE
+      // state object across every round's queryMembersVarying, which is what
+      // lets memberScratchDir memoize per-member dirs across rounds.
+      ...(scratchState ? { scratchState } : {}),
     };
 
     // ── Determine council membership ──────────────────────────────────────

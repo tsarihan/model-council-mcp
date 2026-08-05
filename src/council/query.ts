@@ -2,9 +2,37 @@
  * Shared member-query machinery: bounded-concurrency fan-out and
  * retry-on-empty completion.
  */
+import { mkdtempSync } from 'node:fs';
+import { join } from 'node:path';
 import { ChatImage, ChatMessage, CompletionOptions, Provider, isTimeoutError, isQuotaError, QuotaExceededError, PromptTooLargeError } from '../providers/base.js';
 import { ModelId, PoolKey, RawResponse, ResponsePhase, RuntimeConfig } from '../types.js';
 import { modelIdLabel } from '../config.js';
+
+/**
+ * The member's private write directory for this ask, created lazily on its
+ * FIRST call and memoized on the per-ask runtime clone so later rounds (a
+ * dialectic member answers two or three times) keep writing into the same
+ * place. The random mkdtemp suffix is a deliberate isolation feature: under
+ * codex's workspace-write sandbox the whole tmpdir is writable, so sibling
+ * scratch dirs must not be guessable from a member label alone. Returns
+ * undefined (no write access, exactly the pre-scratch behavior) when the ask
+ * didn't enable member file output — or if dir creation fails, because a
+ * member losing its scratch must degrade to inline answers, not to an errored
+ * round.
+ */
+function memberScratchDir(runtime: RuntimeConfig, label: string): string | undefined {
+  const st = runtime.scratchState;
+  if (!st) return undefined;
+  const existing = st.dirs.get(label);
+  if (existing) return existing;
+  try {
+    const dir = mkdtempSync(join(st.root, `${label.replace(/[^\w.-]+/g, '_')}-`));
+    st.dirs.set(label, dir);
+    return dir;
+  } catch {
+    return undefined;
+  }
+}
 
 export interface Member {
   modelId: ModelId;
@@ -360,6 +388,7 @@ export async function queryMembersVarying(
             // latency and a second untrusted-content path for no new evidence.
             webSearch: runtime.webAccess,
             toolConcurrency: runtime.harnessToolConcurrency,
+            scratchDir: memberScratchDir(runtime, label),
             ...opts,
           },
           runtime.retries,

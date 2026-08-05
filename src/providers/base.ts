@@ -158,6 +158,19 @@ export interface CompletionOptions {
    */
   toolConcurrency?: number;
   /**
+   * Server-created private directory this member MAY WRITE INTO — the only
+   * writable location it gets. Exists so a member doing a big repo/web review
+   * can stream large findings to disk instead of losing them to output caps.
+   * Enforcement is per-harness, VERIFIED LIVE: claude-cli gets the Write tool
+   * plus an `Edit(//<dir>/**)` permission rule (file-permission rules are
+   * Edit(path) for ALL editing tools — Write(path) rules are ignored, the CLI
+   * says so itself), with the repo still read-only; codex-cli flips its
+   * sandbox to workspace-write with cwd = this dir (writes confined to the
+   * workspace, reads stay unconfined so repo review keeps working). Undefined
+   * = no write access at all, exactly as before.
+   */
+  scratchDir?: string;
+  /**
    * Let this completion search the web. Only the CLI-backed providers can
    * honour it — they have an agentic tool loop to grant a search tool within;
    * every other provider gets a single flattened completion and simply

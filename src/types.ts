@@ -118,6 +118,21 @@ export interface RuntimeConfig {
    */
   harnessToolConcurrency?: number;
   /**
+   * Root directory under which per-ask member scratch dirs are created
+   * (configure_council `output_file_location`). Default: the OS tmpdir the
+   * server runs in. Persisted; must be absolute.
+   */
+  outputFileLocation?: string;
+  /**
+   * PER-ASK member write-scratch state, injected by the orchestrator into the
+   * per-call runtime clone — NEVER persisted, never set on the shared runtime.
+   * `dirs` memoizes label → dir so every round of a multi-round mode (e.g. a
+   * dialectic member's thesis and synthesis calls) writes into the SAME dir,
+   * while the random mkdtemp suffix keeps one member's dir unguessable from
+   * another member's sandbox.
+   */
+  scratchState?: { root: string; dirs: Map<string, string> };
+  /**
    * Grant council members live web search for this ask, so they research
    * rather than answer from training data. Off by default: it costs latency
    * and quota, and it pulls UNTRUSTED text off the internet into member

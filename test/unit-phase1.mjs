@@ -3193,6 +3193,69 @@ console.log('▶ corrupt state.json is quarantined, never silently rebuilt from 
   }
 }
 
+console.log('▶ report: output_file rendering, path rules, member-file inlining');
+{
+  const { renderCouncilReport, resolveOutputPath, writeCouncilOutput } = await import('../dist/report.js');
+  const { mkdtempSync: mkdt, writeFileSync: wf, readFileSync: rf } = await import('node:fs');
+  const { join: j } = await import('node:path');
+  const { tmpdir: td } = await import('node:os');
+
+  // Path rules: results are documents at explicit absolute locations.
+  let err = '';
+  try { resolveOutputPath('results.md'); } catch (e) { err = e.message; }
+  check('output_file: relative path rejected with a reason', /absolute/.test(err), err);
+  err = '';
+  try { resolveOutputPath('/tmp/x.sh'); } catch (e) { err = e.message; }
+  check('output_file: non-document extension rejected', /must end in/.test(err), err);
+  check('output_file: ~ expands to the home directory', resolveOutputPath('~/a/b.md').startsWith(process.env.HOME ?? '/'));
+
+  // Renderer: full member responses + unknown fields must both survive.
+  const shaped = {
+    mode: 'individual',
+    question: 'Q?',
+    responses: [
+      { label: 'm1', response: 'FULL ANSWER ONE', phase: 'thesis', latencyMs: 1200 },
+      { label: 'm2', error: 'boom' },
+    ],
+    synthesis: 'THE SYNTHESIS',
+    someFutureField: { nested: true },
+    usage: { completions: 2 },
+  };
+  const md = renderCouncilReport(shaped, new Date(0));
+  check('report: every member response is present in full', md.includes('FULL ANSWER ONE') && md.includes('### m1 — phase: thesis'), md.slice(0, 200));
+  check('report: an errored member is shown as errored, not dropped', md.includes('_errored: boom_'));
+  check('report: synthesis renders as prose', md.includes('## synthesis') && md.includes('THE SYNTHESIS'));
+  check('report: unknown fields survive as JSON (loss-proof)', md.includes('someFutureField') && md.includes('"nested": true'));
+
+  // Member-file inlining: the artifact carries what members wrote to scratch.
+  const sdir = mkdt(j(td(), 'mc-unit-scratch-'));
+  wf(j(sdir, 'finding.md'), 'LONG MEMBER FINDING BODY');
+  const withFiles = {
+    ...shaped,
+    memberFiles: { root: sdir, files: [{ member: 'm1', path: j(sdir, 'finding.md'), bytes: 24 }] },
+  };
+  const outMd = j(mkdt(j(td(), 'mc-unit-out-')), 'r.md');
+  const receipt = writeCouncilOutput(outMd, withFiles);
+  const body = rf(outMd, 'utf8');
+  check('output_file: markdown report inlines member-written scratch files', body.includes('LONG MEMBER FINDING BODY') && body.includes('## Member files'), body.slice(-300));
+  check('output_file: receipt reports real bytes + format', receipt.format === 'markdown' && receipt.bytes === Buffer.byteLength(body));
+  const outJson = j(td(), `mc-unit-out-${process.pid}.json`);
+  const jr = writeCouncilOutput(outJson, withFiles);
+  check('output_file: .json writes the parseable full result with the manifest', jr.format === 'json' && JSON.parse(rf(outJson, 'utf8')).memberFiles.files.length === 1);
+}
+
+console.log('▶ codex scratch guard: a repo inside the tmpdir keeps the sandbox read-only');
+{
+  const { isInsideTmpdir } = await import('../dist/providers/codex-cli.js');
+  const { tmpdir: td } = await import('node:os');
+  const { mkdtempSync: mkdt } = await import('node:fs');
+  const { join: j } = await import('node:path');
+  const inTmp = mkdt(j(td(), 'mc-unit-guard-'));
+  check('a dir under the OS tmpdir is inside (workspace-write would expose it)', isInsideTmpdir(inTmp));
+  check('the home directory is not inside the tmpdir', !isInsideTmpdir(process.env.HOME ?? '/'));
+  check('an unresolvable path refuses the write grant (fails safe)', isInsideTmpdir(j(td(), 'mc-unit-definitely-missing-xyz')));
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
 console.log('ALL PASSED ✅');

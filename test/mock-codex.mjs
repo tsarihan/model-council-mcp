@@ -14,6 +14,7 @@
  * codex at a real repo instead of the usual empty ephemeral dir.
  */
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { CHALLENGE_IMAGES, CHALLENGE_PROMPT } from '../dist/vision-challenge.js';
 
 const CHALLENGE_BY_BASE64 = new Map(CHALLENGE_IMAGES.map(c => [c.base64, c.code]));
@@ -45,6 +46,13 @@ const sandbox = flag('-s', '--sandbox') ?? '?';
 const cwd = flag('-C', '--cd');
 const okey = process.env.OPENAI_API_KEY ? 'set' : 'unset';
 const ckey = process.env.CODEX_API_KEY ? 'set' : 'unset';
+
+// Scratch: under workspace-write the cwd IS the member's writable scratch —
+// behave like a member that saved a long finding there so collection tests
+// see a real file arrive through the codex path too.
+if (sandbox === 'workspace-write' && cwd) {
+  try { writeFileSync(join(cwd, 'mock-finding.md'), `MOCK-FINDING from ${model}\n`); } catch { /* tests notice */ }
+}
 
 // Full repo access: genuinely list the -C working root, proving the provider
 // pointed codex at a real, listable repo directory (vs. the usual empty

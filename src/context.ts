@@ -176,10 +176,38 @@ export async function buildAugmentedQuestion(
     blocks.push(`----- FILE:${nonce}: ${raw} -----\n${body}`);
   }
 
-  if (blocks.length === 0) return { text: question };
+  // ── No-write guard ─────────────────────────────────────────────────────────
+  // Members cannot write files, BY DESIGN: claude-cli runs an enforced
+  // read-only tool allowlist and codex-cli a read-only sandbox, so a member
+  // asked to "write results to X and return a summary" either hallucinates a
+  // successful write (no tools at all) or silently skips it — and returns only
+  // the summary, losing the findings (observed live: full analyses collapsed
+  // to a few hundred characters because each member assumed the file existed).
+  // When the ask looks like it wants file output, say so up front and demand
+  // the complete results inline. Server-side writing is what ask_council's
+  // output_file is for. Heuristic on question+context only (attached file
+  // BODIES are untrusted and must not steer instructions); a miss just means
+  // today's behavior, a false fire costs one benign sentence.
+  const wantsFileOutput =
+    /\b(?:write|save|store|export|dump|put|append)\b[^.\n]{0,80}\bfiles?\b|\bfiles?\b[^.\n]{0,40}\b(?:write|save|store)\b|(?:^|[\s"'\`(])[~.]?\/?(?:[\w.-]+\/)*[\w-]+\.(?:md|markdown|txt|json|csv|html?)\b/i
+      .test(`${question}\n${input.context ?? ''}`);
+  const noWriteNote = wantsFileOutput
+    ? 'IMPORTANT: Unless your instructions explicitly grant you a private scratch directory, ' +
+      'you cannot create or modify files — any file access you have is strictly read-only, ' +
+      'and no file you are asked to write will exist. If a scratch directory IS granted, ' +
+      'write ONLY there (those files are collected and returned to the caller). Otherwise, ' +
+      'if this task asks you to write results to a file, return the COMPLETE results in your ' +
+      'response instead, at full detail. Never shorten your response on the assumption that ' +
+      'a file was written.'
+    : undefined;
+
+  if (blocks.length === 0) {
+    return noWriteNote ? { text: `${noWriteNote}\n\n${question}` } : { text: question };
+  }
 
   return {
     text: (
+      (noWriteNote ? `${noWriteNote}\n\n` : '') +
       `${blocks.join('\n\n')}\n\n` +
     `----- QUESTION:${nonce} -----\n${question}`
     ),

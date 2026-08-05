@@ -13,8 +13,8 @@
  * by genuinely listing the granted directory (readdirSync), proving the mock
  * could actually reach a real repo path, not just receive the flag.
  */
-import { readFileSync, readdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { CHALLENGE_IMAGES, CHALLENGE_PROMPT } from '../dist/vision-challenge.js';
 
 const CHALLENGE_BY_BASE64 = new Map(CHALLENGE_IMAGES.map(c => [c.base64, c.code]));
@@ -54,9 +54,13 @@ process.stdin.on('end', () => {
   }
   const toolsIdx = args.indexOf('--tools');
   const toolsValue = toolsIdx !== -1 ? args[toolsIdx + 1] : undefined;
-  const toolsOff = toolsValue === '';
-  const toolsReadOnly = toolsValue === 'Read';
-  const toolsRepoAccess = toolsValue === 'Read,Grep,Glob';
+  // Classify on the tool set MINUS Write: scratch adds the Write tool
+  // orthogonally to every filesystem tier, and the `scratch=` field below
+  // reports that dimension separately.
+  const coreTools = toolsValue.split(',').filter((t) => t && t !== 'Write').join(',');
+  const toolsOff = coreTools === '';
+  const toolsReadOnly = coreTools === 'Read';
+  const toolsRepoAccess = coreTools === 'Read,Grep,Glob';
   const addDirs = flagMulti('--add-dir');
   const addDir = addDirs[0]; // back-compat for the single-dir vision path below
   const strictMcp = args.includes('--strict-mcp-config');
@@ -120,11 +124,24 @@ process.stdin.on('end', () => {
   // cwd to a granted --add-dir instead of silently inheriting the server's
   // own working directory (an undocumented extra grant beyond --add-dir,
   // confirmed live before the fix).
+  // Scratch: the Edit(//<dir>/**) permission rule is how the real CLI would
+  // learn where writes are allowed — parse it back out and behave like a
+  // member that saved a long finding there.
+  const allowedRaw = flag('--allowedTools') ?? '';
+  const scratchMatch = allowedRaw.match(/Edit\(\/\/(.+?)\/\*\*\)/);
+  const scratchDir = scratchMatch ? scratchMatch[1] : undefined;
+  if (scratchDir) {
+    try {
+      writeFileSync(join(scratchDir, 'mock-finding.md'), `MOCK-FINDING from ${model}\n`);
+    } catch { /* collection tests will notice */ }
+  }
+
   const result =
     `mock-claude model=${model} key=${key} tools=${toolsTag} ` +
     `mcp=${strictMcp ? 'strict' : 'default'} sys=${sysReplace ? 'replace' : 'default'} ${readSummary} ${repoListing} ` +
     `effort=${flag('--effort') ?? 'unset'} ` +
     `toolconc=${process.env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY ?? 'unset'} ` +
+    `scratch=${scratchDir ? 'on' : 'off'} ` +
     `web=${(flag('--allowedTools') ?? '').includes('WebSearch') && (toolsValue ?? '').includes('WebSearch') ? 'on' : 'off'} ` +
     `cwd=${process.cwd()} :: ${input.trim().slice(0, 80)}`;
   process.stdout.write(

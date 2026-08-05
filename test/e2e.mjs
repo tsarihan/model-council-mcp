@@ -1265,6 +1265,80 @@ async function main() {
         rebootCfg.runtime?.harnessToolConcurrency === 4, JSON.stringify(rebootCfg.runtime?.harnessToolConcurrency));
       await rebootClient.close();
     }
+
+    // ── member_file_output + output_file ──────────────────────────────────
+    // Members stream long findings to private scratch dirs (server-created,
+    // per-harness write-confined); the server collects them and can render
+    // the whole run — full responses AND member files — to output_file.
+    const plainNoScratch = parseToolResult(await cliClient.callTool({
+      name: 'ask_council', arguments: { question: 'hello world', mode: 'individual', no_cache: true },
+    }));
+    check('member files: OFF by default on a plain ask (no write grant, no manifest)',
+      plainNoScratch.responses?.every(r => /scratch=off/.test(r.response ?? '')) && plainNoScratch.memberFiles === undefined,
+      plainNoScratch.responses?.map(r => r.response).join(' | '));
+    const mfPlain = parseToolResult(await cliClient.callTool({
+      name: 'ask_council', arguments: { question: 'hello world', mode: 'individual', no_cache: true, member_file_output: true },
+    }));
+    check('member files: member_file_output=true grants scratch on a plain ask',
+      mfPlain.responses?.every(r => /scratch=on/.test(r.response ?? '')),
+      mfPlain.responses?.map(r => r.response).join(' | '));
+    check('member files: what members wrote is collected per member with real sizes',
+      mfPlain.memberFiles?.files?.length === 2
+        && mfPlain.memberFiles.files.every(f => f.bytes > 0 && /mock-finding\.md$/.test(f.path))
+        && mfPlain.memberFiles.files.some(f => f.member === 'claude-cli:opus')
+        && mfPlain.memberFiles.files.some(f => f.member === 'claude-cli:sonnet'),
+      JSON.stringify(mfPlain.memberFiles));
+    check('member files: files land under an mc-scratch run root',
+      /mc-scratch-/.test(mfPlain.memberFiles?.root ?? ''), mfPlain.memberFiles?.root);
+    check('member files: file content is really on disk',
+      readFileSync(mfPlain.memberFiles.files[0].path, 'utf8').includes('MOCK-FINDING'));
+    const mfWebOff = parseToolResult(await cliClient.callTool({
+      name: 'ask_council', arguments: { question: 'hello world', mode: 'individual', no_cache: true, web_access: true, member_file_output: false },
+    }));
+    check('member files: explicit false wins over the heavy-call default',
+      mfWebOff.responses?.every(r => /scratch=off/.test(r.response ?? '')) && mfWebOff.memberFiles === undefined,
+      mfWebOff.responses?.map(r => r.response).join(' | '));
+    const mfWebDefault = parseToolResult(await cliClient.callTool({
+      name: 'ask_council', arguments: { question: 'hello world', mode: 'individual', no_cache: true, web_access: true },
+    }));
+    check('member files: a web (heavy) ask defaults the write grant ON',
+      mfWebDefault.responses?.every(r => /scratch=on/.test(r.response ?? '')),
+      mfWebDefault.responses?.map(r => r.response).join(' | '));
+
+    const reportMd = join(tmpdir(), `mc-e2e-report-${process.pid}.md`);
+    const rep = parseToolResult(await cliClient.callTool({
+      name: 'ask_council', arguments: { question: 'hello world', mode: 'individual', no_cache: true, member_file_output: true, output_file: reportMd },
+    }));
+    check('output_file: receipt on the result (markdown, real bytes)',
+      rep.outputFile?.format === 'markdown' && rep.outputFile?.bytes > 0 && rep.outputFile?.path === reportMd,
+      JSON.stringify(rep.outputFile));
+    const repBody = readFileSync(reportMd, 'utf8');
+    check('output_file: report carries FULL member responses and inlined member files',
+      repBody.includes('mock-claude model=') && repBody.includes('## Member files') && repBody.includes('MOCK-FINDING'),
+      repBody.slice(0, 200));
+    const reportJson = join(tmpdir(), `mc-e2e-report-${process.pid}.json`);
+    const repJ = parseToolResult(await cliClient.callTool({
+      name: 'ask_council', arguments: { question: 'hello world', mode: 'individual', no_cache: true, member_file_output: true, output_file: reportJson },
+    }));
+    check('output_file: .json writes the parseable complete result with the manifest',
+      repJ.outputFile?.format === 'json' && JSON.parse(readFileSync(reportJson, 'utf8')).memberFiles?.files?.length === 2,
+      JSON.stringify(repJ.outputFile));
+    const repBad = parseToolResult(await cliClient.callTool({
+      name: 'ask_council', arguments: { question: 'hello world', mode: 'individual', no_cache: true, output_file: 'relative-report.md' },
+    }));
+    check('output_file: a bad path costs the FILE, never the answer',
+      /absolute/.test(repBad.outputFile?.error ?? '') && repBad.responses?.length === 2,
+      JSON.stringify(repBad.outputFile));
+
+    const customLoc = mkdtempSync(join(tmpdir(), 'mc-e2e-custloc-'));
+    await cliClient.callTool({ name: 'configure_council', arguments: { output_file_location: customLoc } });
+    const mfCustom = parseToolResult(await cliClient.callTool({
+      name: 'ask_council', arguments: { question: 'hello world', mode: 'individual', no_cache: true, member_file_output: true },
+    }));
+    check('output_file_location: member files land under the configured root',
+      (mfCustom.memberFiles?.root ?? '').startsWith(customLoc), mfCustom.memberFiles?.root);
+    const locState = JSON.parse(readFileSync(join(tmpdir(), `mc-e2e-cli-${process.pid}.json`), 'utf8'));
+    check('output_file_location: persisted to state.json', locState.outputFileLocation === customLoc, locState.outputFileLocation);
     // ── member_efforts: tier 3 of the effort hierarchy ────────────────────
     // Per-model pins beat both the persisted default (xhigh, set above) and a
     // per-call override — this is what lets one slow member run shallow while
@@ -1472,6 +1546,29 @@ async function main() {
     check('codex-cli: minimal is clamped to none (the model rejects minimal despite the enum advertising it)',
       cxMinimal.responses?.every(r => /effort=none\b/.test(r.response ?? '')),
       cxMinimal.responses?.map(r => r.response).join(' | '));
+
+    // ── member file output through the codex sandbox ──────────────────────
+    const cxScratch = parseToolResult(await codexClient.callTool({
+      name: 'ask_council', arguments: { question: 'hi codex', mode: 'individual', no_cache: true, member_file_output: true },
+    }));
+    check('codex scratch: sandbox flips to workspace-write with cwd = the member scratch dir',
+      cxScratch.responses?.every(r => /sandbox=workspace-write/.test(r.response ?? '')),
+      cxScratch.responses?.map(r => r.response).join(' | '));
+    check('codex scratch: written files are collected',
+      cxScratch.memberFiles?.files?.length === 2 && cxScratch.memberFiles.files.every(f => f.bytes > 0),
+      JSON.stringify(cxScratch.memberFiles));
+    // GUARD: e2e repos live under the OS tmpdir — exactly the case where
+    // workspace-write would make the repo writable — so the write grant must
+    // be refused and the sandbox stay read-only, repo integrity first.
+    const cxRepo = mkdtempSync(join(tmpdir(), 'mc-cdxrepo-'));
+    execFileSync('git', ['init', '-q'], { cwd: cxRepo });
+    writeFileSync(join(cxRepo, 'x.txt'), 'x');
+    const cxGuard = parseToolResult(await codexClient.callTool({
+      name: 'ask_council', arguments: { question: 'hi codex', mode: 'individual', no_cache: true, full_repo_access: true, git_repo: cxRepo, member_file_output: true },
+    }));
+    check('codex scratch guard: a repo inside the tmpdir keeps the sandbox read-only (no write grant)',
+      cxGuard.responses?.every(r => /sandbox=read-only/.test(r.response ?? '')) && cxGuard.memberFiles === undefined,
+      cxGuard.responses?.map(r => r.response).join(' | '));
 
     // Vision: codex has a first-party -i/--image flag (no workaround needed) —
     // asserts the provider actually wrote real image bytes at the path it

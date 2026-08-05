@@ -48,10 +48,25 @@ export interface ContextInput {
  * question is returned unchanged (so the common case is untouched).
  * Throws a caller-friendly Error on a missing / oversized / unreadable file.
  */
+export interface AugmentedQuestion {
+  text: string;
+  /**
+   * The random fence nonce embedded in `text` (undefined when nothing was
+   * attached and `text` is the bare question). Returned so the CALLER can
+   * normalize it out of derived values — the repeat-ask cache key hashed the
+   * augmented text directly, and the per-call nonce made every
+   * context/files/git_ref ask a guaranteed cache miss: a dead cache that
+   * looked alive. The nonce itself must STAY random in the prompt — it is the
+   * forged-fence-marker defense against untrusted attachment content — so the
+   * fix is normalization at the use site, never determinism at the source.
+   */
+  nonce?: string;
+}
+
 export async function buildAugmentedQuestion(
   question: string,
   input: ContextInput,
-): Promise<string> {
+): Promise<AugmentedQuestion> {
   // "files"/"images"/git diffs are all capped; "question" and "context" were
   // not, despite becoming part of the SAME prompt re-sent to every member on
   // every round of a multi-round mode — an unbounded value here scales with
@@ -161,10 +176,13 @@ export async function buildAugmentedQuestion(
     blocks.push(`----- FILE:${nonce}: ${raw} -----\n${body}`);
   }
 
-  if (blocks.length === 0) return question;
+  if (blocks.length === 0) return { text: question };
 
-  return (
-    `${blocks.join('\n\n')}\n\n` +
+  return {
+    text: (
+      `${blocks.join('\n\n')}\n\n` +
     `----- QUESTION:${nonce} -----\n${question}`
-  );
+    ),
+    nonce,
+  };
 }

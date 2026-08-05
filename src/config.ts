@@ -548,7 +548,12 @@ export function loadConfig(): AppConfig {
   // check alone does not, since parseInt("3oops", 10) === 3.
   const cloudOverride = strictParseInt(cloudOverrideRaw);
   const localOverride = strictParseInt(localOverrideRaw);
-  const poolLimits = resolvePoolLimits(tiers, { cloud: cloudOverride, local: localOverride }, subs);
+  // How many concurrent Claude Code sessions share this machine's
+  // subscriptions (the user runs up to five). Divides the SUBSCRIPTION pool
+  // ceilings so N per-process semaphores approximate one account-wide one;
+  // API-keyed and local pools are untouched. Default 1 = single-session.
+  const councilSessions = Math.max(1, envInt('COUNCIL_SESSIONS', 1));
+  const poolLimits = resolvePoolLimits(tiers, { cloud: cloudOverride, local: localOverride }, subs, councilSessions);
 
   const runtime: RuntimeConfig = {
     // Output-token budget per completion. Clamped per-model to fit the server's

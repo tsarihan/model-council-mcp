@@ -227,16 +227,32 @@ export function resolvePoolLimits(
   tiers: { chatgpt: string; claude: string; grok: string; ollama: string },
   overrides: { cloud?: number; local?: number } = {},
   subs = loadSubscriptions(),
+  /**
+   * How many council server processes share this machine's subscriptions.
+   * The user runs one server per Claude Code session — up to five at once —
+   * and the Semaphores enforcing these ceilings are per-process, so N
+   * sessions otherwise run N× the account's intended concurrency. The
+   * divisor applies ONLY to the four SUBSCRIPTION pools (chatgpt, claude,
+   * grok, ollama-cloud), whose ceilings are account-wide plan limits;
+   * API-keyed pools (openai/anthropic/xai) are pay-per-token with no shared
+   * plan ceiling, and dividing them would just over-throttle. Default 1 =
+   * exactly today's behaviour.
+   */
+  sessions = 1,
 ): Record<PoolKey, number> {
   // An explicit CLOUD_CONCURRENCY override collapses every cloud pool to that
   // ceiling; otherwise each pool comes from its tier (API-keyed providers use
   // the apiConcurrency default, since they're pay-per-token, not tier-gated).
   const cloud = overrides.cloud;
+  // ceil, floored at 1: a session must never be starved to zero slots, and
+  // rounding up biases toward finishing work over strict fairness.
+  const share = (n: number): number =>
+    sessions > 1 && n > 0 ? Math.max(1, Math.ceil(n / sessions)) : n;
   return {
-    chatgpt: cloud ?? tierConcurrency('chatgpt', tiers.chatgpt, subs),
-    claude: cloud ?? tierConcurrency('claude', tiers.claude, subs),
-    grok: cloud ?? tierConcurrency('grok', tiers.grok, subs),
-    'ollama-cloud': cloud ?? tierConcurrency('ollama', tiers.ollama, subs),
+    chatgpt: cloud ?? share(tierConcurrency('chatgpt', tiers.chatgpt, subs)),
+    claude: cloud ?? share(tierConcurrency('claude', tiers.claude, subs)),
+    grok: cloud ?? share(tierConcurrency('grok', tiers.grok, subs)),
+    'ollama-cloud': cloud ?? share(tierConcurrency('ollama', tiers.ollama, subs)),
     openai: cloud ?? subs.defaults.apiConcurrency,
     anthropic: cloud ?? subs.defaults.apiConcurrency,
     xai: cloud ?? subs.defaults.apiConcurrency,

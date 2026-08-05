@@ -1046,6 +1046,22 @@ async function main() {
     }));
     check('cache: a different ask misses', other.cache === undefined, JSON.stringify(other.cache));
 
+    // The random fence nonce used to sit INSIDE the cache key, so any ask
+    // carrying context/files/git_ref could never hit — a dead cache that
+    // looked alive. The key is now nonce-normalized; content still misses.
+    const ctx1 = parseToolResult(await client.callTool({
+      name: 'ask_council', arguments: { question: 'with attachments', mode: 'individual', context: 'shared background' },
+    }));
+    const ctx2 = parseToolResult(await client.callTool({
+      name: 'ask_council', arguments: { question: 'with attachments', mode: 'individual', context: 'shared background' },
+    }));
+    check('cache: an ask WITH context can hit (the fence nonce is normalized out of the key)',
+      ctx1.cache === undefined && ctx2.cache?.hit === true, JSON.stringify(ctx2.cache));
+    const ctx3 = parseToolResult(await client.callTool({
+      name: 'ask_council', arguments: { question: 'with attachments', mode: 'individual', context: 'DIFFERENT background' },
+    }));
+    check('cache: changed attachment CONTENT still misses', ctx3.cache === undefined, JSON.stringify(ctx3.cache));
+
   } finally {
     await client.close();
   }
@@ -2377,6 +2393,34 @@ async function main() {
       est.basis?.includes('No model calls'), est.basis);
     await estClient.close();
     rmSync(estDir, { recursive: true, force: true });
+
+    // ── cross-session member re-adoption ──────────────────────────────────
+    // Members are the one setting with account-wide quota cost and no
+    // per-call override — a member removed in one session must stop being
+    // queried by the OTHERS, not keep burning the shared subscription all day.
+    const raDir = mkdtempSync(join(tmpdir(), 'mc-e2e-readopt-'));
+    const raState = join(raDir, 'state.json');
+    const raEnv = { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: raState };
+    const raA = new Client({ name: 'ra-a', version: '1.0.0' }, { capabilities: {} });
+    await raA.connect(new StdioClientTransport({ command: 'node', args: [serverEntry], env: raEnv }));
+    const raB = new Client({ name: 'ra-b', version: '1.0.0' }, { capabilities: {} });
+    await raB.connect(new StdioClientTransport({ command: 'node', args: [serverEntry], env: raEnv }));
+    await raA.callTool({ name: 'configure_council', arguments: { models: ['ollama:small-a', 'ollama:small-b'], response_mode: 'individual' } });
+    const raBefore = parseToolResult(await raB.callTool({ name: 'ask_council', arguments: { question: 'before', mode: 'individual' } }));
+    check('re-adopt: session B picks up session A\'s council on its next ask',
+      raBefore.responses?.length === 2, JSON.stringify(raBefore.responses?.map(r => r.label)));
+    // A drops small-b; B's NEXT ask must stop querying it — without a reload.
+    await raA.callTool({ name: 'configure_council', arguments: { models: ['ollama:small-a'] } });
+    const raAfter = parseToolResult(await raB.callTool({ name: 'ask_council', arguments: { question: 'after', mode: 'individual' } }));
+    check('re-adopt: a member removed in session A stops being queried by session B',
+      raAfter.responses?.length === 1 && raAfter.responses?.[0]?.label === 'ollama:small-a',
+      JSON.stringify(raAfter.responses?.map(r => r.label)));
+    // configure_council no longer overclaims its scope.
+    const raNote = parseToolResult(await raA.callTool({ name: 'configure_council', arguments: { response_mode: 'individual' } }));
+    check('re-adopt: configure_council reply states its cross-session scope honestly',
+      /ALREADY-RUNNING sessions keep their current settings/.test(raNote.note ?? ''), raNote.note);
+    await raA.close(); await raB.close();
+    rmSync(raDir, { recursive: true, force: true });
 
     // ── first-run effort seed: new installs only ───────────────────────────
     // `high` is seeded ONLY when no state file existed. An install that has

@@ -36,7 +36,7 @@ import { CouncilOrchestrator } from './council/orchestrator.js';
 import { ProgressReporter } from './council/query.js';
 import { CouncilConfig, CouncilMember, ModelId, ReasoningEffort, ResponseMode, SubscriptionTiers } from './types.js';
 import { EFFORT_ORDER, isReasoningEffort } from './providers/effort.js';
-import { CouncilState, loadState, saveState, stateFileExists } from './state.js';
+import { CouncilState, loadState, saveState, stateFileExists, statePath } from './state.js';
 import { loadSubscriptions, validTiers, tierAllowsCloud, SubProvider } from './subscriptions.js';
 import { detectEnvironment, autoPopulatedMembers, quotaWarning, migrateCloudToHarness, runCli } from './detect.js';
 import { buildAugmentedQuestion } from './context.js';
@@ -45,7 +45,7 @@ import { loadImages } from './images.js';
 import { CouncilResult, UsageReport } from './types.js';
 import { JobStore } from './jobs.js';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 // The server version, read from package.json at load so the MCP `version` never
@@ -157,6 +157,22 @@ const FIRST_RUN_EFFORT: ReasoningEffort = 'high';
  * creates the file), because after that every run looks like an upgrade.
  */
 const isFirstRun = !stateFileExists();
+
+/**
+ * Mtime of state.json as last seen by THIS process. Other live sessions write
+ * the same file, and everything here is otherwise adopted only at boot — so a
+ * member removed in session 1 kept burning account-wide subscription quota
+ * from sessions 2-5 for the rest of the day, with configure_council having
+ * answered an unqualified `status: "updated"`. Members are the one setting
+ * with account-wide cost AND no per-call override, so runCouncil re-adopts
+ * THEM (and only them) when the file has changed; everything else keeps
+ * boot-adoption plus per-call overrides, because re-adopting e.g.
+ * response_mode mid-fan-out would let one ultracode session silently retune
+ * the other four — trading a deterministic staleness for nondeterministic
+ * thrash.
+ */
+let lastStateMtimeMs = 0;
+try { lastStateMtimeMs = statSync(statePath()).mtimeMs; } catch { /* no file yet */ }
 
 // Apply any set_council_timeouts overrides persisted in state ahead of the
 // first ask_council, the same way persistedConfigOverrides applies
@@ -326,12 +342,28 @@ async function runCouncil(
   },
   onProgress?: ProgressReporter,
 ) {
-  const question = await buildAugmentedQuestion(input.question, {
+  // Cross-session member adoption (see lastStateMtimeMs). COUNCIL_MODELS
+  // keeps its boot precedence: an env-pinned council never follows the file.
+  try {
+    const mtime = statSync(statePath()).mtimeMs;
+    if (mtime > lastStateMtimeMs) {
+      lastStateMtimeMs = mtime;
+      const envMembers = process.env.COUNCIL_MODELS?.trim();
+      const pinnedByEnv = !!envMembers && !envMembers.includes('${');
+      const st = loadState();
+      if (!pinnedByEnv && Array.isArray(st.members)) {
+        orchestrator.updateConfig({ members: labelsToMembers(st.members) });
+      }
+    }
+  } catch { /* stat/read failure — keep the current in-memory council */ }
+
+  const augmented = await buildAugmentedQuestion(input.question, {
     context: input.context,
     files: input.files,
     gitRef: input.git_ref,
     gitRepo: input.git_repo,
   });
+  const question = augmented.text;
   const images = await loadImages(input.images);
   // Reuses git_repo as the granted root when both are set, so a git_ref review
   // and full_repo_access point at the same repo by default. Validated with the
@@ -354,7 +386,11 @@ async function runCouncil(
   const cfg = orchestrator.getConfig();
   const rt = orchestrator.getRuntime();
   const cacheKey = createHash('sha256').update(JSON.stringify({
-    q: question,
+    // Nonce-normalized: the fence nonce is random per call (a deliberate
+    // forged-marker defense), so hashing the raw augmented text made every
+    // attachment-bearing ask a guaranteed miss — file bodies, paths, and diff
+    // text still vary the key; only the random marker is collapsed.
+    q: augmented.nonce ? question.replaceAll(augmented.nonce, '$N') : question,
     origQ: input.question,
     mode: input.mode ?? cfg.responseMode,
     rounds: input.max_deconflict_rounds ?? cfg.maxDeconflictRounds,
@@ -371,7 +407,12 @@ async function runCouncil(
       : null,
   })).digest('hex');
 
-  if (!input.no_cache) {
+  // full_repo_access grants members the LIVE working tree, whose contents are
+  // not part of the key — a hit during active editing would serve verdicts
+  // about code that no longer exists. The dead-cache nonce bug was masking
+  // this hole; fixing the key unmasks it, so repo-access asks bypass the
+  // cache in BOTH directions.
+  if (!input.no_cache && !fullRepoAccessRepo) {
     const hit = askCacheGet(cacheKey);
     if (hit) return { ...hit.result, cache: { hit: true as const, ageMs: hit.ageMs } };
   }
@@ -392,7 +433,7 @@ async function runCouncil(
     input.web_access,
     input.member_efforts as Record<string, ReasoningEffort> | undefined,
   );
-  askCachePut(cacheKey, fresh);
+  if (!fullRepoAccessRepo) askCachePut(cacheKey, fresh);
   return fresh;
 }
 
@@ -904,7 +945,7 @@ const TOOLS = [
     name: 'configure_council',
     annotations: { title: 'Configure council', readOnlyHint: false },
     description:
-      'Update the council configuration: select which models form the council, ' +
+      'Update the council configuration for THIS session and persist it for future ones (other already-running sessions re-adopt only the member list, on their next ask): select which models form the council, ' +
       'choose a judge model, set the response mode (individual / categorized / deconflicted / pooled / dialectic), ' +
       'and set the maximum deconfliction rounds. Each field supplied is persisted and survives ' +
       'restarts/reloads, same as setup_council\'s tier choices; a field left unset is untouched.',
@@ -1553,6 +1594,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
               text: JSON.stringify(
                 {
                   status: 'updated',
+                  note:
+                    'Persisted. Applies to this session now and to sessions started later. Other ' +
+                    'ALREADY-RUNNING sessions keep their current settings until they reload — except ' +
+                    'members, which every running session re-adopts on its next ask.',
                   council: {
                     members: cfg.members.length
                       ? cfg.members.map(m => modelIdLabel(m.modelId))
@@ -2060,7 +2105,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                   status: 'updated',
                   run_timeout_ms: now.requestTimeoutMs,
                   repo_timeout_ms: now.repoRequestTimeoutMs,
-                  note: 'Takes effect on the next ask_council. Values persist across reloads.',
+                  note: 'Takes effect on the next ask_council. Persists: applies to this session and to sessions started from now on; other already-running sessions keep their current values until reloaded.',
                 },
                 null,
                 2,

@@ -24549,13 +24549,14 @@ function tierConcurrency(provider, tier, subs = loadSubscriptions()) {
 function validTiers(provider, subs = loadSubscriptions()) {
   return Object.keys(subs.providers[provider]?.tiers ?? {});
 }
-function resolvePoolLimits(tiers, overrides = {}, subs = loadSubscriptions()) {
+function resolvePoolLimits(tiers, overrides = {}, subs = loadSubscriptions(), sessions = 1) {
   const cloud = overrides.cloud;
+  const share = (n2) => sessions > 1 && n2 > 0 ? Math.max(1, Math.ceil(n2 / sessions)) : n2;
   return {
-    chatgpt: cloud ?? tierConcurrency("chatgpt", tiers.chatgpt, subs),
-    claude: cloud ?? tierConcurrency("claude", tiers.claude, subs),
-    grok: cloud ?? tierConcurrency("grok", tiers.grok, subs),
-    "ollama-cloud": cloud ?? tierConcurrency("ollama", tiers.ollama, subs),
+    chatgpt: cloud ?? share(tierConcurrency("chatgpt", tiers.chatgpt, subs)),
+    claude: cloud ?? share(tierConcurrency("claude", tiers.claude, subs)),
+    grok: cloud ?? share(tierConcurrency("grok", tiers.grok, subs)),
+    "ollama-cloud": cloud ?? share(tierConcurrency("ollama", tiers.ollama, subs)),
     openai: cloud ?? subs.defaults.apiConcurrency,
     anthropic: cloud ?? subs.defaults.apiConcurrency,
     xai: cloud ?? subs.defaults.apiConcurrency,
@@ -24587,13 +24588,28 @@ function stateFileExists() {
     return false;
   }
 }
+var quarantineSeq = 0;
+function quarantineCorrupt() {
+  try {
+    const p2 = statePath();
+    const aside = `${p2}.corrupt-${Date.now()}-${process.pid}-${quarantineSeq++}`;
+    (0, import_node_fs2.renameSync)(p2, aside);
+    process.stderr.write(
+      `[model-council] state.json was unreadable/corrupt \u2014 moved to ${aside} so your settings can be recovered; starting from defaults
+`
+    );
+  } catch {
+  }
+}
 function loadState() {
   try {
     const parsed = JSON.parse((0, import_node_fs2.readFileSync)(statePath(), "utf8"));
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       return parsed;
     }
-  } catch {
+    quarantineCorrupt();
+  } catch (err) {
+    if (err.code !== "ENOENT") quarantineCorrupt();
   }
   return { version: STATE_VERSION };
 }
@@ -32202,7 +32218,8 @@ function loadConfig() {
   const localOverrideRaw = envClean("LOCAL_CONCURRENCY");
   const cloudOverride = strictParseInt(cloudOverrideRaw);
   const localOverride = strictParseInt(localOverrideRaw);
-  const poolLimits = resolvePoolLimits(tiers, { cloud: cloudOverride, local: localOverride }, subs);
+  const councilSessions = Math.max(1, envInt("COUNCIL_SESSIONS", 1));
+  const poolLimits = resolvePoolLimits(tiers, { cloud: cloudOverride, local: localOverride }, subs, councilSessions);
   const runtime = {
     // Output-token budget per completion. Clamped per-model to fit the server's
     // context window (clampMaxTokens) on Ollama and OpenAI-compatible providers,
@@ -38751,11 +38768,14 @@ ${diff}`);
     blocks.push(`----- FILE:${nonce}: ${raw} -----
 ${body}`);
   }
-  if (blocks.length === 0) return question;
-  return `${blocks.join("\n\n")}
+  if (blocks.length === 0) return { text: question };
+  return {
+    text: `${blocks.join("\n\n")}
 
 ----- QUESTION:${nonce} -----
-${question}`;
+${question}`,
+    nonce
+  };
 }
 
 // src/images.ts
@@ -38904,14 +38924,14 @@ var JobStore = class {
           j2 = JSON.parse((0, import_node_fs11.readFileSync)((0, import_node_path11.join)(dir, f2), "utf8"));
         } catch {
         }
-        return { f: f2, at: j2?.startedAt ?? 0, rank: rank(j2) };
+        return { f: f2, at: (j2?.status === "done" ? j2.finishedAt : void 0) ?? j2?.startedAt ?? 0, rank: rank(j2) };
       }).sort((a2, b2) => a2.rank - b2.rank || a2.at - b2.at);
-      let excess = dated.length - MAX_PERSISTED;
-      for (const victim of dated) {
+      const evictable = dated.filter((d2) => d2.rank < 3);
+      let excess = evictable.length - MAX_PERSISTED;
+      for (const victim of evictable) {
         if (excess <= 0) break;
-        if (victim.rank >= 3) break;
         try {
-          (0, import_node_fs11.rmSync)((0, import_node_path11.join)(dir, victim.f));
+          (0, import_node_fs11.rmSync)((0, import_node_path11.join)(dir, victim.f), { force: true });
           excess--;
         } catch {
         }
@@ -38966,7 +38986,17 @@ var JobStore = class {
           this.jobs.set(id, fresh);
           return fresh;
         }
-      } catch {
+      } catch (err) {
+        if (err.code === "ENOENT") {
+          const lost = {
+            ...job,
+            status: "error",
+            error: "record lost: this job's file is no longer on disk (pruned or removed). Its owning session may have completed it; re-ask if the result is still needed.",
+            finishedAt: Date.now()
+          };
+          this.jobs.set(id, lost);
+          return lost;
+        }
       }
     }
     return job;
@@ -39063,6 +39093,11 @@ function askCachePut(key, result) {
 }
 var FIRST_RUN_EFFORT = "high";
 var isFirstRun = !stateFileExists();
+var lastStateMtimeMs = 0;
+try {
+  lastStateMtimeMs = (0, import_node_fs12.statSync)(statePath()).mtimeMs;
+} catch {
+}
 {
   const st2 = loadState();
   const t2 = st2.timeouts;
@@ -39142,12 +39177,26 @@ function withTimeoutNotice(result) {
   return { ...result, timeoutNotice: TIMEOUT_NOTICE, timedOutMembers: timedOut };
 }
 async function runCouncil(input, onProgress) {
-  const question = await buildAugmentedQuestion(input.question, {
+  try {
+    const mtime = (0, import_node_fs12.statSync)(statePath()).mtimeMs;
+    if (mtime > lastStateMtimeMs) {
+      lastStateMtimeMs = mtime;
+      const envMembers = process.env.COUNCIL_MODELS?.trim();
+      const pinnedByEnv = !!envMembers && !envMembers.includes("${");
+      const st2 = loadState();
+      if (!pinnedByEnv && Array.isArray(st2.members)) {
+        orchestrator.updateConfig({ members: labelsToMembers(st2.members) });
+      }
+    }
+  } catch {
+  }
+  const augmented = await buildAugmentedQuestion(input.question, {
     context: input.context,
     files: input.files,
     gitRef: input.git_ref,
     gitRepo: input.git_repo
   });
+  const question = augmented.text;
   const images = await loadImages(input.images);
   let fullRepoAccessRepo;
   if (input.full_repo_access) {
@@ -39156,7 +39205,11 @@ async function runCouncil(input, onProgress) {
   const cfg = orchestrator.getConfig();
   const rt2 = orchestrator.getRuntime();
   const cacheKey = (0, import_node_crypto3.createHash)("sha256").update(JSON.stringify({
-    q: question,
+    // Nonce-normalized: the fence nonce is random per call (a deliberate
+    // forged-marker defense), so hashing the raw augmented text made every
+    // attachment-bearing ask a guaranteed miss — file bodies, paths, and diff
+    // text still vary the key; only the random marker is collapsed.
+    q: augmented.nonce ? question.replaceAll(augmented.nonce, "$N") : question,
     origQ: input.question,
     mode: input.mode ?? cfg.responseMode,
     rounds: input.max_deconflict_rounds ?? cfg.maxDeconflictRounds,
@@ -39170,7 +39223,7 @@ async function runCouncil(input, onProgress) {
     // Sorted so key order in the caller's object can't split the cache.
     memberEfforts: input.member_efforts ? Object.entries(input.member_efforts).sort(([a2], [b2]) => a2.localeCompare(b2)) : null
   })).digest("hex");
-  if (!input.no_cache) {
+  if (!input.no_cache && !fullRepoAccessRepo) {
     const hit = askCacheGet(cacheKey);
     if (hit) return { ...hit.result, cache: { hit: true, ageMs: hit.ageMs } };
   }
@@ -39190,7 +39243,7 @@ async function runCouncil(input, onProgress) {
     input.web_access,
     input.member_efforts
   );
-  askCachePut(cacheKey, fresh);
+  if (!fullRepoAccessRepo) askCachePut(cacheKey, fresh);
   return fresh;
 }
 var labelsToMembers = (labels) => labels.flatMap((s2) => {
@@ -39444,7 +39497,7 @@ var TOOLS = [
   {
     name: "configure_council",
     annotations: { title: "Configure council", readOnlyHint: false },
-    description: "Update the council configuration: select which models form the council, choose a judge model, set the response mode (individual / categorized / deconflicted / pooled / dialectic), and set the maximum deconfliction rounds. Each field supplied is persisted and survives restarts/reloads, same as setup_council's tier choices; a field left unset is untouched.",
+    description: "Update the council configuration for THIS session and persist it for future ones (other already-running sessions re-adopt only the member list, on their next ask): select which models form the council, choose a judge model, set the response mode (individual / categorized / deconflicted / pooled / dialectic), and set the maximum deconfliction rounds. Each field supplied is persisted and survives restarts/reloads, same as setup_council's tier choices; a field left unset is untouched.",
     inputSchema: {
       type: "object",
       properties: {
@@ -39867,6 +39920,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
               text: JSON.stringify(
                 {
                   status: "updated",
+                  note: "Persisted. Applies to this session now and to sessions started later. Other ALREADY-RUNNING sessions keep their current settings until they reload \u2014 except members, which every running session re-adopts on its next ask.",
                   council: {
                     members: cfg.members.length ? cfg.members.map((m2) => modelIdLabel(m2.modelId)) : `(auto: all Ollama chat models${cfg.autoCouncil ? "" : " \u2014 DISABLED"})`,
                     judgeModel: cfg.judgeModelId ? modelIdLabel(cfg.judgeModelId) : "auto (largest member)",
@@ -40260,7 +40314,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                   status: "updated",
                   run_timeout_ms: now.requestTimeoutMs,
                   repo_timeout_ms: now.repoRequestTimeoutMs,
-                  note: "Takes effect on the next ask_council. Values persist across reloads."
+                  note: "Takes effect on the next ask_council. Persists: applies to this session and to sessions started from now on; other already-running sessions keep their current values until reloaded."
                 },
                 null,
                 2

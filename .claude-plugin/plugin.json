@@ -1,7 +1,7 @@
 {
   "name": "model-council",
   "description": "Ask a council of local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, X.AI Grok) AI models. Get individual, categorized (agreement / complementary / conflicting), or fully deconflicted answers with a resolution score.",
-  "version": "0.2.94",
+  "version": "0.2.95",
   "author": {
     "name": "Tom Sarihan"
   },
@@ -133,6 +133,14 @@
       "title": "Web access (research mode)",
       "description": "When ON, council members search the web instead of answering from training data. Subscription-CLI members search directly, and a bare Ollama member is automatically re-pointed through the claude-CLI harness so it can research too; API-key providers have no tool loop and still answer from memory (the result says who did which). WARNING: pulls untrusted page content into member answers, and costs real latency and subscription quota. Override per call with ask_council's web_access.",
       "default": false
+    },
+    "council_sessions": {
+      "type": "number",
+      "title": "Concurrent Claude Code sessions",
+      "description": "How many Claude Code sessions you typically run AT ONCE on this machine (each spawns its own council server, and subscription rate limits are account-wide). The per-provider subscription concurrency ceilings are divided by this so five sessions together stay near your plan's intended limit instead of running 5x over it. API-key and local pools are unaffected. Set to your usual session count; 1 = single-session behaviour.",
+      "default": 1,
+      "min": 1,
+      "max": 10
     },
     "cloud_concurrency": {
       "type": "number",

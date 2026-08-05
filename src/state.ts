@@ -127,6 +127,20 @@ export function stateFileExists(): boolean {
   }
 }
 
+let quarantineSeq = 0;
+function quarantineCorrupt(): void {
+  try {
+    const p = statePath();
+    // pid+seq keep the name unique even for two quarantines in the same ms
+    // (or in two processes racing the same corrupt file).
+    const aside = `${p}.corrupt-${Date.now()}-${process.pid}-${quarantineSeq++}`;
+    renameSync(p, aside);
+    process.stderr.write(
+      `[model-council] state.json was unreadable/corrupt — moved to ${aside} so your settings can be recovered; starting from defaults\n`,
+    );
+  } catch { /* a sibling already moved it, or it truly is absent */ }
+}
+
 export function loadState(): CouncilState {
   try {
     const parsed: unknown = JSON.parse(readFileSync(statePath(), 'utf8'));
@@ -138,8 +152,15 @@ export function loadState(): CouncilState {
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       return parsed as CouncilState;
     }
-  } catch {
-    /* no state file yet */
+    quarantineCorrupt(); // parsed but wrong shape — same treatment as unparseable
+  } catch (err) {
+    // ENOENT is the ordinary first-run case. Anything else means a file
+    // EXISTS but cannot be used — and returning the bare default would let
+    // the next saveState() rebuild state.json from nothing, silently erasing
+    // every setting the user ever made. Move the evidence aside instead:
+    // recoverable by hand, visible on disk and stderr, and multi-process safe
+    // (first renamer wins; siblings get ENOENT and fall through).
+    if ((err as { code?: string }).code !== 'ENOENT') quarantineCorrupt();
   }
   return { version: STATE_VERSION };
 }

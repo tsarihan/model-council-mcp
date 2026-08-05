@@ -146,13 +146,24 @@ export class JobStore {
       const dated = files.map(f => {
         let j: Job | null = null;
         try { j = JSON.parse(readFileSync(join(dir, f), 'utf8')) as Job; } catch { /* rank 0 */ }
-        return { f, at: j?.startedAt ?? 0, rank: rank(j) };
+        // done records age by FINISH time — evicting by start time made the
+        // longest-running result the first casualty, backwards for exactly
+        // the expensive runs persistence protects.
+        return { f, at: (j?.status === 'done' ? j.finishedAt : undefined) ?? j?.startedAt ?? 0, rank: rank(j) };
       }).sort((a, b) => a.rank - b.rank || a.at - b.at);
-      let excess = dated.length - MAX_PERSISTED;
-      for (const victim of dated) {
+      // The cap governs EVICTABLE records only — live-running files are exempt
+      // from deletion AND from the count. Counting them against the cap made
+      // finish() delete the very record it had just written whenever >=20 live
+      // runners existed (the feature 100% defeated at exactly the burst sizes
+      // it was built for — and it happened for real on this machine). 40
+      // finished jobs still prune to exactly 20.
+      const evictable = dated.filter(d => d.rank < 3);
+      let excess = evictable.length - MAX_PERSISTED;
+      for (const victim of evictable) {
         if (excess <= 0) break;
-        if (victim.rank >= 3) break; // only live-running jobs remain — keep all
-        try { rmSync(join(dir, victim.f)); excess--; } catch { /* best-effort */ }
+        // force: a sibling's prune may have removed it mid-scan; a plain
+        // rmSync throw would skip excess-- and cost one extra real victim.
+        try { rmSync(join(dir, victim.f), { force: true }); excess--; } catch { /* best-effort */ }
       }
     } catch { /* best-effort */ }
   }
@@ -219,7 +230,23 @@ export class JobStore {
           this.jobs.set(id, fresh);
           return fresh;
         }
-      } catch { /* file pruned/unreadable — the snapshot is all we have */ }
+      } catch (err) {
+        if ((err as { code?: string }).code === 'ENOENT') {
+          // The record is GONE (pruned or removed) and a finish only ever
+          // lands on disk — so serving the stale 'running' snapshot made a
+          // poller loop forever. A terminal answer, honestly worded, is the
+          // only correct option left.
+          const lost: Job = {
+            ...job,
+            status: 'error',
+            error: 'record lost: this job\'s file is no longer on disk (pruned or removed). Its owning session may have completed it; re-ask if the result is still needed.',
+            finishedAt: Date.now(),
+          };
+          this.jobs.set(id, lost);
+          return lost;
+        }
+        /* transient read error — the snapshot is all we have */
+      }
     }
     return job;
   }

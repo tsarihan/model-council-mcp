@@ -338,7 +338,7 @@ export async function runDialectic(input: DialecticInput): Promise<DialecticResu
   const judgeQuestion = input.judgeQuestion ?? question;
   const cc: CompleteConfig = {
     maxTokens: runtime.maxTokens, retries: runtime.retries, timeoutMs: runtime.requestTimeoutMs,
-    effort: runtime.reasoningEffort,
+    effort: runtime.memberEffort?.[modelIdLabel(judgeModelId)] ?? runtime.reasoningEffort,
   };
 
   // 1. Distil the distinct options (reuse the pooled digest).

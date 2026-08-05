@@ -151,6 +151,18 @@ export interface RuntimeConfig {
    * falls back to requestTimeoutMs.
    */
   memberTimeoutMs?: Record<string, number>;
+  /**
+   * Per-member reasoning effort for THIS call, keyed by model-id label —
+   * the third tier of the effort hierarchy, and the strongest:
+   *   per-model-in-call  ▸  per-call reasoning_effort  ▸  council default.
+   * Exists because members differ wildly in how they price effort: measured
+   * live, the codex member at max effort took 25x its own low-effort latency
+   * (638s worst vs 17s), while claude at max stayed usable — so one dial for
+   * the whole council forces a choice between starving the fast members and
+   * stalling on the slow one. Applies to the JUDGE too when its label is
+   * keyed. Set on the per-call clone only, never the shared config.
+   */
+  memberEffort?: Record<string, ReasoningEffort>;
 }
 
 // ─── Raw responses ────────────────────────────────────────────────────────────

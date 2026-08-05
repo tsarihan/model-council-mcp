@@ -1203,6 +1203,54 @@ async function main() {
     check('reasoning_effort: a per-call override does not leak into the server-wide default',
       afterOverride.responses?.every(r => /effort=xhigh\b/.test(r.response ?? '')),
       afterOverride.responses?.map(r => r.response).join(' | '));
+    // ── member_efforts: tier 3 of the effort hierarchy ────────────────────
+    // Per-model pins beat both the persisted default (xhigh, set above) and a
+    // per-call override — this is what lets one slow member run shallow while
+    // the rest stay deep. Keys match forgivingly: full label for opus, bare
+    // model name for sonnet.
+    const tiered = parseToolResult(await cliClient.callTool({
+      name: 'ask_council',
+      arguments: {
+        question: 'hello world', mode: 'individual', no_cache: true,
+        member_efforts: { 'claude-cli:opus': 'low', sonnet: 'max' },
+      },
+    }));
+    check('member_efforts: each member runs at ITS pinned level (beating the xhigh default)',
+      tiered.responses?.some(r => r.label === 'claude-cli:opus' && /effort=low\b/.test(r.response)) &&
+        tiered.responses?.some(r => r.label === 'claude-cli:sonnet' && /effort=max\b/.test(r.response)),
+      tiered.responses?.map(r => r.response).join(' | '));
+    // Hierarchy: an unpinned member follows the per-call level; a pinned one beats it.
+    const mixed = parseToolResult(await cliClient.callTool({
+      name: 'ask_council',
+      arguments: {
+        question: 'hello world', mode: 'individual', no_cache: true,
+        reasoning_effort: 'medium', member_efforts: { sonnet: 'max' },
+      },
+    }));
+    check('member_efforts: pinned member beats the per-call level; unpinned member follows it',
+      mixed.responses?.some(r => r.label === 'claude-cli:opus' && /effort=medium\b/.test(r.response)) &&
+        mixed.responses?.some(r => r.label === 'claude-cli:sonnet' && /effort=max\b/.test(r.response)),
+      mixed.responses?.map(r => r.response).join(' | '));
+    // Loud failure: a key that matches nothing must throw with the valid
+    // labels, never be silently dropped — a dropped pin runs the one member
+    // the caller tried to slow down at full depth, invisibly.
+    let unkThrew = false, unkMsg = '';
+    try {
+      await cliClient.callTool({ name: 'ask_council', arguments: {
+        question: 'x', mode: 'individual', member_efforts: { 'not-a-member': 'low' },
+      }});
+    } catch (e) { unkThrew = true; unkMsg = String(e?.message ?? e); }
+    check('member_efforts: an unknown member key is rejected loudly, listing valid labels',
+      unkThrew && /matches no council member/.test(unkMsg) && /claude-cli:opus/.test(unkMsg), unkMsg);
+    let ambThrew = false, ambMsg = '';
+    try {
+      await cliClient.callTool({ name: 'ask_council', arguments: {
+        question: 'x', mode: 'individual', member_efforts: { 'claude-cli': 'low' },
+      }});
+    } catch (e) { ambThrew = true; ambMsg = String(e?.message ?? e); }
+    check('member_efforts: an ambiguous key is rejected, naming both matches',
+      ambThrew && /ambiguous/.test(ambMsg) && /opus/.test(ambMsg) && /sonnet/.test(ambMsg), ambMsg);
+
     // Clear it again so the later assertions in this block see a clean council.
     await cliClient.callTool({ name: 'configure_council', arguments: { models: ['claude-cli:opus', 'claude-cli:sonnet'], response_mode: 'individual' } });
 

@@ -301,6 +301,7 @@ export class CouncilOrchestrator {
     originalQuestion?: string,
     effortOverride?: ReasoningEffort,
     webAccessOverride?: boolean,
+    memberEffortsRaw?: Record<string, ReasoningEffort>,
   ): Promise<CouncilResult> {
     // `question` is what MEMBERS see — possibly augmented by buildAugmentedQuestion
     // with untrusted context/files/git-diff content. `judgeQuestion` is the
@@ -447,6 +448,39 @@ export class CouncilOrchestrator {
           ? 'No Ollama chat models found to form a council. Pull a model (e.g. `ollama pull llama3`) or set council models via configure_council.'
           : 'Council has no reachable members. Use configure_council or set COUNCIL_MODELS.',
       );
+    }
+
+    // ── Per-member effort pins (tier 3 of the effort hierarchy) ───────────
+    // Keys are matched FORGIVINGLY (exact label, exact model part, or a
+    // unique substring — nobody should have to type
+    // "claude-cli/claude-cli-ollama:glm-5.2:cloud" to pin glm) but failures
+    // are LOUD: an unknown or ambiguous key throws with the valid labels,
+    // because a silently-dropped pin would run the one member the caller
+    // specifically tried to slow down at full depth — invisible, and costly.
+    if (memberEffortsRaw && Object.keys(memberEffortsRaw).length) {
+      const candidates = [...members.map(m => modelIdLabel(m.modelId))];
+      if (judgeModelIdPref) {
+        const jl = modelIdLabel(judgeModelIdPref);
+        if (!candidates.includes(jl)) candidates.push(jl); // a pinned non-member judge is pinnable too
+      }
+      const resolved: Record<string, ReasoningEffort> = {};
+      for (const [key, effort] of Object.entries(memberEffortsRaw)) {
+        const exact = candidates.filter(c => c === key);
+        const byModel = exact.length ? exact : candidates.filter(c => c.split(':').slice(1).join(':') === key || c.endsWith(`:${key}`));
+        const bySubstr = byModel.length ? byModel : (key.length >= 3 ? candidates.filter(c => c.includes(key)) : []);
+        if (bySubstr.length === 0) {
+          throw new Error(
+            `member_efforts: "${key}" matches no council member or judge. Valid labels: ${candidates.join(', ')}`,
+          );
+        }
+        if (bySubstr.length > 1) {
+          throw new Error(
+            `member_efforts: "${key}" is ambiguous — it matches ${bySubstr.join(' AND ')}. Use a longer/full label.`,
+          );
+        }
+        resolved[bySubstr[0]] = effort;
+      }
+      runtime.memberEffort = resolved;
     }
 
     // ── Per-member timeout floors ─────────────────────────────────────────
@@ -733,10 +767,11 @@ export class CouncilOrchestrator {
       maxTokens: runtime.maxTokens,
       retries: runtime.retries,
       timeoutMs: runtime.requestTimeoutMs,
-      // Judge calls run at the SAME depth as member calls: one council-wide
-      // setting governs the whole ask, so a "max" question is answered AND
-      // reconciled deeply rather than deeply answered then shallowly judged.
-      effort: runtime.reasoningEffort,
+      // Judge calls run at the member depth by default — one setting governs
+      // the whole ask — but the judge is a model like any other, so a
+      // per-member pin on ITS label wins, letting a slow judge be turned down
+      // without touching the members (or vice versa).
+      effort: runtime.memberEffort?.[modelIdLabel(judgeModelId)] ?? runtime.reasoningEffort,
     };
 
     // The judge is itself a council member; a genuine judge failure (unreachable,

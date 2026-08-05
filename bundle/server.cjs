@@ -36566,10 +36566,12 @@ async function queryMembersVarying(promptFor, members, runtime, opts = {}, image
             // was most worth waiting for.
             timeoutMs: runtime.memberTimeoutMs?.[label] ?? runtime.requestTimeoutMs,
             fullRepoAccess: runtime.fullRepoAccess,
-            // Council-wide reasoning depth. Set here rather than at each call
-            // site so EVERY member round inherits it — the initial fan-out,
-            // every deconfliction round, and the pooled/dialectic re-asks.
-            effort: runtime.reasoningEffort,
+            // Effort hierarchy, strongest first: this member's per-call pin,
+            // else the call-level override, else the council default — all
+            // already folded into runtime by the orchestrator. Resolved here
+            // so EVERY member round inherits it: the initial fan-out, every
+            // deconfliction round, and the pooled/dialectic re-asks.
+            effort: runtime.memberEffort?.[label] ?? runtime.reasoningEffort,
             // Members research; the JUDGE deliberately does not. It reconciles
             // text the members already produced, so a search there would add
             // latency and a second untrusted-content path for no new evidence.
@@ -36931,7 +36933,7 @@ async function synthesize(judgeProvider, judgeModelId, prompt, runtime) {
     const text = await pooledComplete(
       { modelId: judgeModelId, provider: judgeProvider },
       [{ role: "user", content: prompt }],
-      { temperature: 0.3, maxTokens: runtime.maxTokens, timeoutMs: runtime.requestTimeoutMs, effort: runtime.reasoningEffort },
+      { temperature: 0.3, maxTokens: runtime.maxTokens, timeoutMs: runtime.requestTimeoutMs, effort: runtime.memberEffort?.[modelIdLabel(judgeModelId)] ?? runtime.reasoningEffort },
       runtime.retries,
       runtime
     );
@@ -36957,7 +36959,7 @@ async function deconflict(input) {
     maxTokens: runtime.maxTokens,
     retries: runtime.retries,
     timeoutMs: runtime.requestTimeoutMs,
-    effort: runtime.reasoningEffort
+    effort: runtime.memberEffort?.[modelIdLabel(judgeModelId)] ?? runtime.reasoningEffort
   };
   const judgeLabel = modelIdLabel(judgeModelId);
   const totalConflicts = initialConflicts.length;
@@ -37306,7 +37308,7 @@ async function runPooled(input) {
     maxTokens: runtime.maxTokens,
     retries: runtime.retries,
     timeoutMs: runtime.requestTimeoutMs,
-    effort: runtime.reasoningEffort
+    effort: runtime.memberEffort?.[modelIdLabel(judgeModelId)] ?? runtime.reasoningEffort
   };
   const initialPool = await poolResponses(
     judgeQuestion,
@@ -37533,7 +37535,7 @@ async function runDialectic(input) {
     maxTokens: runtime.maxTokens,
     retries: runtime.retries,
     timeoutMs: runtime.requestTimeoutMs,
-    effort: runtime.reasoningEffort
+    effort: runtime.memberEffort?.[modelIdLabel(judgeModelId)] ?? runtime.reasoningEffort
   };
   const digest = await poolResponses(
     judgeQuestion,
@@ -37923,7 +37925,7 @@ var CouncilOrchestrator = class {
     return this.modelCache.filter((m2) => m2.provider === "ollama" && !isEmbeddingModel(m2)).map((m2) => ({ provider: "ollama", serverId: m2.serverId, model: m2.model }));
   }
   /** Ask the council and return a result in the configured (or overridden) mode */
-  async ask(question, modeOverride, maxRoundsOverride, verboseOverride, images, onProgress, fullRepoAccessRepo, originalQuestion, effortOverride, webAccessOverride) {
+  async ask(question, modeOverride, maxRoundsOverride, verboseOverride, images, onProgress, fullRepoAccessRepo, originalQuestion, effortOverride, webAccessOverride, memberEffortsRaw) {
     const judgeQuestion = originalQuestion ?? question;
     const mode = modeOverride ?? this.config.responseMode;
     const maxRounds = maxRoundsOverride ?? this.config.maxDeconflictRounds;
@@ -38008,6 +38010,31 @@ var CouncilOrchestrator = class {
       throw new Error(
         autoUsed || this.config.autoCouncil ? "No Ollama chat models found to form a council. Pull a model (e.g. `ollama pull llama3`) or set council models via configure_council." : "Council has no reachable members. Use configure_council or set COUNCIL_MODELS."
       );
+    }
+    if (memberEffortsRaw && Object.keys(memberEffortsRaw).length) {
+      const candidates = [...members.map((m2) => modelIdLabel(m2.modelId))];
+      if (judgeModelIdPref) {
+        const jl = modelIdLabel(judgeModelIdPref);
+        if (!candidates.includes(jl)) candidates.push(jl);
+      }
+      const resolved = {};
+      for (const [key, effort] of Object.entries(memberEffortsRaw)) {
+        const exact = candidates.filter((c2) => c2 === key);
+        const byModel = exact.length ? exact : candidates.filter((c2) => c2.split(":").slice(1).join(":") === key || c2.endsWith(`:${key}`));
+        const bySubstr = byModel.length ? byModel : key.length >= 3 ? candidates.filter((c2) => c2.includes(key)) : [];
+        if (bySubstr.length === 0) {
+          throw new Error(
+            `member_efforts: "${key}" matches no council member or judge. Valid labels: ${candidates.join(", ")}`
+          );
+        }
+        if (bySubstr.length > 1) {
+          throw new Error(
+            `member_efforts: "${key}" is ambiguous \u2014 it matches ${bySubstr.join(" AND ")}. Use a longer/full label.`
+          );
+        }
+        resolved[bySubstr[0]] = effort;
+      }
+      runtime.memberEffort = resolved;
     }
     {
       const floors = {};
@@ -38139,10 +38166,11 @@ var CouncilOrchestrator = class {
       maxTokens: runtime.maxTokens,
       retries: runtime.retries,
       timeoutMs: runtime.requestTimeoutMs,
-      // Judge calls run at the SAME depth as member calls: one council-wide
-      // setting governs the whole ask, so a "max" question is answered AND
-      // reconciled deeply rather than deeply answered then shallowly judged.
-      effort: runtime.reasoningEffort
+      // Judge calls run at the member depth by default — one setting governs
+      // the whole ask — but the judge is a model like any other, so a
+      // per-member pin on ITS label wins, letting a slow judge be turned down
+      // without touching the members (or vice versa).
+      effort: runtime.memberEffort?.[modelIdLabel(judgeModelId)] ?? runtime.reasoningEffort
     };
     try {
       const judgeProvider = this.registry.resolve(judgeModelId);
@@ -39138,7 +39166,9 @@ async function runCouncil(input, onProgress) {
     repo: fullRepoAccessRepo ?? null,
     images: images.map((i2) => (0, import_node_crypto3.createHash)("sha256").update(i2.base64).digest("hex")),
     members: cfg.members.length ? cfg.members.map((m2) => modelIdLabel(m2.modelId)) : "auto",
-    judge: cfg.judgeModelId ? modelIdLabel(cfg.judgeModelId) : "auto"
+    judge: cfg.judgeModelId ? modelIdLabel(cfg.judgeModelId) : "auto",
+    // Sorted so key order in the caller's object can't split the cache.
+    memberEfforts: input.member_efforts ? Object.entries(input.member_efforts).sort(([a2], [b2]) => a2.localeCompare(b2)) : null
   })).digest("hex");
   if (!input.no_cache) {
     const hit = askCacheGet(cacheKey);
@@ -39157,7 +39187,8 @@ async function runCouncil(input, onProgress) {
     // receive in a trust-affirming position (see orchestrator.ask).
     input.question,
     isReasoningEffort(input.reasoning_effort) ? input.reasoning_effort : void 0,
-    input.web_access
+    input.web_access,
+    input.member_efforts
   );
   askCachePut(cacheKey, fresh);
   return fresh;
@@ -39264,6 +39295,10 @@ var PARAM_ALIASES = {
   rounds: "max_deconflict_rounds",
   maxrounds: "max_deconflict_rounds",
   autocouncil: "auto_council",
+  memberefforts: "member_efforts",
+  membereffort: "member_efforts",
+  permodeleffort: "member_efforts",
+  modelefforts: "member_efforts",
   effort: "reasoning_effort",
   reasoning: "reasoning_effort",
   thinking: "reasoning_effort",
@@ -39360,6 +39395,9 @@ var AskCouncilInput = external_exports.object({
   ),
   images: external_exports.array(external_exports.string()).optional().describe(
     "Optional local image paths (png/jpg/jpeg/gif/webp). Auto-detected vision-capable council members are queried with the image(s); members without vision support are automatically skipped for this call (see visionRouting in the result). Caps: 8 MB/image, 24 MB total, 6 images."
+  ),
+  member_efforts: external_exports.record(external_exports.string(), external_exports.enum(EFFORT_ORDER)).optional().describe(
+    'Per-member reasoning effort for THIS call \u2014 the strongest tier of the effort hierarchy: per-model here \u25B8 reasoning_effort on the call \u25B8 the configured default. Keys match a member (or the judge) by full label, model name, or unique substring (e.g. {"gpt-5.6-sol": "medium"}); an unknown or ambiguous key is rejected loudly, never silently dropped. Use it to pin one slow member down (measured: the codex member at max effort ran 25x its own low-effort latency) while the rest run deep, or to turn the judge down independently. Levels a backend does not support still clamp to its nearest.'
   ),
   no_cache: external_exports.boolean().optional().describe(
     "Skip the repeat-ask cache and force a fresh council run. By default an IDENTICAL ask (same question, attachments, mode, effort, web access, membership, judge) repeated within 15 minutes returns the cached result instantly, marked with a `cache` block. Only clean results are ever cached; degraded/errored runs always re-run regardless."
@@ -39496,6 +39534,11 @@ var TOOLS = [
           items: { type: "string" },
           description: "Optional local image paths (png/jpg/jpeg/gif/webp). Auto-detected vision-capable council members are queried with the image(s); members without vision support are automatically skipped for this call (see visionRouting in the result). Caps: 8 MB/image, 24 MB total, 6 images."
         },
+        member_efforts: {
+          type: "object",
+          additionalProperties: { type: "string", enum: [...EFFORT_ORDER] },
+          description: 'Per-member effort for this call \u2014 strongest tier: per-model here \u25B8 reasoning_effort \u25B8 configured default. Keys match a member or the judge by full label, model name, or unique substring; unknown/ambiguous keys are rejected loudly. Example: {"gpt-5.6-sol": "medium"} pins the codex member down while the rest run deep.'
+        },
         no_cache: {
           type: "boolean",
           description: "Force a fresh run: skip the repeat-ask cache (identical ask within 15 min returns the cached result instantly, marked with a `cache` block). Degraded/errored runs are never cached."
@@ -39559,6 +39602,11 @@ var TOOLS = [
           type: "array",
           items: { type: "string" },
           description: "Optional local image paths \u2014 same vision-routing behavior as ask_council."
+        },
+        member_efforts: {
+          type: "object",
+          additionalProperties: { type: "string", enum: [...EFFORT_ORDER] },
+          description: 'Per-member effort for this call \u2014 strongest tier: per-model here \u25B8 reasoning_effort \u25B8 configured default. Keys match a member or the judge by full label, model name, or unique substring; unknown/ambiguous keys are rejected loudly. Example: {"gpt-5.6-sol": "medium"} pins the codex member down while the rest run deep.'
         },
         no_cache: {
           type: "boolean",

@@ -231,7 +231,7 @@ export async function runPooled(input: PooledInput): Promise<PooledResult> {
   const judgeQuestion = input.judgeQuestion ?? question;
   const cc: CompleteConfig = {
     maxTokens: runtime.maxTokens, retries: runtime.retries, timeoutMs: runtime.requestTimeoutMs,
-    effort: runtime.reasoningEffort,
+    effort: runtime.memberEffort?.[modelIdLabel(judgeModelId)] ?? runtime.reasoningEffort,
   };
 
   // 1. Judge distils round-0 answers into a neutral pool.

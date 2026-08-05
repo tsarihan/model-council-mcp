@@ -349,10 +349,12 @@ export async function queryMembersVarying(
             // was most worth waiting for.
             timeoutMs: runtime.memberTimeoutMs?.[label] ?? runtime.requestTimeoutMs,
             fullRepoAccess: runtime.fullRepoAccess,
-            // Council-wide reasoning depth. Set here rather than at each call
-            // site so EVERY member round inherits it — the initial fan-out,
-            // every deconfliction round, and the pooled/dialectic re-asks.
-            effort: runtime.reasoningEffort,
+            // Effort hierarchy, strongest first: this member's per-call pin,
+            // else the call-level override, else the council default — all
+            // already folded into runtime by the orchestrator. Resolved here
+            // so EVERY member round inherits it: the initial fan-out, every
+            // deconfliction round, and the pooled/dialectic re-asks.
+            effort: runtime.memberEffort?.[label] ?? runtime.reasoningEffort,
             // Members research; the JUDGE deliberately does not. It reconciles
             // text the members already produced, so a search there would add
             // latency and a second untrusted-content path for no new evidence.

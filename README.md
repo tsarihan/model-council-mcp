@@ -361,7 +361,13 @@ Send a question to the full council.
 }
 ```
 
-It applies to **every member and the judge**, so one setting governs the whole ask rather than producing deeply-reasoned answers reconciled by a shallow judge.
+Effort resolves in **three tiers, strongest first**: `member_efforts` (per model, per call) ▸ `reasoning_effort` (per call) ▸ the configured default. So one setting governs the whole ask by default — deeply-reasoned answers reconciled by an equally deep judge — while a member that prices effort very differently can be pinned individually:
+
+```json
+{ "question": "…", "reasoning_effort": "xhigh", "member_efforts": { "gpt-5.6-sol": "medium" } }
+```
+
+Keys match a member (or the judge — it's a model too) by full label, model name, or unique substring; an unknown or ambiguous key is rejected loudly, never silently dropped. This exists for a measured reason: the codex member at `max` ran **25×** its own low-effort latency (638s worst vs 17s), while the others stayed usable — one dial for the whole council forces a choice between starving the fast members and stalling on the slow one.
 
 **A brand-new install starts at `high`** — a council is worth more when its members actually think. That seed is written to `state.json` on the first run only, so from then on it is an ordinary setting you own: change it with `configure_council`, or pass `"auto"` there to clear it back to each model's own default. It is deliberately *not* the plugin option's default value, because a userConfig default would re-apply on every update; an install that already exists and never set an effort keeps running at model defaults, so upgrading never silently changes how hard your council thinks or how much quota it burns. An explicit `REASONING_EFFORT` outranks the seed.
 

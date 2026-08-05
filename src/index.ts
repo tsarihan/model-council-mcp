@@ -322,6 +322,7 @@ async function runCouncil(
     reasoning_effort?: string;
     web_access?: boolean;
     no_cache?: boolean;
+    member_efforts?: Record<string, string>;
   },
   onProgress?: ProgressReporter,
 ) {
@@ -364,6 +365,10 @@ async function runCouncil(
     images: images.map(i => createHash('sha256').update(i.base64).digest('hex')),
     members: cfg.members.length ? cfg.members.map(m => modelIdLabel(m.modelId)) : 'auto',
     judge: cfg.judgeModelId ? modelIdLabel(cfg.judgeModelId) : 'auto',
+    // Sorted so key order in the caller's object can't split the cache.
+    memberEfforts: input.member_efforts
+      ? Object.entries(input.member_efforts).sort(([a], [b]) => a.localeCompare(b))
+      : null,
   })).digest('hex');
 
   if (!input.no_cache) {
@@ -385,6 +390,7 @@ async function runCouncil(
     input.question,
     isReasoningEffort(input.reasoning_effort) ? input.reasoning_effort : undefined,
     input.web_access,
+    input.member_efforts as Record<string, ReasoningEffort> | undefined,
   );
   askCachePut(cacheKey, fresh);
   return fresh;
@@ -570,6 +576,8 @@ const PARAM_ALIASES: Record<string, string> = {
   judge: 'judge_model', judgemodel: 'judge_model',
   rounds: 'max_deconflict_rounds', maxrounds: 'max_deconflict_rounds',
   autocouncil: 'auto_council',
+  memberefforts: 'member_efforts', membereffort: 'member_efforts',
+  permodeleffort: 'member_efforts', modelefforts: 'member_efforts',
   effort: 'reasoning_effort', reasoning: 'reasoning_effort',
   thinking: 'reasoning_effort', effortlevel: 'reasoning_effort',
 };
@@ -782,6 +790,19 @@ const AskCouncilInput = z.object({
         'vision-capable council members are queried with the image(s); members ' +
         'without vision support are automatically skipped for this call (see ' +
         'visionRouting in the result). Caps: 8 MB/image, 24 MB total, 6 images.',
+    ),
+  member_efforts: z
+    .record(z.string(), z.enum(EFFORT_ORDER))
+    .optional()
+    .describe(
+      'Per-member reasoning effort for THIS call — the strongest tier of the effort ' +
+        'hierarchy: per-model here ▸ reasoning_effort on the call ▸ the configured default. ' +
+        'Keys match a member (or the judge) by full label, model name, or unique substring ' +
+        '(e.g. {"gpt-5.6-sol": "medium"}); an unknown or ambiguous key is rejected loudly, ' +
+        'never silently dropped. Use it to pin one slow member down (measured: the codex ' +
+        'member at max effort ran 25x its own low-effort latency) while the rest run deep, ' +
+        'or to turn the judge down independently. Levels a backend does not support still ' +
+        'clamp to its nearest.',
     ),
   no_cache: z
     .boolean()
@@ -1028,6 +1049,15 @@ const TOOLS = [
             'vision support are automatically skipped for this call (see visionRouting in ' +
             'the result). Caps: 8 MB/image, 24 MB total, 6 images.',
         },
+        member_efforts: {
+          type: 'object',
+          additionalProperties: { type: 'string', enum: [...EFFORT_ORDER] },
+          description:
+            'Per-member effort for this call — strongest tier: per-model here ▸ reasoning_effort ' +
+            '▸ configured default. Keys match a member or the judge by full label, model name, or ' +
+            'unique substring; unknown/ambiguous keys are rejected loudly. Example: ' +
+            '{"gpt-5.6-sol": "medium"} pins the codex member down while the rest run deep.',
+        },
         no_cache: {
           type: 'boolean',
           description:
@@ -1111,6 +1141,15 @@ const TOOLS = [
           type: 'array',
           items: { type: 'string' },
           description: 'Optional local image paths — same vision-routing behavior as ask_council.',
+        },
+        member_efforts: {
+          type: 'object',
+          additionalProperties: { type: 'string', enum: [...EFFORT_ORDER] },
+          description:
+            'Per-member effort for this call — strongest tier: per-model here ▸ reasoning_effort ' +
+            '▸ configured default. Keys match a member or the judge by full label, model name, or ' +
+            'unique substring; unknown/ambiguous keys are rejected loudly. Example: ' +
+            '{"gpt-5.6-sol": "medium"} pins the codex member down while the rest run deep.',
         },
         no_cache: {
           type: 'boolean',

@@ -287,13 +287,15 @@ export class GrokCliProvider implements Provider {
         // could not be exercised. Re-run the `id > /tmp/X` probe against a
         // working grok login before trusting this, and check whether MCP tools
         // (which `--tools` may not gate at all) need `--disallowed-tools` too.
-        // Web research, when the caller opted in. The exact built-in tool NAMES
-        // are UNVERIFIED — grok documents `--disable-web-search` ("web search and
-        // web fetch tools") but never names them, and `--tools` takes names. This
-        // guess therefore FAILS CLOSED by grok's own semantics, the same property
-        // that made 'none' the safe lockdown value: an unrecognized name yields an
-        // empty effective allowlist, so a wrong guess means NO tools rather than
-        // ALL of them. Confirm against a working grok login before relying on it.
+        // Web research, when the caller opted in. Tool NAMES verified against
+        // the grok binary itself (0.2.118): its strings contain the registered
+        // identifiers `tool.web_search` / crate path `xai_grok_tools::
+        // implementations::grok_build::web_search`, the template kind
+        // `tools.by_kind.web_search`, and runtime messages naming both tools —
+        // and `--disable-web-search` documents itself as covering "web search
+        // and web fetch tools". Still unverified: live EXECUTION under a
+        // logged-in subscription (blocked by the RCE fail-closed gate + quota);
+        // a wrong name would still fail closed (empty allowlist), never open.
         '--tools', opts.webSearch ? 'web_search,web_fetch' : 'none',
         '--permission-mode', 'bypassPermissions', // required in headless mode, see file header
         '--system-prompt-override', systemText,

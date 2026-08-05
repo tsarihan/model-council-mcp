@@ -417,6 +417,8 @@ Every result then carries a `webRouting` block naming `researched`, `fromMemory`
 
 **Capability detection.** A member on an engine the council has no built-in knowledge of is **probed, not refused** — one small completion to find a working harness, plus (only when web access is wanted) one tool-call probe, since a model can answer perfectly and still be unable to execute a tool call. The result is written to `state.json` `harnessCapability` and reused, so the cost is paid at most once per model per 30 days, across restarts *and* plugin updates. A timeout is recorded as inconclusive rather than as a verdict, so a slow machine never permanently condemns a capable model.
 
+**Predict, repeat, survive.** Three quality-of-life behaviours. `estimate_council_cost` predicts an ask's member completions, judge calls and wall-clock **before** you run it — calibrated from what each configured member has actually needed on this machine (the same learned history behind per-member timeouts; members with no history use conservative defaults and are flagged `measured: false`); it makes no model calls. An **identical ask repeated within 15 minutes** returns the cached result instantly, marked with a `cache: { hit, ageMs }` block — only clean results are cached (anything degraded, timed-out, or carrying a member error always re-runs), any change to the question, attachments, mode, effort, web access, membership or judge is a miss, and `no_cache: true` forces a fresh run. And **background jobs now survive `/reload-plugins`**: each `ask_council_async` job is mirrored to `<state file>.jobs/`, so a finished-but-unfetched result is still there after a reload; a job that was mid-flight when the server died can't be resumed and comes back as an explicit `interrupted` error rather than an eternal `running`.
+
 **What a researched result carries.** Every result now includes `usage` (member completions and per-member wall-clock — judge calls excluded — so the cost of an ask is legible rather than discovered at the quota), and `judgeIsMember: true` when the judge also answered as a member, since its reconciliation then includes its own answer. With `web_access` on, `webRouting.sources` consolidates every URL the members cited, deduplicated and ordered by corroboration, so "3 of 4 members cite AP for this" is a fact you can read instead of reconstruct by diffing member blocks. And when a conflict's positions differ in verifiable backing — one side cites a source, the other doesn't — the judge adds an `assessment` naming which position is better supported and why; equal backing means no field, never a fabricated tiebreak. Capability warnings also now clear themselves: a model measured tool-capable (by probe or by a successful researched round) stops wearing its family's seeded caveat.
 
 **Security.** Page content is untrusted input that flows into member answers and then into judge prompts — the same trust class as `context`/`files`/git-diff, and every member prompt says so explicitly. Grant it deliberately.
@@ -637,6 +639,10 @@ Same inputs as `ask_council` (including `context` / `files` / `git_ref`), but st
 ```json
 { "status": "running", "job_id": "6f2c…", "mode": "dialectic", "members": 8 }
 ```
+
+### `estimate_council_cost`
+
+Predict an ask's cost before running it: `{ mode?, web_access?, max_deconflict_rounds? }` (all default to the configured values) → per-member expected latency (learned where measured, defaults where not), round structure for the mode, and `wallClockMs` / `totalLatencyMs` / completion counts. Deconflicted mode is reported as worst case (all rounds run). Read-only; makes no model calls.
 
 ### `get_council_result`
 

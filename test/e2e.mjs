@@ -4,7 +4,7 @@ process.env.GROK_CLI_UNSAFE_ACCEPT_RCE = 'true';
  * backend) and drive all 4 tools + 3 response modes via the MCP protocol.
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +13,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
 const MOCK_PORT = 11499;
 const MOCK_URL = `http://localhost:${MOCK_PORT}`;
+const MAIN_STATE_FILE = join(tmpdir(), `mc-e2e-main-${process.pid}.json`);
 const MOCK_CLAUDE = fileURLToPath(new URL('./mock-claude.mjs', import.meta.url));
 const MOCK_CODEX = fileURLToPath(new URL('./mock-codex.mjs', import.meta.url));
 const MOCK_GROK = fileURLToPath(new URL('./mock-grok.mjs', import.meta.url));
@@ -73,7 +74,7 @@ async function main() {
       LOCAL_CONCURRENCY: '1',
       CLAUDE_TIER: 'free', // keep the main suite Ollama-only (CLI providers tested in isolation)
       CHATGPT_TIER: 'free',
-      MODEL_COUNCIL_STATE: join(tmpdir(), `mc-e2e-main-${process.pid}.json`), // isolate from real ~/.config
+      MODEL_COUNCIL_STATE: MAIN_STATE_FILE, // isolate from real ~/.config
     },
   });
 
@@ -99,7 +100,7 @@ async function main() {
     console.log('\n▶ list tools');
     const tools = await client.listTools();
     const toolNames = tools.tools.map(t => t.name).sort();
-    check('9 tools exposed', toolNames.length === 9, `got ${toolNames.join(',')}`);
+    check('10 tools exposed', toolNames.length === 10, `got ${toolNames.join(',')}`);
     check('has ask_council', toolNames.includes('ask_council'));
     check('has ask_council_async', toolNames.includes('ask_council_async'));
     check('has get_council_result', toolNames.includes('get_council_result'));
@@ -753,7 +754,9 @@ async function main() {
       // an uncached mock.
       const progressMessages = [];
       const visAskProgress = parseToolResult(await client.callTool(
-        { name: 'ask_council', arguments: { question: "What's in this picture?", mode: 'individual', images: [imgFile] } },
+        // no_cache: an identical vision ask ran above; a cache hit returns with
+        // no fan-out and therefore no progress to observe — freshness IS the test.
+        { name: 'ask_council', arguments: { question: "What's in this picture?", mode: 'individual', images: [imgFile], no_cache: true } },
         undefined,
         { onprogress: p => progressMessages.push(p.message) },
       ));
@@ -1008,6 +1011,41 @@ async function main() {
     } catch (e) { badJob = /No such job/i.test(String(e?.message ?? e)); }
     check('async: unknown job_id → error', badJob);
 
+    // Jobs are now mirrored to disk so a finished-but-unfetched result
+    // survives a /reload-plugins instead of being silently eaten.
+    const mainJobsDir = `${MAIN_STATE_FILE}.jobs`;
+    check('async: finished job is persisted to disk',
+      existsSync(join(mainJobsDir, `${started.job_id}.json`)) &&
+        JSON.parse(readFileSync(join(mainJobsDir, `${started.job_id}.json`), 'utf8')).status === 'done',
+      mainJobsDir);
+
+    // ── repeat-ask cache ──────────────────────────────────────────────────
+    console.log('\n▶ repeat-ask cache');
+    const first = parseToolResult(await client.callTool({
+      name: 'ask_council', arguments: { question: 'cache me if you can', mode: 'individual' },
+    }));
+    check('cache: a first ask is fresh (no cache block)', first.cache === undefined, JSON.stringify(first.cache));
+    const second = parseToolResult(await client.callTool({
+      name: 'ask_council', arguments: { question: 'cache me if you can', mode: 'individual' },
+    }));
+    // The identical resolved ask within the TTL returns the cached result,
+    // SAYS so, and reproduces the same answers — measured live, a verbatim
+    // repeat previously re-spent 125s of member time for the identical output.
+    check('cache: the identical repeat hits, and says so',
+      second.cache?.hit === true && typeof second.cache?.ageMs === 'number',
+      JSON.stringify(second.cache));
+    check('cache: the cached responses are the first run\'s responses',
+      JSON.stringify(second.responses) === JSON.stringify(first.responses));
+    const forced = parseToolResult(await client.callTool({
+      name: 'ask_council', arguments: { question: 'cache me if you can', mode: 'individual', no_cache: true },
+    }));
+    check('cache: no_cache forces a fresh run', forced.cache === undefined, JSON.stringify(forced.cache));
+    // A different question is a different key — never served someone else's answer.
+    const other = parseToolResult(await client.callTool({
+      name: 'ask_council', arguments: { question: 'a different question entirely', mode: 'individual' },
+    }));
+    check('cache: a different ask misses', other.cache === undefined, JSON.stringify(other.cache));
+
   } finally {
     await client.close();
   }
@@ -1160,7 +1198,7 @@ async function main() {
     // ...and the override must not have leaked into the shared runtime, or the
     // NEXT caller silently inherits a level they never asked for.
     const afterOverride = parseToolResult(await cliClient.callTool({
-      name: 'ask_council', arguments: { question: 'hello world', mode: 'individual' },
+      name: 'ask_council', arguments: { question: 'hello world', mode: 'individual', no_cache: true },
     }));
     check('reasoning_effort: a per-call override does not leak into the server-wide default',
       afterOverride.responses?.every(r => /effort=xhigh\b/.test(r.response ?? '')),
@@ -2143,6 +2181,68 @@ async function main() {
       wrOff.webRouting === undefined, JSON.stringify(wrOff.webRouting));
     await wrClient.close();
     rmSync(wrDir, { recursive: true, force: true });
+
+    // ── job persistence: a reload cannot leave a job 'running' forever ─────
+    // A job that was mid-flight when the process died cannot be resumed (its
+    // subprocesses died with it) — but a poller must get a clear terminal
+    // answer, not an eternal 'running'. Seed a running job on disk, boot a
+    // fresh server, and it must come back as an explicit interruption.
+    const jpDir = mkdtempSync(join(tmpdir(), 'mc-e2e-jobs-'));
+    const jpState = join(jpDir, 'state.json');
+    mkdirSync(`${jpState}.jobs`, { recursive: true });
+    writeFileSync(join(`${jpState}.jobs`, 'stale-job.json'), JSON.stringify({
+      id: 'stale-job', status: 'running', question: 'left running at shutdown', startedAt: Date.now() - 60000,
+    }));
+    const jpTransport = new StdioClientTransport({
+      command: 'node', args: [serverEntry],
+      env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: jpState },
+    });
+    const jpClient = new Client({ name: 'jobs-e2e', version: '1.0.0' }, { capabilities: {} });
+    await jpClient.connect(jpTransport);
+    const stale = parseToolResult(await jpClient.callTool({ name: 'get_council_result', arguments: { job_id: 'stale-job' } }));
+    check('jobs: a job left running at shutdown surfaces as interrupted, not running',
+      stale.status === 'error' && /interrupted/i.test(stale.error ?? ''), JSON.stringify(stale));
+    await jpClient.close();
+    rmSync(jpDir, { recursive: true, force: true });
+
+    // ── estimate_council_cost: calibrated prediction, no model calls ───────
+    const estDir = mkdtempSync(join(tmpdir(), 'mc-e2e-est-'));
+    const estState = join(estDir, 'state.json');
+    writeFileSync(estState, JSON.stringify({
+      version: 1,
+      members: ['ollama:small-a', 'ollama:small-b'],
+      harnessCapability: {
+        // small-a has measured history (plain 5s, heavy 40s); small-b none.
+        'ollama:small-a': { harness: 'claude-cli', chat: true, tools: 'ok', checkedAt: Date.now(), slowestOkMs: 5000, slowestOkHeavyMs: 40000 },
+      },
+    }));
+    const estTransport = new StdioClientTransport({
+      command: 'node', args: [serverEntry],
+      env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: estState },
+    });
+    const estClient = new Client({ name: 'est-e2e', version: '1.0.0' }, { capabilities: {} });
+    await estClient.connect(estTransport);
+    const est = parseToolResult(await estClient.callTool({
+      name: 'estimate_council_cost', arguments: { mode: 'dialectic', web_access: true },
+    }));
+    // Measured member uses its learned HEAVY figure; unmeasured falls to the
+    // conservative default and says so — an estimate must show its basis.
+    const estA = est.members?.find(m => m.label === 'ollama:small-a');
+    const estB = est.members?.find(m => m.label === 'ollama:small-b');
+    check('estimate: measured member uses learned heavy history',
+      estA?.expectedMs === 40000 && estA?.measured === true, JSON.stringify(estA));
+    check('estimate: unmeasured member uses the default and is flagged',
+      estB?.expectedMs === 90000 && estB?.measured === false, JSON.stringify(estB));
+    // Dialectic = 3 member rounds + 2 judge calls; wall-clock is rounds x
+    // slowest member + judge calls (auto judge here = slowest member figure).
+    check('estimate: dialectic shape (3 rounds x 2 members = 6 completions, 2 judge calls)',
+      est.estimate?.memberCompletions === 6 && est.estimate?.judgeCalls === 2, JSON.stringify(est.estimate));
+    check('estimate: wall-clock arithmetic holds',
+      est.estimate?.wallClockMs === 3 * 90000 + 2 * 90000, JSON.stringify(est.estimate));
+    check('estimate: it spent nothing (usage of a real ask would show calls; this reports no members called)',
+      est.basis?.includes('No model calls'), est.basis);
+    await estClient.close();
+    rmSync(estDir, { recursive: true, force: true });
 
     // ── first-run effort seed: new installs only ───────────────────────────
     // `high` is seeded ONLY when no state file existed. An install that has

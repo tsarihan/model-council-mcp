@@ -271,6 +271,15 @@ export interface IndividualResult {
   /** Member-side spend for this ask — see UsageReport. */
   usage?: UsageReport;
   /**
+   * Present when this result was served from the repeat-ask cache instead of
+   * re-running the council: the identical ask (same question, attachments,
+   * mode, effort, web access, membership, judge) was answered within the last
+   * few minutes. `ageMs` says how stale; pass `no_cache: true` to force a
+   * fresh run. Only CLEAN results are ever cached — anything degraded, timed
+   * out, or carrying a member error always re-runs.
+   */
+  cache?: { hit: true; ageMs: number };
+  /**
    * True when the judge is ALSO a council member, so its reconciliation
    * includes its own answer. Legitimate and sometimes configured on purpose,
    * but a reader weighing "common agreement" should know the referee played.
@@ -343,6 +352,15 @@ export interface CategorizedResult {
   webRouting?: WebRouting;
   /** Member-side spend for this ask — see UsageReport. */
   usage?: UsageReport;
+  /**
+   * Present when this result was served from the repeat-ask cache instead of
+   * re-running the council: the identical ask (same question, attachments,
+   * mode, effort, web access, membership, judge) was answered within the last
+   * few minutes. `ageMs` says how stale; pass `no_cache: true` to force a
+   * fresh run. Only CLEAN results are ever cached — anything degraded, timed
+   * out, or carrying a member error always re-runs.
+   */
+  cache?: { hit: true; ageMs: number };
   /**
    * True when the judge is ALSO a council member, so its reconciliation
    * includes its own answer. Legitimate and sometimes configured on purpose,
@@ -438,6 +456,15 @@ export interface DeconflictedResult {
   /** Member-side spend for this ask — see UsageReport. */
   usage?: UsageReport;
   /**
+   * Present when this result was served from the repeat-ask cache instead of
+   * re-running the council: the identical ask (same question, attachments,
+   * mode, effort, web access, membership, judge) was answered within the last
+   * few minutes. `ageMs` says how stale; pass `no_cache: true` to force a
+   * fresh run. Only CLEAN results are ever cached — anything degraded, timed
+   * out, or carrying a member error always re-runs.
+   */
+  cache?: { hit: true; ageMs: number };
+  /**
    * True when the judge is ALSO a council member, so its reconciliation
    * includes its own answer. Legitimate and sometimes configured on purpose,
    * but a reader weighing "common agreement" should know the referee played.
@@ -506,6 +533,15 @@ export interface PooledResult {
   /** Member-side spend for this ask — see UsageReport. */
   usage?: UsageReport;
   /**
+   * Present when this result was served from the repeat-ask cache instead of
+   * re-running the council: the identical ask (same question, attachments,
+   * mode, effort, web access, membership, judge) was answered within the last
+   * few minutes. `ageMs` says how stale; pass `no_cache: true` to force a
+   * fresh run. Only CLEAN results are ever cached — anything degraded, timed
+   * out, or carrying a member error always re-runs.
+   */
+  cache?: { hit: true; ageMs: number };
+  /**
    * True when the judge is ALSO a council member, so its reconciliation
    * includes its own answer. Legitimate and sometimes configured on purpose,
    * but a reader weighing "common agreement" should know the referee played.
@@ -562,6 +598,15 @@ export interface DialecticResult {
   webRouting?: WebRouting;
   /** Member-side spend for this ask — see UsageReport. */
   usage?: UsageReport;
+  /**
+   * Present when this result was served from the repeat-ask cache instead of
+   * re-running the council: the identical ask (same question, attachments,
+   * mode, effort, web access, membership, judge) was answered within the last
+   * few minutes. `ageMs` says how stale; pass `no_cache: true` to force a
+   * fresh run. Only CLEAN results are ever cached — anything degraded, timed
+   * out, or carrying a member error always re-runs.
+   */
+  cache?: { hit: true; ageMs: number };
   /**
    * True when the judge is ALSO a council member, so its reconciliation
    * includes its own answer. Legitimate and sometimes configured on purpose,

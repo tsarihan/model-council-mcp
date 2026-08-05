@@ -36208,13 +36208,15 @@ var GrokCliProvider = class {
         // could not be exercised. Re-run the `id > /tmp/X` probe against a
         // working grok login before trusting this, and check whether MCP tools
         // (which `--tools` may not gate at all) need `--disallowed-tools` too.
-        // Web research, when the caller opted in. The exact built-in tool NAMES
-        // are UNVERIFIED — grok documents `--disable-web-search` ("web search and
-        // web fetch tools") but never names them, and `--tools` takes names. This
-        // guess therefore FAILS CLOSED by grok's own semantics, the same property
-        // that made 'none' the safe lockdown value: an unrecognized name yields an
-        // empty effective allowlist, so a wrong guess means NO tools rather than
-        // ALL of them. Confirm against a working grok login before relying on it.
+        // Web research, when the caller opted in. Tool NAMES verified against
+        // the grok binary itself (0.2.118): its strings contain the registered
+        // identifiers `tool.web_search` / crate path `xai_grok_tools::
+        // implementations::grok_build::web_search`, the template kind
+        // `tools.by_kind.web_search`, and runtime messages naming both tools —
+        // and `--disable-web-search` documents itself as covering "web search
+        // and web fetch tools". Still unverified: live EXECUTION under a
+        // logged-in subscription (blocked by the RCE fail-closed gate + quota);
+        // a wrong name would still fail closed (empty allowlist), never open.
         "--tools",
         opts.webSearch ? "web_search,web_fetch" : "none",
         "--permission-mode",
@@ -38791,11 +38793,83 @@ async function loadImages(paths) {
 
 // src/jobs.ts
 var import_node_crypto2 = require("node:crypto");
+var import_node_fs11 = require("node:fs");
+var import_node_path11 = require("node:path");
 var MAX_JOBS = 50;
 var QUESTION_PREVIEW = 200;
+var MAX_PERSISTED = 20;
+var MAX_PERSISTED_RESULT_BYTES = 2 * 1024 * 1024;
+function jobsDir() {
+  return `${statePath()}.jobs`;
+}
 var MAX_RUNNING_JOBS = 20;
 var JobStore = class {
   jobs = /* @__PURE__ */ new Map();
+  constructor() {
+    try {
+      const dir = jobsDir();
+      const files = (0, import_node_fs11.readdirSync)(dir).filter((f2) => f2.endsWith(".json"));
+      for (const f2 of files) {
+        try {
+          const job = JSON.parse((0, import_node_fs11.readFileSync)((0, import_node_path11.join)(dir, f2), "utf8"));
+          if (!job || typeof job.id !== "string") continue;
+          if (job.status === "running") {
+            job.status = "error";
+            job.error = "interrupted: the server reloaded/restarted while this job was running \u2014 re-ask to run it again";
+            job.finishedAt = job.finishedAt ?? Date.now();
+            this.persist(job);
+          }
+          this.jobs.set(job.id, job);
+        } catch {
+        }
+      }
+      this.prunePersisted();
+    } catch {
+    }
+  }
+  /** Atomic best-effort mirror of one job to disk (same tmp+rename discipline as saveState). */
+  persist(job) {
+    try {
+      const dir = jobsDir();
+      (0, import_node_fs11.mkdirSync)(dir, { recursive: true });
+      let payload = job;
+      if (job.result !== void 0) {
+        const size = Buffer.byteLength(JSON.stringify(job.result), "utf8");
+        if (size > MAX_PERSISTED_RESULT_BYTES) {
+          payload = { ...job, result: void 0, error: job.error ?? `result too large to persist across reloads (${size} bytes) \u2014 fetch it before reloading` };
+        }
+      }
+      const path = (0, import_node_path11.join)(dir, `${job.id}.json`);
+      const tmp = `${path}.${process.pid}.tmp`;
+      (0, import_node_fs11.writeFileSync)(tmp, JSON.stringify(payload), { mode: 384 });
+      (0, import_node_fs11.renameSync)(tmp, path);
+      this.prunePersisted();
+    } catch {
+    }
+  }
+  /** Keep only the newest MAX_PERSISTED job files. */
+  prunePersisted() {
+    try {
+      const dir = jobsDir();
+      const files = (0, import_node_fs11.readdirSync)(dir).filter((f2) => f2.endsWith(".json"));
+      if (files.length <= MAX_PERSISTED) return;
+      const dated = files.map((f2) => {
+        try {
+          return { f: f2, at: JSON.parse((0, import_node_fs11.readFileSync)((0, import_node_path11.join)(dir, f2), "utf8")).startedAt ?? 0 };
+        } catch {
+          return { f: f2, at: 0 };
+        }
+      }).sort((a2, b2) => a2.at - b2.at);
+      while (dated.length > MAX_PERSISTED) {
+        const victim = dated.shift();
+        try {
+          (0, import_node_fs11.rmSync)((0, import_node_path11.join)(dir, victim.f));
+        } catch {
+        }
+      }
+    } catch {
+    }
+  }
   /** Register a running job and return its record (id is a UUID). Throws if too many jobs are already running. */
   start(question, meta) {
     const running = [...this.jobs.values()].filter((j2) => j2.status === "running").length;
@@ -38813,6 +38887,7 @@ var JobStore = class {
       startedAt: Date.now()
     };
     this.jobs.set(job.id, job);
+    this.persist(job);
     this.evict();
     return job;
   }
@@ -38822,6 +38897,7 @@ var JobStore = class {
     job.status = "done";
     job.result = result;
     job.finishedAt = Date.now();
+    this.persist(job);
   }
   fail(id, error2) {
     const job = this.jobs.get(id);
@@ -38829,6 +38905,7 @@ var JobStore = class {
     job.status = "error";
     job.error = error2;
     job.finishedAt = Date.now();
+    this.persist(job);
   }
   get(id) {
     return this.jobs.get(id);
@@ -38848,13 +38925,14 @@ var JobStore = class {
 };
 
 // src/index.ts
-var import_node_fs11 = require("node:fs");
-var import_node_path11 = require("node:path");
+var import_node_crypto3 = require("node:crypto");
+var import_node_fs12 = require("node:fs");
+var import_node_path12 = require("node:path");
 var import_meta3 = {};
 var MC_VERSION = (() => {
   const readV = (p2) => {
     try {
-      const v2 = JSON.parse((0, import_node_fs11.readFileSync)(p2, "utf8")).version;
+      const v2 = JSON.parse((0, import_node_fs12.readFileSync)(p2, "utf8")).version;
       return typeof v2 === "string" ? v2 : null;
     } catch {
       return null;
@@ -38866,7 +38944,7 @@ var MC_VERSION = (() => {
   } catch {
   }
   if (process.argv[1]) {
-    const v2 = readV((0, import_node_path11.join)((0, import_node_path11.dirname)(process.argv[1]), "..", "package.json"));
+    const v2 = readV((0, import_node_path12.join)((0, import_node_path12.dirname)(process.argv[1]), "..", "package.json"));
     if (v2) return v2;
   }
   return "0.0.0";
@@ -38891,6 +38969,37 @@ for (const w2 of appConfig.warnings) {
 `);
 }
 var jobs = new JobStore();
+var ASK_CACHE_TTL_MS = 15 * 60 * 1e3;
+var ASK_CACHE_MAX = 20;
+var askCache = /* @__PURE__ */ new Map();
+function isCleanResult(result) {
+  const r2 = result;
+  if (r2.judgeDegraded || Array.isArray(r2.timedOutMembers) && r2.timedOutMembers.length) return false;
+  for (const key of ["responses", "rawResponses", "reconsidered", "defenses", "selections", "initialResponses"]) {
+    const arr = r2[key];
+    if (Array.isArray(arr) && arr.some((x2) => x2 && typeof x2 === "object" && x2.error)) return false;
+  }
+  return true;
+}
+function askCacheGet(key) {
+  const hit = askCache.get(key);
+  if (!hit) return null;
+  const ageMs = Date.now() - hit.at;
+  if (ageMs > ASK_CACHE_TTL_MS) {
+    askCache.delete(key);
+    return null;
+  }
+  return { result: hit.result, ageMs };
+}
+function askCachePut(key, result) {
+  if (!isCleanResult(result)) return;
+  askCache.set(key, { at: Date.now(), result });
+  while (askCache.size > ASK_CACHE_MAX) {
+    const oldest = [...askCache.entries()].sort((a2, b2) => a2[1].at - b2[1].at)[0];
+    if (!oldest) break;
+    askCache.delete(oldest[0]);
+  }
+}
 var FIRST_RUN_EFFORT = "high";
 var isFirstRun = !stateFileExists();
 {
@@ -38983,7 +39092,26 @@ async function runCouncil(input, onProgress) {
   if (input.full_repo_access) {
     fullRepoAccessRepo = await assertGitRepo(input.git_repo?.trim() || process.cwd());
   }
-  return orchestrator.ask(
+  const cfg = orchestrator.getConfig();
+  const rt2 = orchestrator.getRuntime();
+  const cacheKey = (0, import_node_crypto3.createHash)("sha256").update(JSON.stringify({
+    q: question,
+    origQ: input.question,
+    mode: input.mode ?? cfg.responseMode,
+    rounds: input.max_deconflict_rounds ?? cfg.maxDeconflictRounds,
+    verbose: input.verbose ?? rt2.verbose,
+    effort: (isReasoningEffort(input.reasoning_effort) ? input.reasoning_effort : void 0) ?? rt2.reasoningEffort ?? null,
+    web: input.web_access ?? rt2.webAccess ?? false,
+    repo: fullRepoAccessRepo ?? null,
+    images: images.map((i2) => (0, import_node_crypto3.createHash)("sha256").update(i2.base64).digest("hex")),
+    members: cfg.members.length ? cfg.members.map((m2) => modelIdLabel(m2.modelId)) : "auto",
+    judge: cfg.judgeModelId ? modelIdLabel(cfg.judgeModelId) : "auto"
+  })).digest("hex");
+  if (!input.no_cache) {
+    const hit = askCacheGet(cacheKey);
+    if (hit) return { ...hit.result, cache: { hit: true, ageMs: hit.ageMs } };
+  }
+  const fresh = await orchestrator.ask(
     question,
     input.mode,
     input.max_deconflict_rounds,
@@ -38998,6 +39126,8 @@ async function runCouncil(input, onProgress) {
     isReasoningEffort(input.reasoning_effort) ? input.reasoning_effort : void 0,
     input.web_access
   );
+  askCachePut(cacheKey, fresh);
+  return fresh;
 }
 var labelsToMembers = (labels) => labels.flatMap((s2) => {
   if (typeof s2 !== "string") return [];
@@ -39198,6 +39328,9 @@ var AskCouncilInput = external_exports.object({
   images: external_exports.array(external_exports.string()).optional().describe(
     "Optional local image paths (png/jpg/jpeg/gif/webp). Auto-detected vision-capable council members are queried with the image(s); members without vision support are automatically skipped for this call (see visionRouting in the result). Caps: 8 MB/image, 24 MB total, 6 images."
   ),
+  no_cache: external_exports.boolean().optional().describe(
+    "Skip the repeat-ask cache and force a fresh council run. By default an IDENTICAL ask (same question, attachments, mode, effort, web access, membership, judge) repeated within 15 minutes returns the cached result instantly, marked with a `cache` block. Only clean results are ever cached; degraded/errored runs always re-run regardless."
+  ),
   web_access: external_exports.boolean().optional().describe(
     `Let council members SEARCH THE WEB for this call, so they research current facts instead of answering from training data. Off by default. Members reached through an agentic CLI (claude-cli/codex-cli/grok-cli) get a real search tool; a bare "ollama:*" member is automatically re-pointed through the claude-CLI harness so it can research too. API-key providers (openai/anthropic/xai/vllm/trtllm/sglang) have no tool loop and still answer from memory \u2014 the result's webRouting block names exactly who did which, so a partly-researched council is never mistaken for a fully-researched one. WARNING: this pulls UNTRUSTED page content into member answers, which then feed the judge; it also costs real latency and subscription quota.`
   ),
@@ -39206,6 +39339,11 @@ var AskCouncilInput = external_exports.object({
   )
 }).strict();
 var AskCouncilAsyncInput = AskCouncilInput;
+var EstimateCouncilCostInput = external_exports.object({
+  mode: external_exports.enum(["individual", "categorized", "deconflicted", "pooled", "dialectic"]).optional().describe("Mode to estimate for. Defaults to the configured response mode."),
+  web_access: external_exports.boolean().optional().describe("Estimate for a researched run (uses each member's learned HEAVY latency). Defaults to the configured web access."),
+  max_deconflict_rounds: external_exports.number().int().min(1).max(10).optional().describe("Rounds to assume for deconflicted mode (worst case). Defaults to the configured value.")
+}).strict();
 var GetCouncilResultInput = external_exports.object({
   job_id: external_exports.string().optional().describe("Job id returned by ask_council_async. Omit (or set list=true) to list recent jobs."),
   list: external_exports.boolean().optional().describe("List recent background jobs (metadata only) instead of fetching one.")
@@ -39325,6 +39463,10 @@ var TOOLS = [
           items: { type: "string" },
           description: "Optional local image paths (png/jpg/jpeg/gif/webp). Auto-detected vision-capable council members are queried with the image(s); members without vision support are automatically skipped for this call (see visionRouting in the result). Caps: 8 MB/image, 24 MB total, 6 images."
         },
+        no_cache: {
+          type: "boolean",
+          description: "Force a fresh run: skip the repeat-ask cache (identical ask within 15 min returns the cached result instantly, marked with a `cache` block). Degraded/errored runs are never cached."
+        },
         web_access: {
           type: "boolean",
           description: `Let members SEARCH THE WEB for this call instead of answering from training data. Off by default. claude-cli/codex-cli/grok-cli members get a real search tool, and a bare "ollama:*" member is re-pointed through the claude-CLI harness so it can research too; API-key providers have no tool loop and still answer from memory. The result's webRouting names who did which. WARNING: pulls UNTRUSTED page content into member answers (which feed the judge), and costs latency and subscription quota.`
@@ -39385,6 +39527,10 @@ var TOOLS = [
           items: { type: "string" },
           description: "Optional local image paths \u2014 same vision-routing behavior as ask_council."
         },
+        no_cache: {
+          type: "boolean",
+          description: "Force a fresh run: skip the repeat-ask cache (identical ask within 15 min returns the cached result instantly, marked with a `cache` block). Degraded/errored runs are never cached."
+        },
         web_access: {
           type: "boolean",
           description: `Let members SEARCH THE WEB for this call instead of answering from training data. Off by default. claude-cli/codex-cli/grok-cli members get a real search tool, and a bare "ollama:*" member is re-pointed through the claude-CLI harness so it can research too; API-key providers have no tool loop and still answer from memory. The result's webRouting names who did which. WARNING: pulls UNTRUSTED page content into member answers (which feed the judge), and costs latency and subscription quota.`
@@ -39393,6 +39539,29 @@ var TOOLS = [
           type: "string",
           enum: [...EFFORT_ORDER],
           description: "Reasoning depth for every member and the judge, for this call only \u2014 same per-backend clamping behavior as ask_council."
+        }
+      }
+    }
+  },
+  {
+    name: "estimate_council_cost",
+    annotations: { title: "Estimate an ask's cost", readOnlyHint: true },
+    description: "Predict what an ask_council call will cost BEFORE running it: member completions, judge calls, and wall-clock \u2014 calibrated from what each configured member has actually needed on this machine (the same learned history behind per-member timeouts, fed by every result's `usage` block). Members with no history use conservative defaults and are flagged `measured: false`. Free: makes no model calls.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mode: {
+          type: "string",
+          enum: ["individual", "categorized", "deconflicted", "pooled", "dialectic"],
+          description: "Mode to estimate for. Defaults to the configured response mode."
+        },
+        web_access: {
+          type: "boolean",
+          description: "Estimate a researched run (learned heavy latencies). Defaults to the configured setting."
+        },
+        max_deconflict_rounds: {
+          type: "number",
+          description: "Rounds to assume for deconflicted mode (worst case). Defaults to the configured value."
         }
       }
     }
@@ -39674,6 +39843,72 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
               )
             }
           ]
+        };
+      }
+      // ── estimate_council_cost ────────────────────────────────────────────
+      case "estimate_council_cost": {
+        const input = parseToolInput(EstimateCouncilCostInput, args, "estimate_council_cost");
+        const cfg = orchestrator.getConfig();
+        const rt2 = orchestrator.getRuntime();
+        const mode = input.mode ?? cfg.responseMode;
+        const heavy = input.web_access ?? rt2.webAccess ?? false;
+        const rounds = input.max_deconflict_rounds ?? cfg.maxDeconflictRounds;
+        let memberIds = cfg.members.map((m2) => m2.modelId);
+        let membershipSource = "configured";
+        if (memberIds.length === 0 && cfg.autoCouncil) {
+          try {
+            memberIds = await orchestrator.autoDiscoverCouncil();
+            membershipSource = "auto";
+          } catch {
+          }
+        }
+        const DEFAULT_PLAIN_MS = 2e4;
+        const DEFAULT_HEAVY_MS = 9e4;
+        const capMap = loadState().harnessCapability ?? {};
+        const expect = (label) => {
+          const e2 = capMap[label];
+          const plain = e2?.slowestOkMs ?? 0;
+          const hv = Math.max(e2?.slowestOkHeavyMs ?? 0, plain);
+          const observed = heavy ? hv : plain;
+          return observed > 0 ? { expectedMs: observed, measured: true } : { expectedMs: heavy ? DEFAULT_HEAVY_MS : DEFAULT_PLAIN_MS, measured: false };
+        };
+        const members = memberIds.map((id) => {
+          const label = modelIdLabel(id);
+          return { label, ...expect(label) };
+        });
+        const shape = {
+          individual: { memberRounds: 1, judgeCalls: 0 },
+          categorized: { memberRounds: 1, judgeCalls: 1 },
+          deconflicted: { memberRounds: 1 + rounds, judgeCalls: rounds + 2, note: `worst case: all ${rounds} deconfliction rounds run` },
+          pooled: { memberRounds: 2, judgeCalls: 2 },
+          dialectic: { memberRounds: 3, judgeCalls: 2 }
+        };
+        const { memberRounds, judgeCalls, note } = shape[mode];
+        const judgeLabel = cfg.judgeModelId ? modelIdLabel(cfg.judgeModelId) : null;
+        const judgeExpected = judgeLabel ? expect(judgeLabel) : { expectedMs: members.length ? Math.max(...members.map((m2) => m2.expectedMs)) : heavy ? DEFAULT_HEAVY_MS : DEFAULT_PLAIN_MS, measured: false };
+        const maxMember = members.length ? Math.max(...members.map((m2) => m2.expectedMs)) : 0;
+        const sumMembers = members.reduce((n2, m2) => n2 + m2.expectedMs, 0);
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              mode,
+              webAccess: heavy,
+              membershipSource,
+              members,
+              judge: judgeCalls > 0 ? { label: judgeLabel ?? "auto (largest member)", expectedMsPerCall: judgeExpected.expectedMs, measured: judgeExpected.measured, calls: judgeCalls } : null,
+              estimate: {
+                memberCompletions: members.length * memberRounds,
+                judgeCalls,
+                // Rounds are barriers: each waits for its slowest member, and
+                // judge calls run after the rounds they consume.
+                wallClockMs: memberRounds * maxMember + judgeCalls * judgeExpected.expectedMs,
+                totalLatencyMs: memberRounds * sumMembers + judgeCalls * judgeExpected.expectedMs,
+                ...note ? { note } : {}
+              },
+              basis: "Learned per-member history where available (measured: true \u2014 from real runs on this machine, the same data behind per-member timeouts); conservative defaults otherwise. Assumes full concurrency within each round; local models capped at local_concurrency may run longer. Reasoning effort and quota throttling can stretch any of it. No model calls were made."
+            }, null, 2)
+          }]
         };
       }
       // ── get_council_result ───────────────────────────────────────────────

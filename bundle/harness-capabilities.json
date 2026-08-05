@@ -51,6 +51,7 @@
   },
   "modelNotes": {
     "note": "Chat working does NOT mean tool-calling works — the harness only executes calls it can parse, and models differ in tool-call dialect. These are known-quirk hints; the real answer is always the probe recorded in state.json.",
+    "grokWebTools": "web_search,web_fetch — names verified against the grok 0.2.118 binary (tool.web_search, implementations::grok_build::web_search, tools.by_kind.web_search; --disable-web-search covers both). Live execution under a subscription remains unverified; a wrong name fails closed.",
     "toolDialectRisk": [
       { "match": "^kimi", "risk": "emits native <|open|>tools markup as plain text instead of an executable tool call (observed live at high reasoning effort)" },
       { "match": "^qwen", "risk": "JSON-style tool calls that may not map onto the harness's expected tool_use blocks" },

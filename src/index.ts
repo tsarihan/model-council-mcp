@@ -42,7 +42,9 @@ import { detectEnvironment, autoPopulatedMembers, quotaWarning, migrateCloudToHa
 import { buildAugmentedQuestion } from './context.js';
 import { assertGitRepo } from './git.js';
 import { loadImages } from './images.js';
+import { CouncilResult, UsageReport } from './types.js';
 import { JobStore } from './jobs.js';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
@@ -97,6 +99,47 @@ for (const w of appConfig.warnings) {
   process.stderr.write(`[model-council] warning: ${w}\n`);
 }
 const jobs = new JobStore();
+
+// ─── Repeat-ask cache ─────────────────────────────────────────────────────────
+// The identical ask, repeated within a few minutes, previously re-ran the whole
+// council — measured live: a verbatim repeat re-spent 125s of member time to
+// reproduce the same answer. Keyed by everything that could change the outcome
+// (the AUGMENTED question, so file/diff content changes miss; image bytes;
+// resolved mode/rounds/verbose/effort/web/repo; membership and judge), so a
+// config change is a cache miss by construction. In-memory only — it dies with
+// the process, which is correct: a reload is a legitimate "start fresh".
+const ASK_CACHE_TTL_MS = 15 * 60 * 1000;
+const ASK_CACHE_MAX = 20;
+const askCache = new Map<string, { at: number; result: CouncilResult }>();
+
+/** Only CLEAN results are cacheable — replaying a degraded/errored result would hide that a retry might succeed. */
+function isCleanResult(result: CouncilResult): boolean {
+  const r = result as unknown as Record<string, unknown>;
+  if (r.judgeDegraded || (Array.isArray(r.timedOutMembers) && r.timedOutMembers.length)) return false;
+  for (const key of ['responses', 'rawResponses', 'reconsidered', 'defenses', 'selections', 'initialResponses']) {
+    const arr = r[key];
+    if (Array.isArray(arr) && arr.some(x => x && typeof x === 'object' && (x as { error?: unknown }).error)) return false;
+  }
+  return true;
+}
+
+function askCacheGet(key: string): { result: CouncilResult; ageMs: number } | null {
+  const hit = askCache.get(key);
+  if (!hit) return null;
+  const ageMs = Date.now() - hit.at;
+  if (ageMs > ASK_CACHE_TTL_MS) { askCache.delete(key); return null; }
+  return { result: hit.result, ageMs };
+}
+
+function askCachePut(key: string, result: CouncilResult): void {
+  if (!isCleanResult(result)) return;
+  askCache.set(key, { at: Date.now(), result });
+  while (askCache.size > ASK_CACHE_MAX) {
+    const oldest = [...askCache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+    if (!oldest) break;
+    askCache.delete(oldest[0]);
+  }
+}
 
 /**
  * Reasoning depth a BRAND-NEW install starts at. Deliberately not the plugin
@@ -278,6 +321,7 @@ async function runCouncil(
     full_repo_access?: boolean;
     reasoning_effort?: string;
     web_access?: boolean;
+    no_cache?: boolean;
   },
   onProgress?: ProgressReporter,
 ) {
@@ -302,7 +346,32 @@ async function runCouncil(
     // CLI invocation, granting access to a directory that was never checked.
     fullRepoAccessRepo = await assertGitRepo(input.git_repo?.trim() || process.cwd());
   }
-  return orchestrator.ask(
+
+  // Repeat-ask cache: keyed on the RESOLVED call — per-call overrides folded
+  // over the configured defaults — plus membership/judge, so nothing that
+  // could change the answer is missing from the key.
+  const cfg = orchestrator.getConfig();
+  const rt = orchestrator.getRuntime();
+  const cacheKey = createHash('sha256').update(JSON.stringify({
+    q: question,
+    origQ: input.question,
+    mode: input.mode ?? cfg.responseMode,
+    rounds: input.max_deconflict_rounds ?? cfg.maxDeconflictRounds,
+    verbose: input.verbose ?? rt.verbose,
+    effort: (isReasoningEffort(input.reasoning_effort) ? input.reasoning_effort : undefined) ?? rt.reasoningEffort ?? null,
+    web: input.web_access ?? rt.webAccess ?? false,
+    repo: fullRepoAccessRepo ?? null,
+    images: images.map(i => createHash('sha256').update(i.base64).digest('hex')),
+    members: cfg.members.length ? cfg.members.map(m => modelIdLabel(m.modelId)) : 'auto',
+    judge: cfg.judgeModelId ? modelIdLabel(cfg.judgeModelId) : 'auto',
+  })).digest('hex');
+
+  if (!input.no_cache) {
+    const hit = askCacheGet(cacheKey);
+    if (hit) return { ...hit.result, cache: { hit: true as const, ageMs: hit.ageMs } };
+  }
+
+  const fresh = await orchestrator.ask(
     question,
     input.mode as ResponseMode | undefined,
     input.max_deconflict_rounds,
@@ -317,6 +386,8 @@ async function runCouncil(
     isReasoningEffort(input.reasoning_effort) ? input.reasoning_effort : undefined,
     input.web_access,
   );
+  askCachePut(cacheKey, fresh);
+  return fresh;
 }
 
 const labelsToMembers = (labels: unknown[]): CouncilMember[] =>
@@ -712,6 +783,15 @@ const AskCouncilInput = z.object({
         'without vision support are automatically skipped for this call (see ' +
         'visionRouting in the result). Caps: 8 MB/image, 24 MB total, 6 images.',
     ),
+  no_cache: z
+    .boolean()
+    .optional()
+    .describe(
+      'Skip the repeat-ask cache and force a fresh council run. By default an IDENTICAL ask ' +
+        '(same question, attachments, mode, effort, web access, membership, judge) repeated ' +
+        'within 15 minutes returns the cached result instantly, marked with a `cache` block. ' +
+        'Only clean results are ever cached; degraded/errored runs always re-run regardless.',
+    ),
   web_access: z
     .boolean()
     .optional()
@@ -741,6 +821,21 @@ const AskCouncilInput = z.object({
 
 // Async variant takes the same inputs as ask_council.
 const AskCouncilAsyncInput = AskCouncilInput;
+
+const EstimateCouncilCostInput = z.object({
+  mode: z
+    .enum(['individual', 'categorized', 'deconflicted', 'pooled', 'dialectic'])
+    .optional()
+    .describe('Mode to estimate for. Defaults to the configured response mode.'),
+  web_access: z
+    .boolean()
+    .optional()
+    .describe('Estimate for a researched run (uses each member\'s learned HEAVY latency). Defaults to the configured web access.'),
+  max_deconflict_rounds: z
+    .number().int().min(1).max(10)
+    .optional()
+    .describe('Rounds to assume for deconflicted mode (worst case). Defaults to the configured value.'),
+}).strict();
 
 const GetCouncilResultInput = z.object({
   job_id: z
@@ -933,6 +1028,13 @@ const TOOLS = [
             'vision support are automatically skipped for this call (see visionRouting in ' +
             'the result). Caps: 8 MB/image, 24 MB total, 6 images.',
         },
+        no_cache: {
+          type: 'boolean',
+          description:
+            'Force a fresh run: skip the repeat-ask cache (identical ask within 15 min returns ' +
+            'the cached result instantly, marked with a `cache` block). Degraded/errored runs ' +
+            'are never cached.',
+        },
         web_access: {
           type: 'boolean',
           description:
@@ -1010,6 +1112,13 @@ const TOOLS = [
           items: { type: 'string' },
           description: 'Optional local image paths — same vision-routing behavior as ask_council.',
         },
+        no_cache: {
+          type: 'boolean',
+          description:
+            'Force a fresh run: skip the repeat-ask cache (identical ask within 15 min returns ' +
+            'the cached result instantly, marked with a `cache` block). Degraded/errored runs ' +
+            'are never cached.',
+        },
         web_access: {
           type: 'boolean',
           description:
@@ -1026,6 +1135,34 @@ const TOOLS = [
           description:
             'Reasoning depth for every member and the judge, for this call only — same ' +
             'per-backend clamping behavior as ask_council.',
+        },
+      },
+    },
+  },
+  {
+    name: 'estimate_council_cost',
+    annotations: { title: 'Estimate an ask\'s cost', readOnlyHint: true },
+    description:
+      'Predict what an ask_council call will cost BEFORE running it: member completions, judge ' +
+      'calls, and wall-clock — calibrated from what each configured member has actually needed ' +
+      'on this machine (the same learned history behind per-member timeouts, fed by every ' +
+      'result\'s `usage` block). Members with no history use conservative defaults and are ' +
+      'flagged `measured: false`. Free: makes no model calls.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        mode: {
+          type: 'string',
+          enum: ['individual', 'categorized', 'deconflicted', 'pooled', 'dialectic'],
+          description: 'Mode to estimate for. Defaults to the configured response mode.',
+        },
+        web_access: {
+          type: 'boolean',
+          description: 'Estimate a researched run (learned heavy latencies). Defaults to the configured setting.',
+        },
+        max_deconflict_rounds: {
+          type: 'number',
+          description: 'Rounds to assume for deconflicted mode (worst case). Defaults to the configured value.',
         },
       },
     },
@@ -1451,6 +1588,94 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
               ),
             },
           ],
+        };
+      }
+
+      // ── estimate_council_cost ────────────────────────────────────────────
+      case 'estimate_council_cost': {
+        const input = parseToolInput(EstimateCouncilCostInput, args, 'estimate_council_cost');
+        const cfg = orchestrator.getConfig();
+        const rt = orchestrator.getRuntime();
+        const mode = (input.mode ?? cfg.responseMode) as ResponseMode;
+        const heavy = input.web_access ?? rt.webAccess ?? false;
+        const rounds = input.max_deconflict_rounds ?? cfg.maxDeconflictRounds;
+
+        // Resolve who would actually answer, without spending anything.
+        let memberIds = cfg.members.map(m => m.modelId);
+        let membershipSource = 'configured';
+        if (memberIds.length === 0 && cfg.autoCouncil) {
+          try {
+            memberIds = await orchestrator.autoDiscoverCouncil();
+            membershipSource = 'auto';
+          } catch { /* estimate over zero members still reports honestly below */ }
+        }
+
+        // Expected per-member latency from LEARNED history — the calibration
+        // data every result's `usage` block feeds — with conservative defaults
+        // where nothing has been measured yet. Heavy asks (web/repo) read the
+        // heavy figure, floored by the plain one (heavy is a superset).
+        const DEFAULT_PLAIN_MS = 20_000;
+        const DEFAULT_HEAVY_MS = 90_000;
+        const capMap = loadState().harnessCapability ?? {};
+        const expect = (label: string): { expectedMs: number; measured: boolean } => {
+          const e = capMap[label];
+          const plain = e?.slowestOkMs ?? 0;
+          const hv = Math.max(e?.slowestOkHeavyMs ?? 0, plain);
+          const observed = heavy ? hv : plain;
+          return observed > 0
+            ? { expectedMs: observed, measured: true }
+            : { expectedMs: heavy ? DEFAULT_HEAVY_MS : DEFAULT_PLAIN_MS, measured: false };
+        };
+        const members = memberIds.map(id => {
+          const label = modelIdLabel(id);
+          return { label, ...expect(label) };
+        });
+
+        // Round structure per mode — deconflicted reported as WORST CASE
+        // (every round runs), because an estimate that assumes early
+        // convergence under-promises exactly when it matters.
+        const shape: Record<ResponseMode, { memberRounds: number; judgeCalls: number; note?: string }> = {
+          individual:   { memberRounds: 1, judgeCalls: 0 },
+          categorized:  { memberRounds: 1, judgeCalls: 1 },
+          deconflicted: { memberRounds: 1 + rounds, judgeCalls: rounds + 2, note: `worst case: all ${rounds} deconfliction rounds run` },
+          pooled:       { memberRounds: 2, judgeCalls: 2 },
+          dialectic:    { memberRounds: 3, judgeCalls: 2 },
+        };
+        const { memberRounds, judgeCalls, note } = shape[mode];
+
+        const judgeLabel = cfg.judgeModelId ? modelIdLabel(cfg.judgeModelId) : null;
+        const judgeExpected = judgeLabel
+          ? expect(judgeLabel)
+          : { expectedMs: members.length ? Math.max(...members.map(m => m.expectedMs)) : (heavy ? DEFAULT_HEAVY_MS : DEFAULT_PLAIN_MS), measured: false };
+
+        const maxMember = members.length ? Math.max(...members.map(m => m.expectedMs)) : 0;
+        const sumMembers = members.reduce((n, m) => n + m.expectedMs, 0);
+
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              mode, webAccess: heavy, membershipSource,
+              members,
+              judge: judgeCalls > 0
+                ? { label: judgeLabel ?? 'auto (largest member)', expectedMsPerCall: judgeExpected.expectedMs, measured: judgeExpected.measured, calls: judgeCalls }
+                : null,
+              estimate: {
+                memberCompletions: members.length * memberRounds,
+                judgeCalls,
+                // Rounds are barriers: each waits for its slowest member, and
+                // judge calls run after the rounds they consume.
+                wallClockMs: memberRounds * maxMember + judgeCalls * judgeExpected.expectedMs,
+                totalLatencyMs: memberRounds * sumMembers + judgeCalls * judgeExpected.expectedMs,
+                ...(note ? { note } : {}),
+              },
+              basis:
+                'Learned per-member history where available (measured: true — from real runs on this machine, ' +
+                'the same data behind per-member timeouts); conservative defaults otherwise. Assumes full ' +
+                'concurrency within each round; local models capped at local_concurrency may run longer. ' +
+                'Reasoning effort and quota throttling can stretch any of it. No model calls were made.',
+            }, null, 2),
+          }],
         };
       }
 

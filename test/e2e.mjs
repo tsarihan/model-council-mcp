@@ -2202,7 +2202,70 @@ async function main() {
     const stale = parseToolResult(await jpClient.callTool({ name: 'get_council_result', arguments: { job_id: 'stale-job' } }));
     check('jobs: a job left running at shutdown surfaces as interrupted, not running',
       stale.status === 'error' && /interrupted/i.test(stale.error ?? ''), JSON.stringify(stale));
-    await jpClient.close();
+
+    // Multi-session correctness, learned the hard way: several servers share
+    // one jobs dir, and a reload of ONE session must not falsify the others'
+    // work. A running job whose owning pid is ALIVE (this test process stands
+    // in for another session's server) is left running — and polling it reads
+    // the freshest DISK state, since its finish happens in the owner's memory.
+    writeFileSync(join(`${jpState}.jobs`, 'live-job.json'), JSON.stringify({
+      id: 'live-job', pid: process.pid, status: 'running', question: 'owned by a live sibling', startedAt: Date.now() - 5000,
+    }));
+    // Also: a dead-pid job (no live owner) must still be interrupted.
+    writeFileSync(join(`${jpState}.jobs`, 'dead-job.json'), JSON.stringify({
+      id: 'dead-job', pid: 999999999, status: 'running', question: 'owner long dead', startedAt: Date.now() - 5000,
+    }));
+    // Fresh server boot over the seeded dir.
+    const jp2Transport = new StdioClientTransport({
+      command: 'node', args: [serverEntry],
+      env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: jpState },
+    });
+    const jp2Client = new Client({ name: 'jobs2-e2e', version: '1.0.0' }, { capabilities: {} });
+    await jp2Client.connect(jp2Transport);
+    const live = parseToolResult(await jp2Client.callTool({ name: 'get_council_result', arguments: { job_id: 'live-job' } }));
+    check('jobs: a running job with a LIVE owner is not falsified to interrupted by a sibling boot',
+      live.status === 'running', JSON.stringify(live));
+    const dead = parseToolResult(await jp2Client.callTool({ name: 'get_council_result', arguments: { job_id: 'dead-job' } }));
+    check('jobs: a running job with a DEAD owner is interrupted', 
+      dead.status === 'error' && /interrupted/i.test(dead.error ?? ''), JSON.stringify(dead));
+    // The owner finishes on disk; a poll through the sibling serves the fresh state.
+    writeFileSync(join(`${jpState}.jobs`, 'live-job.json'), JSON.stringify({
+      id: 'live-job', pid: process.pid, status: 'done', question: 'owned by a live sibling', startedAt: Date.now() - 5000,
+      finishedAt: Date.now(), result: { mode: 'individual', responses: [] },
+    }));
+    const finished = parseToolResult(await jp2Client.callTool({ name: 'get_council_result', arguments: { job_id: 'live-job' } }));
+    check('jobs: polling a sibling-owned job reads its freshest disk state (done, with result)',
+      finished.status === 'done' && finished.result?.mode === 'individual', JSON.stringify(finished).slice(0, 200));
+    await jp2Client.close();
+
+    // Retention prefers evicting errors over a done-but-unfetched result —
+    // observed live: a 20-job burst of fresh 'running' records flushed a DONE
+    // result, the exact record persistence exists to protect. Seed 21 errors
+    // NEWER than one old done job; the done job must survive the prune.
+    rmSync(`${jpState}.jobs`, { recursive: true, force: true });
+    mkdirSync(`${jpState}.jobs`, { recursive: true });
+    const oldDoneAt = Date.now() - 60 * 60 * 1000;
+    writeFileSync(join(`${jpState}.jobs`, 'precious-done.json'), JSON.stringify({
+      id: 'precious-done', status: 'done', question: 'unfetched result', startedAt: oldDoneAt,
+      finishedAt: oldDoneAt + 1000, result: { mode: 'individual', responses: [] },
+    }));
+    for (let i = 0; i < 21; i++) {
+      writeFileSync(join(`${jpState}.jobs`, `err-${String(i).padStart(2, '0')}.json`), JSON.stringify({
+        id: `err-${String(i).padStart(2, '0')}`, status: 'error', error: 'boom', question: 'noise',
+        startedAt: Date.now() - i * 1000, finishedAt: Date.now(),
+      }));
+    }
+    const jp3Transport = new StdioClientTransport({
+      command: 'node', args: [serverEntry],
+      env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: jpState },
+    });
+    const jp3Client = new Client({ name: 'jobs3-e2e', version: '1.0.0' }, { capabilities: {} });
+    await jp3Client.connect(jp3Transport);
+    const precious = parseToolResult(await jp3Client.callTool({ name: 'get_council_result', arguments: { job_id: 'precious-done' } }));
+    check('jobs: retention evicts errors before a done-but-unfetched result, even an older one',
+      precious.status === 'done' && existsSync(join(`${jpState}.jobs`, 'precious-done.json')),
+      JSON.stringify({ status: precious.status, onDisk: existsSync(join(`${jpState}.jobs`, 'precious-done.json')) }));
+    await jp3Client.close();
     rmSync(jpDir, { recursive: true, force: true });
 
     // ── estimate_council_cost: calibrated prediction, no model calls ───────

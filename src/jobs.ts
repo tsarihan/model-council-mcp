@@ -22,6 +22,14 @@ export type JobStatus = 'running' | 'done' | 'error';
 
 export interface Job {
   id: string;
+  /**
+   * Process that owns the run. Several session servers share one jobs dir
+   * (they share the state file), so "running" on disk is ambiguous without it:
+   * a booting server must only declare a job interrupted when its OWNER is
+   * actually dead — observed live, one session's reload marked 20 jobs
+   * interrupted that another session's still-alive server was running.
+   */
+  pid?: number;
   status: JobStatus;
   question: string; // truncated for the listing
   mode?: string;
@@ -42,6 +50,13 @@ const MAX_PERSISTED_RESULT_BYTES = 2 * 1024 * 1024;
 /** Sibling directory named after the state FILE, so isolated state files (tests, MODEL_COUNCIL_STATE overrides) get isolated job stores too. */
 function jobsDir(): string {
   return `${statePath()}.jobs`;
+}
+
+/** Is the process that owns a job still alive? signal 0 probes without sending; EPERM means alive-but-not-ours. */
+function pidAlive(pid: number | undefined): boolean {
+  if (!pid || !Number.isFinite(pid)) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (err) { return (err as { code?: string }).code === 'EPERM'; }
 }
 
 // evict() only ever drops FINISHED jobs (by design — a running job's result
@@ -66,9 +81,14 @@ export class JobStore {
         try {
           const job = JSON.parse(readFileSync(join(dir, f), 'utf8')) as Job;
           if (!job || typeof job.id !== 'string') continue;
-          if (job.status === 'running') {
-            // The work died with the old process; a poller must get a clear
-            // terminal state, not an eternal 'running'.
+          if (job.status === 'running' && !pidAlive(job.pid)) {
+            // The owner is dead, so the work died with it; a poller must get
+            // a clear terminal state, not an eternal 'running'. A running job
+            // whose owner is ALIVE belongs to another session's server and is
+            // left exactly as it is — declaring it interrupted from here was
+            // observed to falsify 20 in-flight jobs in one reload. (A legacy
+            // record with no pid is treated as dead: before pids were
+            // recorded, only a dead process could have left one behind.)
             job.status = 'error';
             job.error = 'interrupted: the server reloaded/restarted while this job was running — re-ask to run it again';
             job.finishedAt = job.finishedAt ?? Date.now();
@@ -104,19 +124,35 @@ export class JobStore {
     } catch { /* persistence is a bonus, never a failure mode */ }
   }
 
-  /** Keep only the newest MAX_PERSISTED job files. */
+  /**
+   * Keep the jobs dir bounded — but not status-blind. Observed live: one
+   * session's 20-job burst of freshly-STARTED records evicted another
+   * session's done-but-unfetched result, which is precisely the record this
+   * persistence exists to protect. Eviction order is therefore: errors first,
+   * then done, each oldest-first — and a RUNNING job whose owner is alive is
+   * never deleted at all (its record is the only route to its result).
+   */
   private prunePersisted(): void {
     try {
       const dir = jobsDir();
       const files = readdirSync(dir).filter(f => f.endsWith('.json'));
       if (files.length <= MAX_PERSISTED) return;
+      const rank = (j: Job | null): number =>
+        !j ? 0                                            // unparseable: first out
+        : j.status === 'error' ? 1
+        : j.status === 'done' ? 2
+        : pidAlive(j.pid) ? 3                             // live running: never evicted
+        : 1;                                              // dead running ≈ an error
       const dated = files.map(f => {
-        try { return { f, at: (JSON.parse(readFileSync(join(dir, f), 'utf8')) as Job).startedAt ?? 0 }; }
-        catch { return { f, at: 0 }; }
-      }).sort((a, b) => a.at - b.at);
-      while (dated.length > MAX_PERSISTED) {
-        const victim = dated.shift()!;
-        try { rmSync(join(dir, victim.f)); } catch { /* best-effort */ }
+        let j: Job | null = null;
+        try { j = JSON.parse(readFileSync(join(dir, f), 'utf8')) as Job; } catch { /* rank 0 */ }
+        return { f, at: j?.startedAt ?? 0, rank: rank(j) };
+      }).sort((a, b) => a.rank - b.rank || a.at - b.at);
+      let excess = dated.length - MAX_PERSISTED;
+      for (const victim of dated) {
+        if (excess <= 0) break;
+        if (victim.rank >= 3) break; // only live-running jobs remain — keep all
+        try { rmSync(join(dir, victim.f)); excess--; } catch { /* best-effort */ }
       }
     } catch { /* best-effort */ }
   }
@@ -132,6 +168,7 @@ export class JobStore {
     }
     const job: Job = {
       id: randomUUID(),
+      pid: process.pid,
       status: 'running',
       question: question.slice(0, QUESTION_PREVIEW),
       mode: meta.mode,
@@ -163,7 +200,21 @@ export class JobStore {
   }
 
   get(id: string): Job | undefined {
-    return this.jobs.get(id);
+    const job = this.jobs.get(id);
+    // A running job owned by ANOTHER live process only ever changes on disk —
+    // its finish happens in that process's memory, not ours — so serve the
+    // freshest disk state rather than an in-memory snapshot frozen at our
+    // boot. This is what makes a job visible and pollable across sessions.
+    if (job && job.status === 'running' && job.pid !== undefined && job.pid !== process.pid) {
+      try {
+        const fresh = JSON.parse(readFileSync(join(jobsDir(), `${id}.json`), 'utf8')) as Job;
+        if (fresh && fresh.id === id) {
+          this.jobs.set(id, fresh);
+          return fresh;
+        }
+      } catch { /* file pruned/unreadable — the snapshot is all we have */ }
+    }
+    return job;
   }
 
   /** Recent jobs, newest first (metadata only — no result payloads). */

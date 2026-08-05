@@ -38802,6 +38802,15 @@ var MAX_PERSISTED_RESULT_BYTES = 2 * 1024 * 1024;
 function jobsDir() {
   return `${statePath()}.jobs`;
 }
+function pidAlive(pid) {
+  if (!pid || !Number.isFinite(pid)) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+}
 var MAX_RUNNING_JOBS = 20;
 var JobStore = class {
   jobs = /* @__PURE__ */ new Map();
@@ -38813,7 +38822,7 @@ var JobStore = class {
         try {
           const job = JSON.parse((0, import_node_fs11.readFileSync)((0, import_node_path11.join)(dir, f2), "utf8"));
           if (!job || typeof job.id !== "string") continue;
-          if (job.status === "running") {
+          if (job.status === "running" && !pidAlive(job.pid)) {
             job.status = "error";
             job.error = "interrupted: the server reloaded/restarted while this job was running \u2014 re-ask to run it again";
             job.finishedAt = job.finishedAt ?? Date.now();
@@ -38847,23 +38856,35 @@ var JobStore = class {
     } catch {
     }
   }
-  /** Keep only the newest MAX_PERSISTED job files. */
+  /**
+   * Keep the jobs dir bounded — but not status-blind. Observed live: one
+   * session's 20-job burst of freshly-STARTED records evicted another
+   * session's done-but-unfetched result, which is precisely the record this
+   * persistence exists to protect. Eviction order is therefore: errors first,
+   * then done, each oldest-first — and a RUNNING job whose owner is alive is
+   * never deleted at all (its record is the only route to its result).
+   */
   prunePersisted() {
     try {
       const dir = jobsDir();
       const files = (0, import_node_fs11.readdirSync)(dir).filter((f2) => f2.endsWith(".json"));
       if (files.length <= MAX_PERSISTED) return;
+      const rank = (j2) => !j2 ? 0 : j2.status === "error" ? 1 : j2.status === "done" ? 2 : pidAlive(j2.pid) ? 3 : 1;
       const dated = files.map((f2) => {
+        let j2 = null;
         try {
-          return { f: f2, at: JSON.parse((0, import_node_fs11.readFileSync)((0, import_node_path11.join)(dir, f2), "utf8")).startedAt ?? 0 };
+          j2 = JSON.parse((0, import_node_fs11.readFileSync)((0, import_node_path11.join)(dir, f2), "utf8"));
         } catch {
-          return { f: f2, at: 0 };
         }
-      }).sort((a2, b2) => a2.at - b2.at);
-      while (dated.length > MAX_PERSISTED) {
-        const victim = dated.shift();
+        return { f: f2, at: j2?.startedAt ?? 0, rank: rank(j2) };
+      }).sort((a2, b2) => a2.rank - b2.rank || a2.at - b2.at);
+      let excess = dated.length - MAX_PERSISTED;
+      for (const victim of dated) {
+        if (excess <= 0) break;
+        if (victim.rank >= 3) break;
         try {
           (0, import_node_fs11.rmSync)((0, import_node_path11.join)(dir, victim.f));
+          excess--;
         } catch {
         }
       }
@@ -38880,6 +38901,7 @@ var JobStore = class {
     }
     const job = {
       id: (0, import_node_crypto2.randomUUID)(),
+      pid: process.pid,
       status: "running",
       question: question.slice(0, QUESTION_PREVIEW),
       mode: meta.mode,
@@ -38908,7 +38930,18 @@ var JobStore = class {
     this.persist(job);
   }
   get(id) {
-    return this.jobs.get(id);
+    const job = this.jobs.get(id);
+    if (job && job.status === "running" && job.pid !== void 0 && job.pid !== process.pid) {
+      try {
+        const fresh = JSON.parse((0, import_node_fs11.readFileSync)((0, import_node_path11.join)(jobsDir(), `${id}.json`), "utf8"));
+        if (fresh && fresh.id === id) {
+          this.jobs.set(id, fresh);
+          return fresh;
+        }
+      } catch {
+      }
+    }
+    return job;
   }
   /** Recent jobs, newest first (metadata only — no result payloads). */
   list() {

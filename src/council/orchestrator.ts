@@ -28,6 +28,7 @@ import { runPooled } from './pool.js';
 import { checkVisionPooled, Member, ProgressReporter, queryMembers, withPhase } from './query.js';
 import { loadState, saveState, VisionCacheEntry, VISION_CACHE_TTL_MS } from '../state.js';
 import { harnessLadder, toolDialectRisk } from '../harness.js';
+import { probeHarness, rememberedHarness, routedId } from '../probe.js';
 
 // ─── Model classification ──────────────────────────────────────────────────────
 
@@ -161,16 +162,20 @@ function harnessRoute(id: ModelId, registry: ProviderRegistry): ModelId {
   // Already on a harness-capable provider — nothing to re-point.
   if (id.provider === 'claude-cli' || id.provider === 'codex-cli' || id.provider === 'grok-cli') return id;
 
+  // LEARNED knowledge wins over the seeded ladder: a probe measured this
+  // machine, the matrix only describes engines in general. A remembered
+  // 'none' is respected too — re-trying a route already proven dead just
+  // spends latency to reach the same flattened completion.
+  const learned = rememberedHarness(id);
+  if (learned) {
+    if (learned.harness === 'none') return id;
+    const routed = routedId(id, learned.harness, registry);
+    if (routed) return routed;
+  }
+
   for (const kind of harnessLadder(id.provider)) {
-    if (kind === 'none') break;
-    // The harness server registered for this engine: `claude-cli-ollama` for
-    // Ollama, `claude-cli-<serverId>` / `codex-cli-<serverId>` for a named
-    // self-hosted endpoint (see config.ts).
-    const serverId = id.provider === 'ollama' && kind === 'claude-cli'
-      ? 'claude-cli-ollama'
-      : `${kind}-${id.serverId ?? id.provider}`;
-    const routed: ModelId = { provider: kind, serverId, model: id.model };
-    if (registry.resolve(routed)) return routed;
+    const routed = routedId(id, kind, registry);
+    if (routed) return routed;
   }
   return id;
 }
@@ -308,7 +313,39 @@ export class CouncilOrchestrator {
     // Done BEFORE provider resolution so the rest of the call sees the routed
     // member as its real identity (pool key, label, judge candidacy).
     const routedViaHarness: string[] = [];
+    const probeNotes: { label: string; risk: string; definite: boolean }[] = [];
     if (runtime.webAccess) {
+      // Probe anything we have no fresh measurement for, ONCE, before routing.
+      // A member we know nothing about gets tried rather than written off —
+      // and the result is persisted, so this is paid at most once per model per
+      // TTL, across restarts and plugin updates. Only unknown members probe, so
+      // a steady-state council pays nothing.
+      for (const id of memberIds) {
+        if (id.provider === 'claude-cli' || id.provider === 'codex-cli' || id.provider === 'grok-cli') continue;
+        if (rememberedHarness(id)) continue;
+        try {
+          const cap = await probeHarness(id, this.registry, { wantTools: true });
+          await onProgress?.(`Detected ${modelIdLabel(id)}: harness ${cap.harness}, tools ${cap.tools}`);
+          // A harness that drives chat but cannot execute tool calls is still
+          // used — it just must not be reported as having researched.
+          if (cap.tools !== 'ok' && cap.harness !== 'none') {
+            // Keyed by the ROUTED label, because that is the identity the
+            // member carries by the time the report is built — keying it by
+            // the pre-route id silently dropped every warning (measured).
+            const r = harnessRoute(id, this.registry);
+            probeNotes.push({
+              label: modelIdLabel(r),
+              risk: cap.note ?? `tool calling is ${cap.tools} on this model, so it may answer from memory`,
+              // 'untested' is inconclusive (e.g. a timed-out probe), so it
+              // warns without claiming the member definitely cannot research.
+              definite: cap.tools === 'leaks' || cap.tools === 'unsupported',
+            });
+          }
+        } catch {
+          /* detection is best-effort — a failed probe must not fail the ask */
+        }
+      }
+
       memberIds = memberIds.map(id => {
         const routed = harnessRoute(id, this.registry);
         if (routed !== id) routedViaHarness.push(`${modelIdLabel(id)} → ${modelIdLabel(routed)}`);
@@ -362,14 +399,24 @@ export class CouncilOrchestrator {
       };
       for (const m of members) {
         const label = modelIdLabel(m.modelId);
-        if (canResearch(m.provider.config.type)) {
+        const proven = probeNotes.find(n => n.label === label);
+        if (proven?.definite) {
+          // Measured as unable to execute a tool call. Reporting it as
+          // "researched" would be the exact false assurance webRouting exists
+          // to prevent — it is answering from training data like any member
+          // with no tool loop at all.
+          webRouting.fromMemory.push({ label, reason: proven.risk });
+        } else if (canResearch(m.provider.config.type)) {
           webRouting.researched.push(label);
           // A model can be granted the tool and still be unable to use it —
           // its tool-call dialect may not be one the harness can execute.
           // Surface the known risk rather than letting "researched" imply a
           // search definitely ran (claude-cli.ts refuses the leaked-markup
           // reply, so the member errors visibly, but the warning is cheaper).
-          const risk = toolDialectRisk(m.modelId.model);
+          // A MEASURED result outranks the shipped hint — it named this
+          // machine's actual behaviour, not a general caveat about the family.
+          const measured = proven?.risk;
+          const risk = measured ?? toolDialectRisk(m.modelId.model);
           if (risk) {
             webRouting.toolDialectWarnings = webRouting.toolDialectWarnings ?? [];
             webRouting.toolDialectWarnings.push({ label, risk });

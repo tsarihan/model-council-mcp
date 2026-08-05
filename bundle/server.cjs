@@ -24748,6 +24748,9 @@ function toolDialectRisk(model) {
   }
   return void 0;
 }
+function isFresh(entry, now) {
+  return !!entry && typeof entry.checkedAt === "number" && Number.isFinite(entry.checkedAt) && now - entry.checkedAt < HARNESS_CACHE_TTL_MS;
+}
 
 // node_modules/openai/internal/qs/formats.mjs
 var default_format = "RFC3986";
@@ -37573,6 +37576,119 @@ async function runDialectic(input) {
   };
 }
 
+// src/probe.ts
+var PROBE_TIMEOUT_MS = 45e3;
+var TOOL_PROBE_TIMEOUT_MS = 18e4;
+var PROBE_MAX_TOKENS = 256;
+var CHAT_PROBE = "Reply with exactly: READY";
+var TOOL_PROBE = "Use your web search tool to find the current top headline on example.com or any news site. If you have no working web search tool, reply with exactly: NOSEARCH";
+var LEAKED_MARKUP = /<\|open\|>\s*tools?\b|<\|call\b|<\|tool_call\b|"tool_call"\s*:/i;
+function harnessServerId(provider, serverId, kind3) {
+  if (provider === "ollama" && kind3 === "claude-cli") return "claude-cli-ollama";
+  return `${kind3}-${serverId ?? provider}`;
+}
+function routedId(id, kind3, registry3) {
+  if (kind3 === "none") return null;
+  const routed = {
+    provider: kind3,
+    serverId: harnessServerId(id.provider, id.serverId, kind3),
+    model: id.model
+  };
+  return registry3.resolve(routed) ? routed : null;
+}
+function readMemory(label) {
+  return loadState().harnessCapability?.[label];
+}
+function remember(label, entry) {
+  saveState((current) => ({
+    harnessCapability: { ...current.harnessCapability ?? {}, [label]: entry }
+  }));
+}
+async function probeHarness(id, registry3, opts) {
+  const label = modelIdLabel(id);
+  const now = Date.now();
+  const cached4 = readMemory(label);
+  if (!opts.force && isFresh(cached4, now) && !(opts.wantTools && cached4.tools === "untested")) {
+    return cached4;
+  }
+  for (const kind3 of harnessLadder(id.provider)) {
+    const routed = routedId(id, kind3, registry3);
+    if (!routed) continue;
+    const provider = registry3.resolve(routed);
+    if (!provider) continue;
+    let chatOk = false;
+    try {
+      const out = await provider.complete(
+        routed.model,
+        [{ role: "user", content: CHAT_PROBE }],
+        { maxTokens: PROBE_MAX_TOKENS, timeoutMs: PROBE_TIMEOUT_MS }
+      );
+      chatOk = !!out && out.trim() !== "";
+    } catch {
+      chatOk = false;
+    }
+    if (!chatOk) continue;
+    if (!opts.wantTools) {
+      const entry3 = { harness: kind3, chat: true, tools: "untested", checkedAt: now };
+      remember(label, entry3);
+      return entry3;
+    }
+    let tools = "unsupported";
+    let note = toolDialectRisk(routed.model);
+    try {
+      const out = await provider.complete(
+        routed.model,
+        [{ role: "user", content: TOOL_PROBE }],
+        { maxTokens: PROBE_MAX_TOKENS, timeoutMs: TOOL_PROBE_TIMEOUT_MS, webSearch: true }
+      );
+      const text = (out ?? "").trim();
+      if (LEAKED_MARKUP.test(text)) {
+        tools = "leaks";
+        note = note ?? "emitted raw tool-call markup as text; the harness never executed a call";
+      } else if (/\bNOSEARCH\b/i.test(text)) {
+        tools = "unsupported";
+        note = note ?? "model reported it had no working web search tool";
+      } else if (text) {
+        tools = "ok";
+      }
+    } catch (err) {
+      const msg = String(err?.message ?? err);
+      if (LEAKED_MARKUP.test(msg) || /tool-call markup/i.test(msg)) {
+        tools = "leaks";
+        note = note ?? "emitted raw tool-call markup as text; the harness never executed a call";
+      } else if (isTimeoutError(err)) {
+        tools = "untested";
+        note = "tool probe timed out \u2014 inconclusive, will re-probe";
+      } else {
+        tools = "unsupported";
+        note = note ?? msg.slice(0, 160);
+      }
+    }
+    const entry2 = {
+      harness: kind3,
+      chat: true,
+      tools,
+      checkedAt: now,
+      ...note ? { note } : {}
+    };
+    remember(label, entry2);
+    return entry2;
+  }
+  const entry = {
+    harness: "none",
+    chat: false,
+    tools: "unsupported",
+    checkedAt: now,
+    note: "no registered harness could drive this model; it answers via a single completion"
+  };
+  remember(label, entry);
+  return entry;
+}
+function rememberedHarness(id) {
+  const entry = readMemory(modelIdLabel(id));
+  return isFresh(entry, Date.now()) ? entry : null;
+}
+
 // src/council/orchestrator.ts
 function isEmbeddingModel(m2) {
   if (m2.family && /^(bert|nomic-bert)$/i.test(m2.family)) return true;
@@ -37641,11 +37757,15 @@ function canResearch(type) {
 }
 function harnessRoute(id, registry3) {
   if (id.provider === "claude-cli" || id.provider === "codex-cli" || id.provider === "grok-cli") return id;
+  const learned = rememberedHarness(id);
+  if (learned) {
+    if (learned.harness === "none") return id;
+    const routed = routedId(id, learned.harness, registry3);
+    if (routed) return routed;
+  }
   for (const kind3 of harnessLadder(id.provider)) {
-    if (kind3 === "none") break;
-    const serverId = id.provider === "ollama" && kind3 === "claude-cli" ? "claude-cli-ollama" : `${kind3}-${id.serverId ?? id.provider}`;
-    const routed = { provider: kind3, serverId, model: id.model };
-    if (registry3.resolve(routed)) return routed;
+    const routed = routedId(id, kind3, registry3);
+    if (routed) return routed;
   }
   return id;
 }
@@ -37726,7 +37846,27 @@ var CouncilOrchestrator = class {
       autoUsed = memberIds.length > 0;
     }
     const routedViaHarness = [];
+    const probeNotes = [];
     if (runtime.webAccess) {
+      for (const id of memberIds) {
+        if (id.provider === "claude-cli" || id.provider === "codex-cli" || id.provider === "grok-cli") continue;
+        if (rememberedHarness(id)) continue;
+        try {
+          const cap = await probeHarness(id, this.registry, { wantTools: true });
+          await onProgress?.(`Detected ${modelIdLabel(id)}: harness ${cap.harness}, tools ${cap.tools}`);
+          if (cap.tools !== "ok" && cap.harness !== "none") {
+            const r2 = harnessRoute(id, this.registry);
+            probeNotes.push({
+              label: modelIdLabel(r2),
+              risk: cap.note ?? `tool calling is ${cap.tools} on this model, so it may answer from memory`,
+              // 'untested' is inconclusive (e.g. a timed-out probe), so it
+              // warns without claiming the member definitely cannot research.
+              definite: cap.tools === "leaks" || cap.tools === "unsupported"
+            });
+          }
+        } catch {
+        }
+      }
       memberIds = memberIds.map((id) => {
         const routed = harnessRoute(id, this.registry);
         if (routed !== id) routedViaHarness.push(`${modelIdLabel(id)} \u2192 ${modelIdLabel(routed)}`);
@@ -37765,9 +37905,13 @@ var CouncilOrchestrator = class {
       };
       for (const m2 of members) {
         const label = modelIdLabel(m2.modelId);
-        if (canResearch(m2.provider.config.type)) {
+        const proven = probeNotes.find((n2) => n2.label === label);
+        if (proven?.definite) {
+          webRouting.fromMemory.push({ label, reason: proven.risk });
+        } else if (canResearch(m2.provider.config.type)) {
           webRouting.researched.push(label);
-          const risk = toolDialectRisk(m2.modelId.model);
+          const measured = proven?.risk;
+          const risk = measured ?? toolDialectRisk(m2.modelId.model);
           if (risk) {
             webRouting.toolDialectWarnings = webRouting.toolDialectWarnings ?? [];
             webRouting.toolDialectWarnings.push({ label, risk });

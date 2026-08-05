@@ -76,16 +76,30 @@ preferred harness first.
 
 Anything absent from this table is **probed**, not refused.
 
-## Probe ladder for an unknown model
+## Probe ladder for an unknown model — BUILT (`src/probe.ts`)
 
-Cheap capability check first, then a real call:
+Walks `harnessLadder()` and measures, rather than inspecting endpoints:
 
-1. `GET <base>/v1/messages` shape check → if plausible, try the claude harness.
-2. Else `GET <base>/v1/models` → try the codex harness with `wire_api=chat`.
-3. One tiny real completion through the chosen harness ("reply OK"), plus — when
-   the caller wants web access — one tool-call probe, because *tool-calling* is
-   the capability that actually varies (see below).
-4. Record the winner (or a definitive "no harness") in `harnessCapability`.
+1. **Chat probe** per rung — one tiny completion. First rung that answers wins;
+   a rung that fails falls through to the next instead of failing the member.
+2. **Tool probe**, only when web access is actually wanted (it costs a real
+   search). Detects three distinct outcomes: a real answer (`ok`), the model's
+   own tool-call markup leaking as text (`leaks`), or a self-reported
+   `NOSEARCH` (`unsupported`).
+3. Records the outcome — **including a definitive "no harness"**, so a dead
+   endpoint is not re-probed on every ask.
+
+**A timeout is never a verdict.** Measured during development: a 45s tool probe
+against a local model timed out and was written down as `tools: unsupported`,
+permanently condemning a model that was merely slow. Timeouts now record
+`untested` (re-probe next time) and the tool budget is 180s. Re-measured after
+the fix, the same model returned `tools: ok`. This mirrors the vision cache,
+which already refuses to cache inconclusive probes.
+
+**Measured beats seeded.** `rememberedHarness()` is consulted before the matrix,
+and a member proven unable to execute tool calls is reported in
+`webRouting.fromMemory` rather than `researched` — reporting it as researched
+would be the precise false assurance `webRouting` exists to prevent.
 
 ## Why tool-calling is probed separately from chat
 

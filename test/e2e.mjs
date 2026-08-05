@@ -2058,6 +2058,30 @@ async function main() {
       wr.webRouting?.researched?.includes('claude-cli/claude-cli-ollama:small-a') &&
         wr.webRouting?.fromMemory?.length === 0,
       JSON.stringify(wr.webRouting));
+    // ── capability memory: probed once, then reused ───────────────────────
+    // The probe writes what it MEASURED to state.json, keyed like
+    // visionCapability, so the cost is paid once per model rather than per ask
+    // — and it survives restarts and plugin updates because state.json lives
+    // outside the plugin directory.
+    const wrState = JSON.parse(readFileSync(join(wrDir, 'state.json'), 'utf8'));
+    const capEntry = (wrState.harnessCapability ?? {})['ollama:small-a'];
+    check('probe: a measured capability is persisted for the member it probed',
+      !!capEntry && typeof capEntry.checkedAt === 'number',
+      JSON.stringify(wrState.harnessCapability));
+    check('probe: it records the harness AND tool-calling separately (they fail independently)',
+      !!capEntry && typeof capEntry.harness === 'string' &&
+        ['ok', 'leaks', 'unsupported', 'untested'].includes(capEntry.tools),
+      JSON.stringify(capEntry));
+    // Re-asking must NOT re-probe: a stable checkedAt is the evidence.
+    const firstCheckedAt = capEntry?.checkedAt;
+    await wrClient.callTool({
+      name: 'ask_council', arguments: { question: 'again', mode: 'individual', web_access: true },
+    });
+    const wrState2 = JSON.parse(readFileSync(join(wrDir, 'state.json'), 'utf8'));
+    check('probe: a remembered member is not re-probed on the next ask',
+      (wrState2.harnessCapability ?? {})['ollama:small-a']?.checkedAt === firstCheckedAt,
+      `${firstCheckedAt} → ${(wrState2.harnessCapability ?? {})['ollama:small-a']?.checkedAt}`);
+
     // The persisted default must also apply, and a per-call false must win.
     await wrClient.callTool({ name: 'configure_council', arguments: { web_access: true } });
     const wrCfg = parseToolResult(await wrClient.callTool({ name: 'get_council_config', arguments: {} }));

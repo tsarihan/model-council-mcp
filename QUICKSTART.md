@@ -185,6 +185,23 @@ back to each model's own default. Higher levels cost real time and subscription
 quota, multiplied across members × rounds — see the README for the full
 per-backend mapping table.
 
+**Know the cost before you spend it — and don't spend it twice.** `estimate_council_cost`
+predicts an ask's member completions, judge calls and wall-clock *before* you run it,
+calibrated from what each member has actually needed on this machine (members with no
+history use defaults and say `measured: false`); it makes no model calls. An **identical
+ask repeated within 15 minutes** returns the cached result instantly, marked
+`cache: { hit, ageMs }` — pass `no_cache=true` to force a fresh run; degraded or errored
+runs are never cached. Background `ask_council_async` jobs now **survive `/reload-plugins`**:
+a finished-but-unfetched result is still there afterwards, and a job that was mid-flight
+comes back as an explicit `interrupted` error instead of an eternal `running`.
+
+**Reading a result.** Every result carries `usage` (member completions and per-member
+wall-clock — what the ask actually spent). With web access on, `webRouting.sources` merges
+every URL the members cited, ordered by corroboration, so "3 of 4 members cite AP" is a
+fact you can read rather than reconstruct. A conflict whose sides differ in cited backing
+carries the judge's `assessment` of which is better supported; `judgeIsMember: true`
+discloses a judge that also answered as a member.
+
 **Which round an answer came from (`dialectic`, mainly).** `dialectic` is the one
 mode where each member answers *three times* — its opening position, its defense
 of that position, and its final ranked re-selection. So every member response
@@ -314,6 +331,8 @@ Handy tools & commands:
 | Ask about an image | `ask_council(images=[…])` — routed only to vision-capable members |
 | Not block on a long run | `ask_council_async` → `get_council_result(job_id)` |
 | Have the council research instead of recall | `ask_council(web_access=true)` |
+| Price an ask before running it | `estimate_council_cost(mode=…, web_access=…)` — free, no model calls |
+| Force a fresh run past the repeat cache | `ask_council(no_cache=true)` |
 | Cap output length | `max_tokens` (auto-clamped down to each server's context) |
 | Make the council think harder (or cheaper) | `reasoning_effort` on `ask_council`, or `configure_council(reasoning_effort=…)` for a persisted default |
 | Change default answer style | `response_mode` |

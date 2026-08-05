@@ -132,6 +132,9 @@ const isFirstRun = !stateFileExists();
   // on RuntimeConfig (not CouncilConfig), so persistedConfigOverrides can't
   // carry it. Re-validated because state.json, while server-owned, could be
   // hand-edited or left over from a version with a different scale.
+  if (typeof st.webAccess === 'boolean') {
+    orchestrator.updateRuntime({ webAccess: st.webAccess });
+  }
   if (isReasoningEffort(st.reasoningEffort)) {
     orchestrator.updateRuntime({ reasoningEffort: st.reasoningEffort });
   } else if (isFirstRun && appConfig.runtime.reasoningEffort === undefined) {
@@ -274,6 +277,7 @@ async function runCouncil(
     git_repo?: string;
     full_repo_access?: boolean;
     reasoning_effort?: string;
+    web_access?: boolean;
   },
   onProgress?: ProgressReporter,
 ) {
@@ -311,6 +315,7 @@ async function runCouncil(
     // receive in a trust-affirming position (see orchestrator.ask).
     input.question,
     isReasoningEffort(input.reasoning_effort) ? input.reasoning_effort : undefined,
+    input.web_access,
   );
 }
 
@@ -614,6 +619,13 @@ const ConfigureCouncilInput = z.object({
       'When true (default) and no models are set, the council is auto-populated ' +
         'from all available Ollama chat models (local + :cloud).',
     ),
+  web_access: z
+    .boolean()
+    .optional()
+    .describe(
+      'Default web access for every ask, persisted across reloads. See ask_council\'s ' +
+        'web_access for what it grants and what it exposes. Off unless set.',
+    ),
   reasoning_effort: z
     .enum([...EFFORT_ORDER, 'auto'] as const)
     .optional()
@@ -699,6 +711,20 @@ const AskCouncilInput = z.object({
         'vision-capable council members are queried with the image(s); members ' +
         'without vision support are automatically skipped for this call (see ' +
         'visionRouting in the result). Caps: 8 MB/image, 24 MB total, 6 images.',
+    ),
+  web_access: z
+    .boolean()
+    .optional()
+    .describe(
+      'Let council members SEARCH THE WEB for this call, so they research current facts ' +
+        'instead of answering from training data. Off by default. Members reached through an ' +
+        'agentic CLI (claude-cli/codex-cli/grok-cli) get a real search tool; a bare "ollama:*" ' +
+        'member is automatically re-pointed through the claude-CLI harness so it can research ' +
+        'too. API-key providers (openai/anthropic/xai/vllm/trtllm/sglang) have no tool loop and ' +
+        'still answer from memory — the result\'s webRouting block names exactly who did which, ' +
+        'so a partly-researched council is never mistaken for a fully-researched one. WARNING: ' +
+        'this pulls UNTRUSTED page content into member answers, which then feed the judge; it ' +
+        'also costs real latency and subscription quota.',
     ),
   reasoning_effort: z
     .enum(EFFORT_ORDER)
@@ -791,6 +817,12 @@ const TOOLS = [
             'deconflicted: iterative loop with deconfliction score. ' +
             'pooled: Delphi-style neutral reconsideration (no attribution or ranking shown to members). ' +
             'dialectic: thesis/antithesis/synthesis — defend, build pros/cons, re-select.',
+        },
+        web_access: {
+          type: 'boolean',
+          description:
+            'Default web access for every ask, persisted across reloads. See ask_council\'s ' +
+            'web_access. Off unless set.',
         },
         reasoning_effort: {
           type: 'string',
@@ -901,6 +933,16 @@ const TOOLS = [
             'vision support are automatically skipped for this call (see visionRouting in ' +
             'the result). Caps: 8 MB/image, 24 MB total, 6 images.',
         },
+        web_access: {
+          type: 'boolean',
+          description:
+            'Let members SEARCH THE WEB for this call instead of answering from training data. ' +
+            'Off by default. claude-cli/codex-cli/grok-cli members get a real search tool, and a ' +
+            'bare "ollama:*" member is re-pointed through the claude-CLI harness so it can ' +
+            'research too; API-key providers have no tool loop and still answer from memory. The ' +
+            'result\'s webRouting names who did which. WARNING: pulls UNTRUSTED page content into ' +
+            'member answers (which feed the judge), and costs latency and subscription quota.',
+        },
         reasoning_effort: {
           type: 'string',
           enum: [...EFFORT_ORDER],
@@ -967,6 +1009,16 @@ const TOOLS = [
           type: 'array',
           items: { type: 'string' },
           description: 'Optional local image paths — same vision-routing behavior as ask_council.',
+        },
+        web_access: {
+          type: 'boolean',
+          description:
+            'Let members SEARCH THE WEB for this call instead of answering from training data. ' +
+            'Off by default. claude-cli/codex-cli/grok-cli members get a real search tool, and a ' +
+            'bare "ollama:*" member is re-pointed through the claude-CLI harness so it can ' +
+            'research too; API-key providers have no tool loop and still answer from memory. The ' +
+            'result\'s webRouting names who did which. WARNING: pulls UNTRUSTED page content into ' +
+            'member answers (which feed the judge), and costs latency and subscription quota.',
         },
         reasoning_effort: {
           type: 'string',
@@ -1256,6 +1308,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
 
         // reasoning_effort lives on RuntimeConfig, not CouncilConfig, so it
         // goes through updateRuntime rather than the `update` patch above.
+        if (input.web_access !== undefined) {
+          orchestrator.updateRuntime({ webAccess: input.web_access });
+        }
         if (input.reasoning_effort !== undefined) {
           // "auto" is the explicit clear-back-to-unset sentinel, the same one
           // judge_model uses. It is NOT a synonym for "none": `none` actively
@@ -1307,6 +1362,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         }
         if (input.reasoning_effort !== undefined) {
           persistPatch.reasoningEffort = orchestrator.getRuntime().reasoningEffort;
+        }
+        if (input.web_access !== undefined) {
+          persistPatch.webAccess = orchestrator.getRuntime().webAccess;
         }
         if (Object.keys(persistPatch).length > 0) {
           saveState(persistPatch);
@@ -1476,11 +1534,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     // its own default depth, which is not the same as any one
                     // level and must not be reported as one.
                     reasoningEffort: runtime.reasoningEffort ?? null,
+                    webAccess: runtime.webAccess ?? false,
                   },
                   providers,
                   runtime: {
                     maxTokens: runtime.maxTokens,
                     reasoningEffort: runtime.reasoningEffort ?? null,
+                    webAccess: runtime.webAccess ?? false,
                     cloudConcurrency: runtime.cloudConcurrency,
                     localConcurrency: runtime.localConcurrency,
                     retries: runtime.retries,
@@ -1515,6 +1575,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     GROK_CLI_MODELS: 'Comma-separated model names for the Grok CLI member (default: grok-4.5)',
                     GROK_CLI_PATH: 'Path to the grok executable (default: grok)',
                     MAX_TOKENS: 'Max output tokens per completion (default: 32768), clamped per-model to fit context',
+                    WEB_ACCESS: 'true → council members search the web by default instead of answering from training data. Off by default; see ask_council\'s web_access.',
                     REASONING_EFFORT: `Default reasoning depth for members and judge: ${EFFORT_ORDER.join(' | ')}. Unset = each model's own default. Clamped per-backend; overridable per call via ask_council's reasoning_effort.`,
                     CLOUD_CONCURRENCY: 'Optional override: caps ALL cloud pools (overrides per-tier limits). Unset = tiers drive it.',
                     LOCAL_CONCURRENCY: 'Max concurrent local requests (default: 1; 0 = unlimited)',
@@ -1583,6 +1644,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     repo_ms: orchestrator.getRuntime().repoRequestTimeoutMs,
                   },
                   reasoningEffort: orchestrator.getRuntime().reasoningEffort ?? null,
+                  webAccess: orchestrator.getRuntime().webAccess ?? false,
                   reloadPending,
                   quotaWarning: quotaWarning(report, tiers, subs),
                   hints,

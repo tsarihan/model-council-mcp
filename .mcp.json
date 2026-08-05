@@ -18,6 +18,7 @@
         "SGLANG_SERVERS": "${user_config.sglang_servers}",
         "MAX_TOKENS": "${user_config.max_tokens}",
         "REASONING_EFFORT": "${user_config.reasoning_effort}",
+        "WEB_ACCESS": "${user_config.web_access}",
         "CLOUD_CONCURRENCY": "${user_config.cloud_concurrency}",
         "LOCAL_CONCURRENCY": "${user_config.local_concurrency}",
         "COMPLETION_RETRIES": "${user_config.completion_retries}",

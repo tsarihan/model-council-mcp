@@ -85,9 +85,11 @@ process.stdin.on('end', () => {
   // `-c model_reasoning_effort="high"` — echoed so a test can prove the effort
   // reached the argv, and in the exact TOML-quoted form codex parses.
   const effortCfg = args.find(a => a.startsWith('model_reasoning_effort='));
+  const webCfg = args.some(a => a === 'tools.web_search=true');
   const result = challengeAnswer ??
     `mock-codex model=${model} okey=${okey} ckey=${ckey} sandbox=${sandbox} ${imageSummary} ${cwdListing} ` +
     `effort=${effortCfg ? effortCfg.slice('model_reasoning_effort='.length).replace(/"/g, '') : 'unset'} ` +
+    `web=${webCfg ? 'on' : 'off'} ` +
     `:: ${input.trim().slice(0, 500)}`;
   if (outFile) {
     try { writeFileSync(outFile, result); } catch { /* ignore */ }

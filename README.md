@@ -251,6 +251,7 @@ Full URLs also work: `gpu3:http://10.0.0.5:9000`
 | `JUDGE_MODEL` | Judge model ID or `auto` | `auto` (largest council member) |
 | `RESPONSE_MODE` | `individual` \| `categorized` \| `deconflicted` \| `pooled` \| `dialectic` | `categorized` |
 | `MAX_DECONFLICT_ROUNDS` | Max deconfliction iterations | `3` |
+| `WEB_ACCESS` | `true` → council members search the web by default instead of answering from training data. See [Web access](#web-access). Off by default; per-call `web_access` overrides it. | `false` |
 | `REASONING_EFFORT` | Default reasoning depth for every member **and** the judge: `none` \| `minimal` \| `low` \| `medium` \| `high` \| `xhigh` \| `max`. See [Reasoning effort](#reasoning-effort) — levels a backend doesn't support are clamped, never errored. Outranks the first-run seed below. | *(unset — but a **brand-new install** seeds `high`)* |
 
 ### Performance & output
@@ -390,6 +391,29 @@ Two members that can't honour the request at all are handled rather than dropped
 | `deconflict` | `deconflicted` — a re-question aimed at the open conflicts; `round` carries which pass (1-based) |
 
 This is defense in depth, not the primary mechanism. Rounds are already separated structurally: each is its own awaited call whose results land in a dedicated array at a fixed per-member index, so a slow member's answer can never arrive late and be swept into the next round — a member that times out simply leaves an errored entry in its own round's slot (and sets `judgeDegraded`). The tag puts that round on the *record* rather than leaving it implied by the container, so a future refactor that merges or forwards responses between collections can't silently turn a thesis into an antithesis. The `dialectic` dossier prompt — the one place two rounds are shown to the judge together — labels each entry from its own `phase` for the same reason.
+
+<a id="web-access"></a>
+**Web access.** `"web_access": true` lets members SEARCH THE WEB for that call, so they research current facts instead of answering from training data. Off by default — it costs latency and subscription quota, and it pulls untrusted text into the council.
+
+```json
+{ "question": "Which US steakhouses currently hold three Michelin stars?", "web_access": true }
+```
+
+Who can actually research depends on whether a member has an agentic tool loop to grant a search tool inside:
+
+| Member | How it researches |
+|---|---|
+| `claude-cli` | `--tools WebSearch,WebFetch` **plus** `--allowedTools` — both are required; the first enables the tool, the second permits its use |
+| `codex-cli` | `-c tools.web_search=true` (`codex exec` has no `--search` flag) |
+| `grok-cli` | web tools re-enabled in `--tools`; **names unverified**, and it fails closed if the guess is wrong |
+| bare `ollama:*` | **automatically re-pointed through the claude-CLI harness** for the call, since Ollama serves an Anthropic-Messages endpoint — so it researches too |
+| `openai` / `xai` / `vllm` / `trtllm` / `sglang` | **cannot** — one flattened completion, no tool turn |
+
+Every result then carries a `webRouting` block naming `researched`, `fromMemory` (with the reason), and `routedViaHarness`. That exists so a partly-researched council is never read as a fully-researched one — the judge reconciles those answers as peers, so the split has to be visible.
+
+**Known limitation (verified live).** An open-weight model driven through the harness may emit its OWN native tool-call markup as plain text instead of an executable tool call — observed with `kimi-k3:cloud` at `--effort max`, while the same call at `low` searched correctly and cited a source. No search runs in that case, so the provider now rejects such a reply as a failed completion (retried, then reported as a member error) rather than letting the markup reach the judge as a position.
+
+**Security.** Page content is untrusted input that flows into member answers and then into judge prompts — the same trust class as `context`/`files`/git-diff, and every member prompt says so explicitly. Grant it deliberately.
 
 **Completion markers & timeout cuts.** Every completed answer is wrapped in `═══════ BEGINNING OF RESPONSE ═══════` / `═══════ END OF RESPONSE ═══════` delimiters (the JSON payload sits intact on its own lines between them — strip the first and last line to parse). The markers are the completion signal: the tool returns the moment the council finishes, so it never waits the full timeout just because the timeout is set. If a member's completion is cut by the per-completion timeout, the result carries `timeoutNotice: "RESPONSE TIMED OUT, INCREASE TIMEOUT IF MESSAGE IS CUT"` plus a `timedOutMembers` array of the cut labels — this surfaces even under `verbose: false`. Raise the budget with `set_council_timeouts` (or `REQUEST_TIMEOUT_MS` / `REPO_REQUEST_TIMEOUT_MS`) and re-ask.
 

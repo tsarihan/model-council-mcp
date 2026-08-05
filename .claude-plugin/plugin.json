@@ -1,7 +1,7 @@
 {
   "name": "model-council",
   "description": "Ask a council of local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, X.AI Grok) AI models. Get individual, categorized (agreement / complementary / conflicting), or fully deconflicted answers with a resolution score.",
-  "version": "0.2.82",
+  "version": "0.2.83",
   "author": {
     "name": "Tom Sarihan"
   },
@@ -127,6 +127,12 @@
       "type": "string",
       "title": "Default reasoning effort",
       "description": "How hard every council member AND the judge think: none | minimal | low | medium | high | xhigh | max. A brand-new install starts at high (seeded once, then yours to change); leave empty to use each model's own default. Higher levels give deeper answers at real cost in time and subscription quota, multiplied across members x rounds. A level a given backend doesn't support is clamped to its nearest supported one (e.g. 'max' runs as 'high' on an Ollama model, 'none' as 'low' on the Claude CLI), so one setting works across a mixed council. Override per call with ask_council's reasoning_effort."
+    },
+    "web_access": {
+      "type": "boolean",
+      "title": "Web access (research mode)",
+      "description": "When ON, council members search the web instead of answering from training data. Subscription-CLI members search directly, and a bare Ollama member is automatically re-pointed through the claude-CLI harness so it can research too; API-key providers have no tool loop and still answer from memory (the result says who did which). WARNING: pulls untrusted page content into member answers, and costs real latency and subscription quota. Override per call with ask_council's web_access.",
+      "default": false
     },
     "cloud_concurrency": {
       "type": "number",

@@ -10,11 +10,13 @@ import {
   IndividualResult,
   ModelId,
   ModelInfo,
+  ProviderType,
   RawResponse,
   ReasoningEffort,
   ResponseMode,
   RuntimeConfig,
   VisionRouting,
+  WebRouting,
 } from '../types.js';
 import { ChatImage } from '../providers/base.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -129,6 +131,35 @@ function attachTimedOut<T extends object>(result: T, initialResponses: RawRespon
   return { ...result, timedOutMembers: [...labels] } as T;
 }
 
+/**
+ * Can this provider type actually run a live search? Only the CLI-backed
+ * providers have an agentic tool loop to grant a search tool inside; every
+ * other provider gets one flattened completion with no tool turn, so granting
+ * it web access would be a no-op the caller could not see.
+ */
+function canResearch(type: ProviderType): boolean {
+  return type === 'claude-cli' || type === 'codex-cli' || type === 'grok-cli';
+}
+
+/**
+ * The claude-CLI harness drives ANY Anthropic-Messages-compatible endpoint
+ * (see claude-cli.ts's header), and Ollama serves one natively — so a bare
+ * `ollama:*` member, which alone could never search, becomes able to research
+ * simply by being addressed through the harness server instead. This is the
+ * same re-pointing `migrateCloudToHarness` already does for curated cloud
+ * models, applied per-call rather than persisted: nothing about the configured
+ * council changes, only how it is reached for THIS ask.
+ *
+ * Returns the id unchanged when the harness isn't registered, so a failed
+ * re-point degrades to "answers from memory, and says so" rather than dropping
+ * the member.
+ */
+function harnessRoute(id: ModelId, registry: ProviderRegistry): ModelId {
+  if (id.provider !== 'ollama') return id;
+  const routed: ModelId = { provider: 'claude-cli', serverId: 'claude-cli-ollama', model: id.model };
+  return registry.resolve(routed) ? routed : id;
+}
+
 // ─── Main orchestrator ────────────────────────────────────────────────────────
 
 export class CouncilOrchestrator {
@@ -211,6 +242,7 @@ export class CouncilOrchestrator {
     fullRepoAccessRepo?: string,
     originalQuestion?: string,
     effortOverride?: ReasoningEffort,
+    webAccessOverride?: boolean,
   ): Promise<CouncilResult> {
     // `question` is what MEMBERS see — possibly augmented by buildAugmentedQuestion
     // with untrusted context/files/git-diff content. `judgeQuestion` is the
@@ -239,9 +271,13 @@ export class CouncilOrchestrator {
     const baseRuntime: RuntimeConfig = fullRepoAccessRepo
       ? { ...this.runtime, fullRepoAccess: fullRepoAccessRepo, requestTimeoutMs: this.runtime.repoRequestTimeoutMs }
       : this.runtime;
-    const runtime: RuntimeConfig = effortOverride
-      ? { ...baseRuntime, reasoningEffort: effortOverride }
-      : baseRuntime;
+    const runtime: RuntimeConfig = {
+      ...baseRuntime,
+      ...(effortOverride ? { reasoningEffort: effortOverride } : {}),
+      // Explicit `false` must be able to turn OFF a configured default, so
+      // this tests for undefined rather than truthiness.
+      ...(webAccessOverride !== undefined ? { webAccess: webAccessOverride } : {}),
+    };
 
     // ── Determine council membership ──────────────────────────────────────
     // If explicitly configured, use those. Otherwise (zero-config) auto-
@@ -251,6 +287,18 @@ export class CouncilOrchestrator {
     if (memberIds.length === 0 && this.config.autoCouncil) {
       memberIds = await this.autoDiscoverCouncil();
       autoUsed = memberIds.length > 0;
+    }
+
+    // ── Web access: re-point what can be re-pointed ───────────────────────
+    // Done BEFORE provider resolution so the rest of the call sees the routed
+    // member as its real identity (pool key, label, judge candidacy).
+    const routedViaHarness: string[] = [];
+    if (runtime.webAccess) {
+      memberIds = memberIds.map(id => {
+        const routed = harnessRoute(id, this.registry);
+        if (routed !== id) routedViaHarness.push(`${modelIdLabel(id)} → ${modelIdLabel(routed)}`);
+        return routed;
+      });
     }
 
     // ── Resolve providers for each council member ─────────────────────────
@@ -285,6 +333,28 @@ export class CouncilOrchestrator {
           ? 'No Ollama chat models found to form a council. Pull a model (e.g. `ollama pull llama3`) or set council models via configure_council.'
           : 'Council has no reachable members. Use configure_council or set COUNCIL_MODELS.',
       );
+    }
+
+    // ── Web routing report ────────────────────────────────────────────────
+    // Built even when every member can research, so "the council researched"
+    // is something the caller can verify rather than infer.
+    let webRouting: WebRouting | undefined;
+    if (runtime.webAccess) {
+      webRouting = {
+        researched: [],
+        fromMemory: [],
+        ...(routedViaHarness.length ? { routedViaHarness } : {}),
+      };
+      for (const m of members) {
+        const label = modelIdLabel(m.modelId);
+        if (canResearch(m.provider.config.type)) webRouting.researched.push(label);
+        else {
+          webRouting.fromMemory.push({
+            label,
+            reason: `${m.provider.config.type} returns a single completion with no tool loop, so it cannot run a search`,
+          });
+        }
+      }
     }
 
     // ── Vision routing ──────────────────────────────────────────────────────
@@ -450,6 +520,7 @@ export class CouncilOrchestrator {
         question,
         responses,
         ...(visionRouting ? { visionRouting } : {}),
+        ...(webRouting ? { webRouting } : {}),
       } satisfies IndividualResult, responses);
     }
 
@@ -524,7 +595,7 @@ export class CouncilOrchestrator {
           verbose,
           images,
         });
-        return attachTimedOut(visionRouting ? { ...pooled, visionRouting } : pooled, responses);
+        return attachTimedOut({ ...pooled, ...(visionRouting ? { visionRouting } : {}), ...(webRouting ? { webRouting } : {}) }, responses);
       }
 
       // ── Dialectic (thesis → antithesis → synthesis) ───────────────────────
@@ -541,7 +612,7 @@ export class CouncilOrchestrator {
           verbose,
           images,
         });
-        return attachTimedOut(visionRouting ? { ...dialectic, visionRouting } : dialectic, responses);
+        return attachTimedOut({ ...dialectic, ...(visionRouting ? { visionRouting } : {}), ...(webRouting ? { webRouting } : {}) }, responses);
       }
 
       // ── Categorize ──────────────────────────────────────────────────────
@@ -561,6 +632,8 @@ export class CouncilOrchestrator {
           ...catResult,
           rawResponses: responses,
           ...(visionRouting ? { visionRouting } : {}),
+          ...(webRouting ? { webRouting } : {}),
+        ...(webRouting ? { webRouting } : {}),
         } satisfies CategorizedResult, responses);
       }
 
@@ -581,7 +654,7 @@ export class CouncilOrchestrator {
         judgeDegraded: catResult.judgeDegraded,
         images,
       })) as DeconflictedResult;
-      return attachTimedOut(visionRouting ? { ...dec, visionRouting } : dec, responses);
+      return attachTimedOut({ ...dec, ...(visionRouting ? { visionRouting } : {}), ...(webRouting ? { webRouting } : {}) }, responses);
     } catch (err) {
       // Degrade to individual so member work isn't discarded — but log the full
       // error to stderr so a genuine bug (not just a judge outage) stays visible
@@ -599,6 +672,7 @@ export class CouncilOrchestrator {
           `Reconciliation (${mode} mode, judge ${modelIdLabel(judgeModelId)}) failed — ${msg}. ` +
           `Returning the council's raw individual responses.`,
         ...(visionRouting ? { visionRouting } : {}),
+        ...(webRouting ? { webRouting } : {}),
       } satisfies IndividualResult, responses);
     }
   }

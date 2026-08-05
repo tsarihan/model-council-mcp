@@ -347,6 +347,10 @@ export async function queryMembersVarying(
             // site so EVERY member round inherits it — the initial fan-out,
             // every deconfliction round, and the pooled/dialectic re-asks.
             effort: runtime.reasoningEffort,
+            // Members research; the JUDGE deliberately does not. It reconciles
+            // text the members already produced, so a search there would add
+            // latency and a second untrusted-content path for no new evidence.
+            webSearch: runtime.webAccess,
             ...opts,
           },
           runtime.retries,

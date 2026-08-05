@@ -40,6 +40,13 @@ export interface CouncilState {
    * usually unset, meaning each model's own default depth).
    */
   reasoningEffort?: ReasoningEffort;
+  /**
+   * Council-wide web access set via configure_council. Persisted like every
+   * other configure_council setting, and deliberately NOT seeded on a first
+   * run the way reasoningEffort is: research pulls untrusted text off the
+   * internet into member answers, so it stays an explicit opt-in.
+   */
+  webAccess?: boolean;
   /** Reference-data version the user was last welcomed for. */
   welcomedVersion?: string;
   /**

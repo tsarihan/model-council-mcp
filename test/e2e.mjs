@@ -1048,6 +1048,26 @@ async function main() {
       cli.responses?.every(r => /effort=high\b/.test(r.response ?? '')),
       cli.responses?.map(r => r.response).join(' | '));
 
+    // ── web_access ────────────────────────────────────────────────────────
+    check('web_access: off by default — no web tools granted',
+      cli.responses?.every(r => /web=off/.test(r.response ?? '')),
+      cli.responses?.map(r => r.response).join(' | '));
+    const web = parseToolResult(await cliClient.callTool({
+      name: 'ask_council', arguments: { question: 'hello world', mode: 'individual', web_access: true },
+    }));
+    // BOTH flags are required — --tools enables, --allowedTools permits. The
+    // mock only reports web=on when it saw both, so this catches a regression
+    // that grants the tool without the permission (verified live: that shape
+    // returns permission_denials and runs no search at all).
+    check('web_access: grants the tool AND the permission to use it',
+      web.responses?.every(r => /web=on/.test(r.response ?? '')),
+      web.responses?.map(r => r.response).join(' | '));
+    check('web_access: reports every member as researched when all can',
+      web.webRouting?.researched?.length === 2 && web.webRouting?.fromMemory?.length === 0,
+      JSON.stringify(web.webRouting));
+    check('web_access: no webRouting block at all when web access is off',
+      cli.webRouting === undefined, JSON.stringify(cli.webRouting));
+
     const effortHigh = parseToolResult(await cliClient.callTool({
       name: 'ask_council', arguments: { question: 'hello world', mode: 'individual', reasoning_effort: 'high' },
     }));
@@ -1253,6 +1273,13 @@ async function main() {
       cx.responses?.map(r => r.response).join(' | '));
     // Codex takes a level nothing below it does (`xhigh`), so this proves the
     // value arrives verbatim rather than being clamped to a common denominator.
+    const cxWeb = parseToolResult(await codexClient.callTool({
+      name: 'ask_council', arguments: { question: 'hi codex', mode: 'individual', web_access: true },
+    }));
+    check('codex-cli: web_access arrives as the tools.web_search config key',
+      cxWeb.responses?.every(r => /web=on/.test(r.response ?? '')),
+      cxWeb.responses?.map(r => r.response).join(' | '));
+
     const cxEffort = parseToolResult(await codexClient.callTool({
       name: 'ask_council', arguments: { question: 'hi codex', mode: 'individual', reasoning_effort: 'xhigh' },
     }));
@@ -2005,6 +2032,44 @@ async function main() {
       /auto/i.test(badJudgeCfg.council?.judgeModel ?? ''), JSON.stringify(badJudgeCfg.council));
     await badJudgeClient.close();
     rmSync(badJudgeDir, { recursive: true, force: true });
+
+    // ── web_access routing: who could actually research ───────────────────
+    // A bare `ollama:*` member cannot search on its own, but the claude-CLI
+    // harness drives any Anthropic-Messages endpoint and Ollama serves one —
+    // so it is re-pointed for the call rather than silently answering from
+    // memory alongside members that did research.
+    const wrDir = mkdtempSync(join(tmpdir(), 'mc-e2e-webroute-'));
+    const wrTransport = new StdioClientTransport({
+      command: 'node', args: [serverEntry],
+      env: { ...process.env, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true', OLLAMA_ADDRESS: MOCK_URL, CLAUDE_CLI_PATH: MOCK_CLAUDE, CODEX_CLI_PATH: MOCK_CODEX, GROK_CLI_PATH: MOCK_GROK, MODEL_COUNCIL_STATE: join(wrDir, 'state.json') },
+    });
+    const wrClient = new Client({ name: 'webroute-e2e', version: '1.0.0' }, { capabilities: {} });
+    await wrClient.connect(wrTransport);
+    await wrClient.callTool({ name: 'configure_council', arguments: {
+      models: ['ollama:small-a'], response_mode: 'individual',
+    }});
+    const wr = parseToolResult(await wrClient.callTool({
+      name: 'ask_council', arguments: { question: 'hi', mode: 'individual', web_access: true },
+    }));
+    check('web_access: a bare ollama member is re-pointed through the claude-CLI harness so it CAN research',
+      (wr.webRouting?.routedViaHarness ?? []).some(x => /ollama:small-a → claude-cli\/claude-cli-ollama:small-a/.test(x)),
+      JSON.stringify(wr.webRouting));
+    check('web_access: the re-pointed member is counted as researched, not as answering from memory',
+      wr.webRouting?.researched?.includes('claude-cli/claude-cli-ollama:small-a') &&
+        wr.webRouting?.fromMemory?.length === 0,
+      JSON.stringify(wr.webRouting));
+    // The persisted default must also apply, and a per-call false must win.
+    await wrClient.callTool({ name: 'configure_council', arguments: { web_access: true } });
+    const wrCfg = parseToolResult(await wrClient.callTool({ name: 'get_council_config', arguments: {} }));
+    check('web_access: configure_council default is reported', wrCfg.council?.webAccess === true,
+      JSON.stringify(wrCfg.council?.webAccess));
+    const wrOff = parseToolResult(await wrClient.callTool({
+      name: 'ask_council', arguments: { question: 'hi', mode: 'individual', web_access: false },
+    }));
+    check('web_access: an explicit false turns OFF a configured default (not just "unset")',
+      wrOff.webRouting === undefined, JSON.stringify(wrOff.webRouting));
+    await wrClient.close();
+    rmSync(wrDir, { recursive: true, force: true });
 
     // ── first-run effort seed: new installs only ───────────────────────────
     // `high` is seeded ONLY when no state file existed. An install that has

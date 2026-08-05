@@ -151,6 +151,21 @@ install with the `*_models` options.
 | `pooled` | Delphi-style: members reconsider a neutral, attribution-free pool of answers — divergence is preserved, not averaged away. |
 | `dialectic` | thesis → antithesis → synthesis: members defend their pick, the judge builds a pros/cons dossier, members re-select. |
 
+**Let the council research instead of recall.** `web_access` grants members a live
+web search for that call:
+
+```
+ask_council(question="Which US steakhouses currently hold three Michelin stars?",
+            web_access=true)
+```
+
+Off by default. The subscription-CLI members search directly, and a bare `ollama:*`
+member is automatically re-pointed through the claude-CLI harness so it can search
+too; API-key providers (openai/xai/vllm/…) have no tool loop and still answer from
+memory. The result's `webRouting` block names who did which, so a partly-researched
+council isn't mistaken for a fully-researched one. It pulls untrusted page content
+into the council — see the README before turning it on by default.
+
 **Dial the reasoning depth.** `reasoning_effort` sets how hard every member
 *and* the judge think — `none` · `minimal` · `low` · `medium` · `high` · `xhigh` · `max`:
 
@@ -298,6 +313,7 @@ Handy tools & commands:
 | Review the whole repo (⚠️ real permission grant) | `ask_council(full_repo_access=true)` |
 | Ask about an image | `ask_council(images=[…])` — routed only to vision-capable members |
 | Not block on a long run | `ask_council_async` → `get_council_result(job_id)` |
+| Have the council research instead of recall | `ask_council(web_access=true)` |
 | Cap output length | `max_tokens` (auto-clamped down to each server's context) |
 | Make the council think harder (or cheaper) | `reasoning_effort` on `ask_council`, or `configure_council(reasoning_effort=…)` for a persisted default |
 | Change default answer style | `response_mode` |

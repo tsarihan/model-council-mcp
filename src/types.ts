@@ -104,6 +104,15 @@ export interface RuntimeConfig {
    * config, never to the shared server-wide one.
    */
   reasoningEffort?: ReasoningEffort;
+  /**
+   * Grant council members live web search for this ask, so they research
+   * rather than answer from training data. Off by default: it costs latency
+   * and quota, and it pulls UNTRUSTED text off the internet into member
+   * answers — which then feed the judge — so it must be an explicit choice.
+   * Set per call by ask_council on a shallow clone of this config, never on
+   * the shared server-wide one.
+   */
+  webAccess?: boolean;
   /** Max concurrent cloud requests — fallback default when a pool has no explicit limit. */
   cloudConcurrency: number;
   /** Max concurrent local requests. Default 1 (sequential) to avoid contention; <=0 = unlimited. */
@@ -179,6 +188,27 @@ export interface RawResponse {
  * versus which were skipped because they aren't — so the routing decision is
  * visible, not silent.
  */
+/**
+ * Which members actually researched, when web_access was on. Reported for the
+ * same reason as VisionRouting: only members driven through an agentic CLI
+ * harness can run a search, so a mixed council would otherwise present
+ * researched answers and recalled ones side by side as if they were peers —
+ * and the judge would reconcile them as peers too. Making the split visible is
+ * what stops "the council checked" from being read into an answer half of it
+ * guessed at.
+ */
+export interface WebRouting {
+  /** Members that were granted, and could actually run, a live web search. */
+  researched: string[];
+  /**
+   * Members answering from training data alone, with why — an OpenAI-style
+   * API member has no tool loop to grant, so it cannot research at all.
+   */
+  fromMemory: { label: string; reason: string }[];
+  /** Members re-pointed through the claude-CLI harness so they COULD research. */
+  routedViaHarness?: string[];
+}
+
 export interface VisionRouting {
   imagesAttached: number;
   queriedVisionModels: string[];
@@ -194,6 +224,8 @@ export interface IndividualResult {
   /** Set when a reconciliation mode fell back to individual (e.g. the judge failed). */
   note?: string;
   visionRouting?: VisionRouting;
+  /** Present only when web_access was on — see WebRouting. */
+  webRouting?: WebRouting;
   /**
    * Labels of members whose completion was cut by the per-completion timeout,
    * attached by the orchestrator from the raw responses it has in hand — so a
@@ -248,6 +280,8 @@ export interface CategorizedResult {
    */
   judgeFailed?: boolean;
   visionRouting?: VisionRouting;
+  /** Present only when web_access was on — see WebRouting. */
+  webRouting?: WebRouting;
   /**
    * Labels of members whose completion was cut by the per-completion timeout,
    * attached by the orchestrator from the raw responses it has in hand — so a
@@ -332,6 +366,8 @@ export interface DeconflictedResult {
   /** Per-round detail: member responses and the judge's re-categorization. */
   rounds?: DeconflictRoundDetail[];
   visionRouting?: VisionRouting;
+  /** Present only when web_access was on — see WebRouting. */
+  webRouting?: WebRouting;
   /**
    * Labels of members whose completion was cut by the per-completion timeout,
    * attached by the orchestrator from the raw responses it has in hand — so a
@@ -390,6 +426,8 @@ export interface PooledResult {
   /** The initial fan-out responses from every council member. */
   initialResponses?: RawResponse[];
   visionRouting?: VisionRouting;
+  /** Present only when web_access was on — see WebRouting. */
+  webRouting?: WebRouting;
   /**
    * Labels of members whose completion was cut by the per-completion timeout,
    * attached by the orchestrator from the raw responses it has in hand — so a
@@ -437,6 +475,8 @@ export interface DialecticResult {
   /** Thesis: the initial fan-out responses from every council member. */
   initialResponses?: RawResponse[];
   visionRouting?: VisionRouting;
+  /** Present only when web_access was on — see WebRouting. */
+  webRouting?: WebRouting;
   /**
    * Labels of members whose completion was cut by the per-completion timeout,
    * attached by the orchestrator from the raw responses it has in hand — so a

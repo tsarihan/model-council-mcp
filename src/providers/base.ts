@@ -149,6 +149,18 @@ export interface CompletionOptions {
    */
   effort?: ReasoningEffort;
   /**
+   * Let this completion search the web. Only the CLI-backed providers can
+   * honour it — they have an agentic tool loop to grant a search tool within;
+   * every other provider gets a single flattened completion and simply
+   * ignores this. The orchestrator is what makes that asymmetry visible
+   * (WebRouting) rather than leaving it silent.
+   *
+   * The returned answer therefore carries UNTRUSTED text pulled off the
+   * internet, which then flows into judge prompts — the same trust class as
+   * `context`/`files`/git-diff content, and covered by the same notices.
+   */
+  webSearch?: boolean;
+  /**
    * Absolute repo root to grant repo exploration access to, for the CLI
    * providers that support it — enforced DIFFERENTLY per provider:
    *   - claude-cli: Read/Grep/Glob CONFINED to this root via --add-dir, a

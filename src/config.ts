@@ -518,6 +518,7 @@ export function loadConfig(): AppConfig {
     // even longer answers — slower/costlier, multiplied across members × rounds).
     maxTokens: Math.max(1, envInt('MAX_TOKENS', 32768)),
     reasoningEffort,
+    webAccess: envBool('WEB_ACCESS', false),
     cloudConcurrency: cloudOverride ?? subs.defaults.cloudConcurrency,
     localConcurrency: localOverride ?? subs.defaults.localConcurrency,
     poolLimits,

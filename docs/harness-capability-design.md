@@ -16,6 +16,26 @@ means an unknown model is tried once and never re-probed. Both are keyed the
 same way `visionCapability` already is (model-id label), and the learned map
 carries `checkedAt` so a stale "no" expires instead of being sticky forever.
 
+## Harness selection rule
+
+**Always try the claude-cli harness first. Use codex only because the inference
+engine cannot speak the Anthropic Messages API — never as a preference.**
+
+That ordering is not stylistic. The claude harness is the one this repo has
+actually exercised end to end (repo access, vision, and now web search all run
+through it), its tool grants are enforced boundaries we have verified, and one
+harness for most members keeps behaviour comparable across a mixed council.
+Codex is the compatibility fallback: it reaches OpenAI-compatible engines that
+have no `/v1/messages` to point `ANTHROPIC_BASE_URL` at.
+
+So the matrix below is really answering one question per provider — *can this
+endpoint speak Anthropic Messages?* If yes, claude-cli. If no, codex-cli with
+`wire_api="chat"`. If neither, a flattened completion, reported not dropped.
+
+Note for hosted OpenAI-compatible providers (`openai`, `xai`): the codex custom
+provider needs `env_key` naming the variable holding their API key, so those
+members bill per token through the harness exactly as they do today.
+
 ## Harnesses, in preference order
 
 1. **claude-cli harness** — `ANTHROPIC_BASE_URL=<endpoint>` + `--model <name>`.

@@ -24424,15 +24424,18 @@ var import_node_path = require("node:path");
 var import_node_url = require("node:url");
 var import_meta = {};
 var EMBEDDED = {
-  version: "2026-07-20",
+  version: "2026-08-05",
   providers: {
     chatgpt: {
       cliType: "codex-cli",
       tiers: {
         free: { cloud: false },
+        // Plus = the Codex CLI's own default child-agent count (6, chosen
+        // upstream partly to avoid 429s); Pro tiers scale up with the 5x/20x
+        // usage multipliers — OpenAI publishes no per-plan concurrency.
         plus: { cloud: true, concurrency: 6 },
-        pro5x: { cloud: true, concurrency: 6 },
-        pro20x: { cloud: true, concurrency: 6 }
+        pro5x: { cloud: true, concurrency: 8 },
+        pro20x: { cloud: true, concurrency: 12 }
       },
       models: ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra"]
     },
@@ -24440,9 +24443,12 @@ var EMBEDDED = {
       cliType: "claude-cli",
       tiers: {
         free: { cloud: false },
-        pro: { cloud: true, concurrency: 2 },
-        max5x: { cloud: true, concurrency: 4 },
-        max20x: { cloud: true, concurrency: 8 }
+        // Anthropic publishes usage multipliers (Pro >=5x Free, Max 5x/20x
+        // Pro) over a shared throttled pool, not a session count — these are
+        // starting points scaled with the multiplier.
+        pro: { cloud: true, concurrency: 4 },
+        max5x: { cloud: true, concurrency: 8 },
+        max20x: { cloud: true, concurrency: 12 }
       },
       models: ["opus", "sonnet", "haiku"]
     },
@@ -24459,6 +24465,10 @@ var EMBEDDED = {
     ollama: {
       tiers: {
         free: { cloud: false },
+        // PUBLISHED hard caps (ollama.com/pricing): Free 1 / Pro 3 / Max 10
+        // concurrent cloud slots — above the cap requests queue then reject,
+        // and the cap cannot be raised client-side. Free stays local-only
+        // here: its single slot would fully serialize a cloud council.
         pro: { cloud: true, concurrency: 3 },
         max: { cloud: true, concurrency: 10 }
       }
@@ -32212,6 +32222,18 @@ function loadConfig() {
     );
   }
   const reasoningEffort = isReasoningEffort(effortRaw) ? effortRaw : void 0;
+  const tcRaw = envClean("HARNESS_TOOL_CONCURRENCY");
+  let harnessToolConcurrency;
+  if (tcRaw !== void 0) {
+    const n2 = Number.parseInt(tcRaw, 10);
+    if (Number.isFinite(n2) && n2 >= 1 && String(n2) === tcRaw.trim()) {
+      harnessToolConcurrency = n2;
+    } else {
+      warnings.push(
+        `HARNESS_TOOL_CONCURRENCY="${tcRaw}" is not a whole number >= 1 \u2014 ignoring it (the seeded/persisted value applies instead).`
+      );
+    }
+  }
   const autoRaw = (envClean("AUTO_COUNCIL") ?? "true").toLowerCase();
   const autoCouncil = !["false", "0", "no", "off"].includes(autoRaw);
   const cloudOverrideRaw = envClean("CLOUD_CONCURRENCY");
@@ -32229,6 +32251,7 @@ function loadConfig() {
     // even longer answers — slower/costlier, multiplied across members × rounds).
     maxTokens: Math.max(1, envInt("MAX_TOKENS", 32768)),
     reasoningEffort,
+    harnessToolConcurrency,
     webAccess: envBool("WEB_ACCESS", false),
     cloudConcurrency: cloudOverride ?? subs.defaults.cloudConcurrency,
     localConcurrency: localOverride ?? subs.defaults.localConcurrency,
@@ -35575,8 +35598,11 @@ var HARNESS_REDIRECT_VARS = [
   "ANTHROPIC_FOUNDRY_API_KEY",
   "ANTHROPIC_FOUNDRY_AUTH_TOKEN"
 ];
-function buildChildEnv(baseEnv, anthropicBaseUrl) {
+function buildChildEnv(baseEnv, anthropicBaseUrl, toolConcurrency) {
   const env = { ...baseEnv };
+  if (typeof toolConcurrency === "number" && Number.isFinite(toolConcurrency) && toolConcurrency >= 1) {
+    env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY = String(Math.floor(toolConcurrency));
+  }
   if (anthropicBaseUrl) {
     env.ANTHROPIC_BASE_URL = anthropicBaseUrl;
     env.ANTHROPIC_API_KEY = "ollama-harness-placeholder-key";
@@ -35748,7 +35774,8 @@ var ClaudeCliProvider = class {
           args,
           prompt,
           timeoutMs,
-          addDirs[addDirs.length - 1] ?? scratchCwd
+          addDirs[addDirs.length - 1] ?? scratchCwd,
+          opts.toolConcurrency
         );
       } finally {
         if (scratchCwd) {
@@ -35792,9 +35819,9 @@ var ClaudeCliProvider = class {
       }
     }
   }
-  run(args, input, timeoutMs, cwd) {
+  run(args, input, timeoutMs, cwd, toolConcurrency) {
     return new Promise((resolve4, reject) => {
-      const env = buildChildEnv(process.env, this.anthropicBaseUrl);
+      const env = buildChildEnv(process.env, this.anthropicBaseUrl, toolConcurrency);
       const child = (0, import_node_child_process.spawn)(this.command, args, {
         env,
         stdio: ["pipe", "pipe", "pipe"],
@@ -36593,6 +36620,7 @@ async function queryMembersVarying(promptFor, members, runtime, opts = {}, image
             // text the members already produced, so a search there would add
             // latency and a second untrusted-content path for no new evidence.
             webSearch: runtime.webAccess,
+            toolConcurrency: runtime.harnessToolConcurrency,
             ...opts
           },
           runtime.retries
@@ -38187,7 +38215,10 @@ var CouncilOrchestrator = class {
       // the whole ask — but the judge is a model like any other, so a
       // per-member pin on ITS label wins, letting a slow judge be turned down
       // without touching the members (or vice versa).
-      effort: runtime.memberEffort?.[modelIdLabel(judgeModelId)] ?? runtime.reasoningEffort
+      effort: runtime.memberEffort?.[modelIdLabel(judgeModelId)] ?? runtime.reasoningEffort,
+      // A repo-access judge reads real files through the same CLI session
+      // limits as any member, so the tool-concurrency override rides along.
+      toolConcurrency: runtime.harnessToolConcurrency
     };
     try {
       const judgeProvider = this.registry.resolve(judgeModelId);
@@ -39092,6 +39123,7 @@ function askCachePut(key, result) {
   }
 }
 var FIRST_RUN_EFFORT = "high";
+var SEED_HARNESS_TOOL_CONCURRENCY = 16;
 var isFirstRun = !stateFileExists();
 var lastStateMtimeMs = 0;
 try {
@@ -39109,6 +39141,12 @@ try {
   }
   if (typeof st2.webAccess === "boolean") {
     orchestrator.updateRuntime({ webAccess: st2.webAccess });
+  }
+  if (typeof st2.harnessToolConcurrency === "number" && Number.isFinite(st2.harnessToolConcurrency) && st2.harnessToolConcurrency >= 1) {
+    orchestrator.updateRuntime({ harnessToolConcurrency: Math.floor(st2.harnessToolConcurrency) });
+  } else if (appConfig.runtime.harnessToolConcurrency === void 0) {
+    orchestrator.updateRuntime({ harnessToolConcurrency: SEED_HARNESS_TOOL_CONCURRENCY });
+    saveState({ harnessToolConcurrency: SEED_HARNESS_TOOL_CONCURRENCY });
   }
   if (isReasoningEffort(st2.reasoningEffort)) {
     orchestrator.updateRuntime({ reasoningEffort: st2.reasoningEffort });
@@ -39354,6 +39392,10 @@ var PARAM_ALIASES = {
   modelefforts: "member_efforts",
   effort: "reasoning_effort",
   reasoning: "reasoning_effort",
+  toolconcurrency: "harness_tool_concurrency",
+  tool_concurrency: "harness_tool_concurrency",
+  harnesstoolconcurrency: "harness_tool_concurrency",
+  maxtooluseconcurrency: "harness_tool_concurrency",
   thinking: "reasoning_effort",
   effortlevel: "reasoning_effort"
 };
@@ -39426,6 +39468,9 @@ var ConfigureCouncilInput = external_exports.object({
   ),
   reasoning_effort: external_exports.enum([...EFFORT_ORDER, "auto"]).optional().describe(
     `Default reasoning depth for every member AND the judge, persisted across reloads. Levels a given backend does not support are clamped to its nearest supported one (e.g. "max" runs as "high" on an Ollama model, "none" as "low" on claude-cli), so one setting works across a mixed council. Pass "auto" to CLEAR it back to each model's own default depth \u2014 note that is distinct from "none", which actively asks for no reasoning. Omit to leave the default unchanged; ask_council's own reasoning_effort overrides this for a single call.`
+  ),
+  harness_tool_concurrency: external_exports.number().int().min(1).max(64).optional().describe(
+    "Parallel tool executions allowed INSIDE one claude-cli member call (CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY on the spawned CLI; its own default is 10 and an inherited parent-session throttle would otherwise leak in). Seeded to 16 on install/upgrade; persisted. claude-cli members only \u2014 codex members spawn no child agents and grok has no equivalent, so it does not apply to them."
   )
 }).strict();
 var AskCouncilInput = external_exports.object({
@@ -39524,6 +39569,10 @@ var TOOLS = [
           type: "string",
           enum: [...EFFORT_ORDER, "auto"],
           description: `Default reasoning depth for every member and the judge, persisted across reloads. A level a backend does not support is clamped to its nearest supported one, so one setting works across a mixed council. Pass "auto" to clear it back to each model's own default depth (distinct from "none", which actively asks for no reasoning). ask_council's own reasoning_effort overrides this for a single call.`
+        },
+        harness_tool_concurrency: {
+          type: "number",
+          description: "Parallel tool executions inside one claude-cli member call (1-64; sets CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY on the spawn, overriding any inherited parent-session throttle). Seeded to 16 on install/upgrade; persisted. claude-cli members only."
         },
         max_deconflict_rounds: {
           type: "number",
@@ -39883,6 +39932,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
             reasoningEffort: input.reasoning_effort === "auto" ? void 0 : input.reasoning_effort
           });
         }
+        if (input.harness_tool_concurrency !== void 0) {
+          orchestrator.updateRuntime({ harnessToolConcurrency: input.harness_tool_concurrency });
+        }
         orchestrator.updateConfig(update);
         if (input.models !== void 0) {
           explicitlyConfigured = true;
@@ -39909,6 +39961,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         }
         if (input.web_access !== void 0) {
           persistPatch.webAccess = orchestrator.getRuntime().webAccess;
+        }
+        if (input.harness_tool_concurrency !== void 0) {
+          persistPatch.harnessToolConcurrency = orchestrator.getRuntime().harnessToolConcurrency;
         }
         if (Object.keys(persistPatch).length > 0) {
           saveState(persistPatch);
@@ -40117,6 +40172,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                   runtime: {
                     maxTokens: runtime.maxTokens,
                     reasoningEffort: runtime.reasoningEffort ?? null,
+                    harnessToolConcurrency: runtime.harnessToolConcurrency ?? null,
                     webAccess: runtime.webAccess ?? false,
                     cloudConcurrency: runtime.cloudConcurrency,
                     localConcurrency: runtime.localConcurrency,
@@ -40138,9 +40194,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     JUDGE_MODEL: "Judge model (default: auto)",
                     RESPONSE_MODE: "individual | categorized | deconflicted | pooled | dialectic",
                     MAX_DECONFLICT_ROUNDS: "Max deconfliction rounds (default: 3)",
-                    CLAUDE_TIER: "Claude plan: free | pro | max5x | max20x (drives Claude concurrency + membership)",
-                    CHATGPT_TIER: "ChatGPT plan: free | plus | pro5x | pro20x (drives Codex concurrency + membership)",
-                    OLLAMA_TIER: "Ollama plan: free | pro | max (free = local only; pro/max = cloud + 3/10 concurrency)",
+                    CLAUDE_TIER: "Claude plan: free | pro | max5x | max20x (cloud access + 4/8/12 parallel Claude calls \u2014 starting points; Anthropic publishes usage multipliers, not a session cap)",
+                    CHATGPT_TIER: "ChatGPT plan: free | plus | pro5x | pro20x (6/8/12 parallel Codex calls \u2014 Plus matches the Codex CLI default of 6; OpenAI publishes no per-plan concurrency)",
+                    OLLAMA_TIER: "Ollama plan: free | pro | max (free = local only; pro/max = cloud + 3/10 concurrency \u2014 PUBLISHED hard caps, queue-then-reject upstream)",
                     GROK_TIER: "Grok (X.AI subscription CLI) plan: free | supergrok | premiumplus | heavy (default free \u2014 opt in explicitly)",
                     CLAUDE_CLI: "true \u2192 add a subscription-backed Claude member via the local `claude` CLI (no API key/billing)",
                     CLAUDE_CLI_MODELS: "Comma-separated model aliases for the CLI member (default: opus,sonnet)",
@@ -40154,6 +40210,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     MAX_TOKENS: "Max output tokens per completion (default: 32768), clamped per-model to fit context",
                     WEB_ACCESS: "true \u2192 council members search the web by default instead of answering from training data. Off by default; see ask_council's web_access.",
                     REASONING_EFFORT: `Default reasoning depth for members and judge: ${EFFORT_ORDER.join(" | ")}. Unset = each model's own default. Clamped per-backend; overridable per call via ask_council's reasoning_effort.`,
+                    HARNESS_TOOL_CONCURRENCY: "Parallel tool executions inside one claude-cli member call (default: seeded 16). Overrides any throttle inherited from the parent session.",
                     CLOUD_CONCURRENCY: "Optional override: caps ALL cloud pools (overrides per-tier limits). Unset = tiers drive it.",
                     LOCAL_CONCURRENCY: "Max concurrent local requests (default: 1; 0 = unlimited)",
                     COMPLETION_RETRIES: "Attempts per completion before giving up on empty/error (default: 3)",

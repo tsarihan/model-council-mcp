@@ -516,6 +516,25 @@ export function loadConfig(): AppConfig {
   }
   const reasoningEffort = isReasoningEffort(effortRaw) ? effortRaw : undefined;
 
+  // ── Harness tool concurrency ──────────────────────────────────────────────
+  // Parallel tool executions inside ONE claude-cli member call. Unset here is
+  // NOT "CLI default": boot seeds a generous value into state when the key is
+  // absent (see index.ts), so members never inherit a throttle the user set
+  // on their own interactive session.
+  const tcRaw = envClean('HARNESS_TOOL_CONCURRENCY');
+  let harnessToolConcurrency: number | undefined;
+  if (tcRaw !== undefined) {
+    const n = Number.parseInt(tcRaw, 10);
+    if (Number.isFinite(n) && n >= 1 && String(n) === tcRaw.trim()) {
+      harnessToolConcurrency = n;
+    } else {
+      warnings.push(
+        `HARNESS_TOOL_CONCURRENCY="${tcRaw}" is not a whole number >= 1 — ` +
+        'ignoring it (the seeded/persisted value applies instead).',
+      );
+    }
+  }
+
   // Auto-council: default ON. Only "false"/"0"/"no" disables it.
   const autoRaw = (envClean('AUTO_COUNCIL') ?? 'true').toLowerCase();
   const autoCouncil = !['false', '0', 'no', 'off'].includes(autoRaw);
@@ -564,6 +583,7 @@ export function loadConfig(): AppConfig {
     // even longer answers — slower/costlier, multiplied across members × rounds).
     maxTokens: Math.max(1, envInt('MAX_TOKENS', 32768)),
     reasoningEffort,
+    harnessToolConcurrency,
     webAccess: envBool('WEB_ACCESS', false),
     cloudConcurrency: cloudOverride ?? subs.defaults.cloudConcurrency,
     localConcurrency: localOverride ?? subs.defaults.localConcurrency,

@@ -772,6 +772,9 @@ export class CouncilOrchestrator {
       // per-member pin on ITS label wins, letting a slow judge be turned down
       // without touching the members (or vice versa).
       effort: runtime.memberEffort?.[modelIdLabel(judgeModelId)] ?? runtime.reasoningEffort,
+      // A repo-access judge reads real files through the same CLI session
+      // limits as any member, so the tool-concurrency override rides along.
+      toolConcurrency: runtime.harnessToolConcurrency,
     };
 
     // The judge is itself a council member; a genuine judge failure (unreachable,

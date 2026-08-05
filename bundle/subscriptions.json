@@ -1,29 +1,32 @@
 {
-  "version": "2026-07-20",
-  "note": "Reference data for subscription tiers, per-provider concurrency, and curated cloud models. Editable: update this file and pull to pick up new plans/models/limits. Copied to bundle/subscriptions.json at build time and read at boot (with an embedded fallback in src/subscriptions.ts).",
+  "version": "2026-08-05",
+  "note": "Reference data for subscription tiers, per-provider concurrency, and curated cloud models. Editable: update this file and pull to pick up new plans/models/limits. Copied to bundle/subscriptions.json at build time and read at boot (with an embedded fallback in src/subscriptions.ts). `concurrency` is what the council allows in parallel against that plan; `concurrencyBasis` records where each number comes from — only Ollama publishes hard per-plan caps, Claude/ChatGPT publish usage multipliers over a shared throttled pool, so their values are engineering starting points scaled with the tier multiplier.",
   "providers": {
     "chatgpt": {
       "cliType": "codex-cli",
+      "concurrencyBasis": "OpenAI publishes usage multipliers (Pro = 5x/20x Plus) over a shared pool with fair-use throttling, not a per-plan concurrency. Starting points: Plus = 6 (the Codex CLI's own default child-agent count, chosen upstream partly to avoid HTTP 429), Pro tiers scaled up.",
       "tiers": {
         "free": { "cloud": false },
         "plus": { "cloud": true, "concurrency": 6 },
-        "pro5x": { "cloud": true, "concurrency": 6 },
-        "pro20x": { "cloud": true, "concurrency": 6 }
+        "pro5x": { "cloud": true, "concurrency": 8, "multiplier": "5x Plus" },
+        "pro20x": { "cloud": true, "concurrency": 12, "multiplier": "20x Plus" }
       },
       "models": ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra"]
     },
     "claude": {
       "cliType": "claude-cli",
+      "concurrencyBasis": "Anthropic publishes rolling usage allowances (Pro at least 5x Free, Max = 5x/20x Pro), not a per-plan simultaneous-session count — concurrent sessions share the plan's pool and can be throttled. Values are engineering starting points scaled with the tier multiplier.",
       "tiers": {
         "free": { "cloud": false },
-        "pro": { "cloud": true, "concurrency": 2 },
-        "max5x": { "cloud": true, "concurrency": 4 },
-        "max20x": { "cloud": true, "concurrency": 8 }
+        "pro": { "cloud": true, "concurrency": 4, "multiplier": "5x Free" },
+        "max5x": { "cloud": true, "concurrency": 8, "multiplier": "5x Pro" },
+        "max20x": { "cloud": true, "concurrency": 12, "multiplier": "20x Pro" }
       },
       "models": ["opus", "sonnet", "haiku"]
     },
     "grok": {
       "cliType": "grok-cli",
+      "concurrencyBasis": "xAI publishes no per-plan concurrency; conservative unverified estimates.",
       "tiers": {
         "free": { "cloud": false },
         "supergrok": { "cloud": true, "concurrency": 2 },
@@ -33,10 +36,11 @@
       "models": ["grok-4.5"]
     },
     "ollama": {
+      "concurrencyBasis": "Published hard caps (ollama.com/pricing): Free 1 / Pro 3 / Max 10 concurrent cloud slots — requests above the cap queue, then reject; cannot be raised client-side. Council keeps Free = local-only even though the plan includes 1 cloud slot, because a single slot would fully serialize a cloud council.",
       "tiers": {
         "free": { "cloud": false },
-        "pro": { "cloud": true, "concurrency": 3 },
-        "max": { "cloud": true, "concurrency": 10 }
+        "pro": { "cloud": true, "concurrency": 3, "multiplier": "50x Free" },
+        "max": { "cloud": true, "concurrency": 10, "multiplier": "5x Pro" }
       }
     }
   },

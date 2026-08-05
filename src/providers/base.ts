@@ -149,6 +149,15 @@ export interface CompletionOptions {
    */
   effort?: ReasoningEffort;
   /**
+   * Parallel tool executions allowed inside THIS completion's CLI session
+   * (claude-cli only — exported as CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY on
+   * the spawn, overriding whatever the parent session leaked into our env).
+   * Other providers ignore it: codex members spawn no child agents and its
+   * agents.* flags are version-fragile; grok/ollama/API have no equivalent.
+   * Undefined = leave the inherited/default value untouched.
+   */
+  toolConcurrency?: number;
+  /**
    * Let this completion search the web. Only the CLI-backed providers can
    * honour it — they have an agentic tool loop to grant a search tool within;
    * every other provider gets a single flattened completion and simply

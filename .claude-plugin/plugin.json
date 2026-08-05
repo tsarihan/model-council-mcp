@@ -1,7 +1,7 @@
 {
   "name": "model-council",
   "description": "Ask a council of local (Ollama, vLLM, TRT-LLM, SGLang) and cloud (OpenAI, Anthropic, X.AI Grok) AI models. Get individual, categorized (agreement / complementary / conflicting), or fully deconflicted answers with a resolution score.",
-  "version": "0.2.95",
+  "version": "0.2.96",
   "author": {
     "name": "Tom Sarihan"
   },
@@ -56,7 +56,7 @@
     "grok_tier": {
       "type": "string",
       "title": "Grok subscription tier",
-      "description": "Your X.AI Grok plan: free | supergrok | premiumplus | heavy. Adds Grok members via the local `grok` CLI (only if it is installed AND logged in). Defaults to free (opt-in) since this is a newer provider added on top of an existing install base — set this or run /model-council:setup to add Grok members.",
+      "description": "Your X.AI Grok plan: free | supergrok | premiumplus | heavy. Adds Grok members via the local `grok` CLI (only if it is installed AND logged in). Defaults to free (opt-in) since this is a newer provider added on top of an existing install base \u2014 set this or run /model-council:setup to add Grok members.",
       "default": "free"
     },
     "judge_model": {
@@ -167,16 +167,16 @@
     },
     "request_timeout_ms": {
       "type": "number",
-      "title": "Per-request timeout — text-only (ms)",
-      "description": "Wall-clock timeout for a single model completion on text-only calls (no full_repo_access) before it's recorded as a timed-out member (default 300000 = 5 min; local Ollama models run sequentially, so a busy box needs headroom). Raise it for slow local models (large MLX/GGUF) — it's honoured verbatim by every provider, including claude-cli/codex-cli/grok-cli (no 300s floor). Change at runtime with the set_council_timeouts MCP tool.",
+      "title": "Per-request timeout \u2014 text-only (ms)",
+      "description": "Wall-clock timeout for a single model completion on text-only calls (no full_repo_access) before it's recorded as a timed-out member (default 300000 = 5 min; local Ollama models run sequentially, so a busy box needs headroom). Raise it for slow local models (large MLX/GGUF) \u2014 it's honoured verbatim by every provider, including claude-cli/codex-cli/grok-cli (no 300s floor). Change at runtime with the set_council_timeouts MCP tool.",
       "default": 300000,
       "min": 5000,
       "max": 1800000
     },
     "repo_request_timeout_ms": {
       "type": "number",
-      "title": "Per-request timeout — full_repo_access (ms)",
-      "description": "Per-completion timeout used when full_repo_access is set (default 600000 = 10 min) — the CLI member Read/Grep/Globs the repo tree, materially longer than a flat text completion. Honoured verbatim by every provider. Change at runtime with the set_council_timeouts MCP tool.",
+      "title": "Per-request timeout \u2014 full_repo_access (ms)",
+      "description": "Per-completion timeout used when full_repo_access is set (default 600000 = 10 min) \u2014 the CLI member Read/Grep/Globs the repo tree, materially longer than a flat text completion. Honoured verbatim by every provider. Change at runtime with the set_council_timeouts MCP tool.",
       "default": 600000,
       "min": 5000,
       "max": 1800000
@@ -208,7 +208,7 @@
     "codex_cli": {
       "type": "boolean",
       "title": "ChatGPT subscription (Codex CLI)",
-      "description": "Add a ChatGPT-subscription member via the local `codex exec` CLI instead of an OpenAI API key. Requires the Codex CLI installed and signed in (`codex login` → Sign in with ChatGPT). Codex is a coding agent, so answers are coding-flavored. Members appear as codex-cli:<model>.",
+      "description": "Add a ChatGPT-subscription member via the local `codex exec` CLI instead of an OpenAI API key. Requires the Codex CLI installed and signed in (`codex login` \u2192 Sign in with ChatGPT). Codex is a coding agent, so answers are coding-flavored. Members appear as codex-cli:<model>.",
       "default": false
     },
     "codex_cli_models": {

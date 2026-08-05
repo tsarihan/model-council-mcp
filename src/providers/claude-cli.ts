@@ -160,8 +160,18 @@ const HARNESS_REDIRECT_VARS = [
 export function buildChildEnv(
   baseEnv: NodeJS.ProcessEnv,
   anthropicBaseUrl: string | undefined,
+  toolConcurrency?: number,
 ): NodeJS.ProcessEnv {
   const env = { ...baseEnv };
+  // Parallel tool executions INSIDE this member's session. Set explicitly in
+  // BOTH modes when configured: the child otherwise inherits the parent
+  // session's value, so a user who lowered it interactively to fight 429s
+  // (per Anthropic's own error docs) would silently serialize every member's
+  // web fan-out. Undefined leaves the inherited/default value untouched —
+  // this is a deterministic override, not a redirect/credential concern.
+  if (typeof toolConcurrency === 'number' && Number.isFinite(toolConcurrency) && toolConcurrency >= 1) {
+    env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY = String(Math.floor(toolConcurrency));
+  }
   if (anthropicBaseUrl) {
     // Ollama-harness mode: route this subprocess's Anthropic-Messages-API
     // traffic at the configured override instead of the real Anthropic API.
@@ -446,6 +456,7 @@ export class ClaudeCliProvider implements Provider {
           prompt,
           timeoutMs,
           addDirs[addDirs.length - 1] ?? scratchCwd,
+          opts.toolConcurrency,
         );
       } finally {
         if (scratchCwd) {
@@ -507,9 +518,10 @@ export class ClaudeCliProvider implements Provider {
     input: string | undefined,
     timeoutMs: number,
     cwd?: string,
+    toolConcurrency?: number,
   ): Promise<RunResult> {
     return new Promise((resolve, reject) => {
-      const env = buildChildEnv(process.env, this.anthropicBaseUrl);
+      const env = buildChildEnv(process.env, this.anthropicBaseUrl, toolConcurrency);
 
       const child = spawn(this.command, args, {
         env,

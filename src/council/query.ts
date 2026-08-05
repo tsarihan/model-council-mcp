@@ -359,6 +359,7 @@ export async function queryMembersVarying(
             // text the members already produced, so a search there would add
             // latency and a second untrusted-content path for no new evidence.
             webSearch: runtime.webAccess,
+            toolConcurrency: runtime.harnessToolConcurrency,
             ...opts,
           },
           runtime.retries,

@@ -98,9 +98,16 @@ console.log('▶ subscriptions isValid: per-tier shape (cloud must be boolean, c
 }
 
 console.log('▶ tier → cloud + concurrency');
-check('chatgpt/plus cloud on, conc 6', tierAllowsCloud('chatgpt', 'plus') && tierConcurrency('chatgpt', 'plus') === 6);
-check('claude/max20x conc 8', tierConcurrency('claude', 'max20x') === 8);
-check('ollama/pro conc 3, max conc 10', tierConcurrency('ollama', 'pro') === 3 && tierConcurrency('ollama', 'max') === 10);
+check('chatgpt/plus cloud on, conc 6 (Codex CLI default)', tierAllowsCloud('chatgpt', 'plus') && tierConcurrency('chatgpt', 'plus') === 6);
+// Claude/ChatGPT publish usage MULTIPLIERS (5x/20x) over a shared throttled
+// pool, not per-plan concurrency — so these are researched starting points
+// that must SCALE with the tier, not sit flat across it.
+check('claude pro/max5x/max20x conc 4/8/12', tierConcurrency('claude', 'pro') === 4 && tierConcurrency('claude', 'max5x') === 8 && tierConcurrency('claude', 'max20x') === 12);
+check('chatgpt pro5x/pro20x conc 8/12 (scales with tier, not flat)', tierConcurrency('chatgpt', 'pro5x') === 8 && tierConcurrency('chatgpt', 'pro20x') === 12);
+// Ollama is the ONLY provider with PUBLISHED hard caps (Free 1 / Pro 3 /
+// Max 10 cloud slots, queue-then-reject) — these two must match the
+// published numbers exactly, never a tuning judgment.
+check('ollama/pro conc 3, max conc 10 (published hard caps)', tierConcurrency('ollama', 'pro') === 3 && tierConcurrency('ollama', 'max') === 10);
 check('grok/supergrok conc 2, premiumplus conc 3, heavy conc 6', tierConcurrency('grok', 'supergrok') === 2 && tierConcurrency('grok', 'premiumplus') === 3 && tierConcurrency('grok', 'heavy') === 6);
 check('free tiers deny cloud', !tierAllowsCloud('ollama', 'free') && !tierAllowsCloud('claude', 'free') && !tierAllowsCloud('chatgpt', 'free') && !tierAllowsCloud('grok', 'free'));
 check('unknown tier denies cloud (safe)', !tierAllowsCloud('ollama', 'bogus'));
@@ -125,7 +132,7 @@ check('validTiers lists grok tiers', validTiers('grok').includes('supergrok') &&
 console.log('▶ resolvePoolLimits');
 const limits = resolvePoolLimits({ chatgpt: 'plus', claude: 'pro', grok: 'heavy', ollama: 'max' });
 check('chatgpt pool = 6', limits.chatgpt === 6, `got ${limits.chatgpt}`);
-check('claude pool = 2', limits.claude === 2, `got ${limits.claude}`);
+check('claude pool = 4', limits.claude === 4, `got ${limits.claude}`);
 check('grok pool = 6', limits.grok === 6, `got ${limits.grok}`);
 check('ollama-cloud pool = 10', limits['ollama-cloud'] === 10, `got ${limits['ollama-cloud']}`);
 check('api pools = apiConcurrency default', limits.openai === subs.defaults.apiConcurrency && limits.xai === subs.defaults.apiConcurrency);
@@ -2387,6 +2394,23 @@ console.log('▶ buildChildEnv: subscription vs Ollama-harness mode never cross-
   const cleanEnv = buildChildEnv({ PATH: '/usr/bin' }, undefined);
   check('subscription mode with no ambient override: ANTHROPIC_BASE_URL still unset',
     cleanEnv.ANTHROPIC_BASE_URL === undefined);
+
+  // ── toolConcurrency → CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY ──
+  // The member must not inherit the parent session's tool throttle: a user
+  // who lowered the var interactively (Anthropic's documented 429 advice)
+  // would otherwise silently serialize every member's web fan-out.
+  const throttled = { PATH: '/usr/bin', CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY: '1' };
+  check('toolConcurrency overrides an inherited parent-session throttle (subscription mode)',
+    buildChildEnv(throttled, undefined, 16).CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY === '16');
+  check('toolConcurrency set in harness mode too',
+    buildChildEnv(throttled, 'http://localhost:11434', 16).CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY === '16');
+  check('undefined toolConcurrency leaves the inherited value UNTOUCHED (backward compat)',
+    buildChildEnv(throttled, undefined).CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY === '1');
+  check('fractional toolConcurrency floors to a whole number',
+    buildChildEnv({ PATH: '/usr/bin' }, undefined, 4.9).CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY === '4');
+  check('toolConcurrency < 1 / NaN ignored, inherited value kept',
+    buildChildEnv(throttled, undefined, 0).CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY === '1'
+      && buildChildEnv(throttled, undefined, Number.NaN).CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY === '1');
 
   // ── Harness mode strips the full ambient backend-redirect/credential set ──
   // (an incomplete denylist would let ANTHROPIC_CUSTOM_HEADERS / an OAuth token

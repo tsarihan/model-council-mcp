@@ -48,6 +48,13 @@ export interface CouncilState {
    * internet into member answers, so it stays an explicit opt-in.
    */
   webAccess?: boolean;
+  /**
+   * Parallel tool executions inside one claude-cli member call, exported as
+   * CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY on the spawn. Seeded whenever the
+   * key is ABSENT (fresh install or upgrade from a pre-knob version) — see
+   * SEED_HARNESS_TOOL_CONCURRENCY in index.ts — then edited only by the user.
+   */
+  harnessToolConcurrency?: number;
   /** Reference-data version the user was last welcomed for. */
   welcomedVersion?: string;
   /**

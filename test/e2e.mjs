@@ -1112,6 +1112,14 @@ async function main() {
     check('reasoning_effort: a first run seeds high and passes it to the CLI',
       cli.responses?.every(r => /effort=high\b/.test(r.response ?? '')),
       cli.responses?.map(r => r.response).join(' | '));
+    // ── harness_tool_concurrency ──────────────────────────────────────────
+    // Seeded to 16 whenever the state key is ABSENT (fresh install here, but
+    // equally an upgrade from a pre-knob version) and exported on every
+    // claude-cli spawn — overriding any tool throttle this test process
+    // itself inherited from a parent Claude Code session.
+    check('harness_tool_concurrency: absent key seeds 16 and reaches the spawned CLI env',
+      cli.responses?.every(r => /toolconc=16\b/.test(r.response ?? '')),
+      cli.responses?.map(r => r.response).join(' | '));
 
     // ── web_access ────────────────────────────────────────────────────────
     check('web_access: off by default — no web tools granted',
@@ -1219,6 +1227,44 @@ async function main() {
     check('reasoning_effort: a per-call override does not leak into the server-wide default',
       afterOverride.responses?.every(r => /effort=xhigh\b/.test(r.response ?? '')),
       afterOverride.responses?.map(r => r.response).join(' | '));
+    // configure_council can lower/raise the harness tool concurrency; it
+    // applies to the NEXT ask live and persists. A later boot on the same
+    // state must respect the user's value, never re-seed 16 over it — the
+    // seed exists only for keys that were never expressible.
+    await cliClient.callTool({ name: 'configure_council', arguments: { harness_tool_concurrency: 4 } });
+    const tcAsk = parseToolResult(await cliClient.callTool({
+      name: 'ask_council', arguments: { question: 'hello world', mode: 'individual', no_cache: true },
+    }));
+    check('harness_tool_concurrency: configured value reaches the next spawn live',
+      tcAsk.responses?.every(r => /toolconc=4\b/.test(r.response ?? '')),
+      tcAsk.responses?.map(r => r.response).join(' | '));
+    const tcCfg = parseToolResult(await cliClient.callTool({ name: 'get_council_config', arguments: {} }));
+    check('harness_tool_concurrency: reported by get_council_config',
+      tcCfg.runtime?.harnessToolConcurrency === 4, JSON.stringify(tcCfg.runtime?.harnessToolConcurrency));
+    const tcState = JSON.parse(readFileSync(join(tmpdir(), `mc-e2e-cli-${process.pid}.json`), 'utf8'));
+    check('harness_tool_concurrency: persisted to state.json',
+      tcState.harnessToolConcurrency === 4, JSON.stringify(tcState.harnessToolConcurrency));
+    // A REBOOT on state that already carries the key keeps the user's value —
+    // the absent-key seed must never overwrite a decision, only fill the gap
+    // upgrades from pre-knob versions left behind.
+    {
+      const rebootTransport = new StdioClientTransport({
+        command: 'node', args: [serverEntry],
+        env: {
+          ...process.env, OLLAMA_ADDRESS: MOCK_URL, GROK_CLI_UNSAFE_ACCEPT_RCE: 'true',
+          CLAUDE_CLI: 'true', CLAUDE_CLI_PATH: MOCK_CLAUDE, CLAUDE_CLI_MODELS: 'opus,sonnet',
+          GROK_CLI_PATH: MOCK_GROK, COUNCIL_MODELS: 'claude-cli:opus,claude-cli:sonnet',
+          RESPONSE_MODE: 'individual',
+          MODEL_COUNCIL_STATE: join(tmpdir(), `mc-e2e-cli-${process.pid}.json`),
+        },
+      });
+      const rebootClient = new Client({ name: 'cli-reboot-e2e', version: '1.0.0' }, { capabilities: {} });
+      await rebootClient.connect(rebootTransport);
+      const rebootCfg = parseToolResult(await rebootClient.callTool({ name: 'get_council_config', arguments: {} }));
+      check('harness_tool_concurrency: a reboot keeps the configured 4 — never re-seeds 16 over a user value',
+        rebootCfg.runtime?.harnessToolConcurrency === 4, JSON.stringify(rebootCfg.runtime?.harnessToolConcurrency));
+      await rebootClient.close();
+    }
     // ── member_efforts: tier 3 of the effort hierarchy ────────────────────
     // Per-model pins beat both the persisted default (xhigh, set above) and a
     // per-call override — this is what lets one slow member run shallow while
@@ -1572,7 +1618,7 @@ async function main() {
     // At the default 'free' tier, detectGrok() must NOT spend a real (quota-metered)
     // login probe — usable stays false, unverified, until the tier opts in.
     check('status: grok CLI installed, but NOT probed at free tier (no quota spent)', st.detected?.grok?.installed === true && st.detected?.grok?.usable === false, JSON.stringify(st.detected?.grok));
-    check('status: per-provider concurrency from tiers', st.concurrency?.chatgpt === 6 && st.concurrency?.['ollama-cloud'] === 3 && st.concurrency?.claude === 2, JSON.stringify(st.concurrency));
+    check('status: per-provider concurrency from tiers', st.concurrency?.chatgpt === 6 && st.concurrency?.['ollama-cloud'] === 3 && st.concurrency?.claude === 4, JSON.stringify(st.concurrency));
     check('status: quota warning present', typeof st.quotaWarning === 'string' && st.quotaWarning.length > 0);
     check('status: grok tier defaults to free (opt-in, unlike claude/chatgpt)', st.tiers?.grok === 'free', JSON.stringify(st.tiers));
     check('status: hint nudges toward GROK_TIER since tier gate not yet opted in', (st.hints ?? []).some(h => /GROK_TIER/.test(h)), (st.hints ?? []).join(' | '));
@@ -2053,8 +2099,8 @@ async function main() {
     const badConcStatus = parseToolResult(await badConcClient.callTool({ name: 'council_status', arguments: {} }));
     check('malformed CLOUD_CONCURRENCY: chatgpt keeps its own tier-derived concurrency (6), not collapsed to a single value',
       badConcStatus.concurrency?.chatgpt === 6, JSON.stringify(badConcStatus.concurrency));
-    check('malformed CLOUD_CONCURRENCY: claude keeps its own tier-derived concurrency (2 at default pro tier), distinct from chatgpt',
-      badConcStatus.concurrency?.claude === 2 && badConcStatus.concurrency?.claude !== badConcStatus.concurrency?.chatgpt,
+    check('malformed CLOUD_CONCURRENCY: claude keeps its own tier-derived concurrency (4 at default pro tier), distinct from chatgpt',
+      badConcStatus.concurrency?.claude === 4 && badConcStatus.concurrency?.claude !== badConcStatus.concurrency?.chatgpt,
       JSON.stringify(badConcStatus.concurrency));
     await badConcClient.close();
     rmSync(badConcDir, { recursive: true, force: true });
@@ -2073,8 +2119,8 @@ async function main() {
     const prefixStatus = parseToolResult(await prefixClient.callTool({ name: 'council_status', arguments: {} }));
     check('prefix-truncated CLOUD_CONCURRENCY ("3oops"): chatgpt keeps its own tier-derived concurrency (6), not collapsed to 3',
       prefixStatus.concurrency?.chatgpt === 6, JSON.stringify(prefixStatus.concurrency));
-    check('prefix-truncated CLOUD_CONCURRENCY ("3oops"): claude keeps its own tier-derived concurrency (2), distinct from chatgpt',
-      prefixStatus.concurrency?.claude === 2 && prefixStatus.concurrency?.claude !== prefixStatus.concurrency?.chatgpt,
+    check('prefix-truncated CLOUD_CONCURRENCY ("3oops"): claude keeps its own tier-derived concurrency (4), distinct from chatgpt',
+      prefixStatus.concurrency?.claude === 4 && prefixStatus.concurrency?.claude !== prefixStatus.concurrency?.chatgpt,
       JSON.stringify(prefixStatus.concurrency));
     await prefixClient.close();
     rmSync(prefixDir, { recursive: true, force: true });

@@ -334,6 +334,7 @@ Handy tools & commands:
 | Price an ask before running it | `estimate_council_cost(mode=…, web_access=…)` — free, no model calls |
 | Force a fresh run past the repeat cache | `ask_council(no_cache=true)` |
 | Run several Claude Code sessions at once | set `COUNCIL_SESSIONS` to your usual count — subscription concurrency is shared, not multiplied |
+| Members' web research feels serialized | `configure_council(harness_tool_concurrency=16)` — parallel tools inside one claude-cli member (seeded 16; overrides any throttle inherited from your own session) |
 | Pin one slow member's effort below the rest | `ask_council(member_efforts={"gpt-5.6-sol": "medium"})` — per-model beats per-call beats default |
 | Cap output length | `max_tokens` (auto-clamped down to each server's context) |
 | Make the council think harder (or cheaper) | `reasoning_effort` on `ask_council`, or `configure_council(reasoning_effort=…)` for a persisted default |

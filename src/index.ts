@@ -152,6 +152,18 @@ function askCachePut(key: string, result: CouncilResult): void {
 const FIRST_RUN_EFFORT: ReasoningEffort = 'high';
 
 /**
+ * Seeded CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY for claude-cli member spawns.
+ * The CLI's own default is 10 — and, worse, a spawned member INHERITS the
+ * parent session's value, so a user who lowered it interactively to fight
+ * 429s would silently serialize every member's web research. 16 is the
+ * researched starting point for the high tiers. Unlike FIRST_RUN_EFFORT this
+ * seeds whenever the state key is ABSENT (fresh install OR upgrade from a
+ * version without the knob): earlier releases could not set it at all, so an
+ * absent key never represents a user decision to preserve.
+ */
+const SEED_HARNESS_TOOL_CONCURRENCY = 16;
+
+/**
  * Whether this is the first run on this machine — captured BEFORE anything
  * writes state (boot persists resolved CLI paths a few lines below, which
  * creates the file), because after that every run looks like an upgrade.
@@ -193,6 +205,18 @@ try { lastStateMtimeMs = statSync(statePath()).mtimeMs; } catch { /* no file yet
   // hand-edited or left over from a version with a different scale.
   if (typeof st.webAccess === 'boolean') {
     orchestrator.updateRuntime({ webAccess: st.webAccess });
+  }
+  if (typeof st.harnessToolConcurrency === 'number' && Number.isFinite(st.harnessToolConcurrency) && st.harnessToolConcurrency >= 1) {
+    orchestrator.updateRuntime({ harnessToolConcurrency: Math.floor(st.harnessToolConcurrency) });
+  } else if (appConfig.runtime.harnessToolConcurrency === undefined) {
+    // ABSENT-KEY seed, deliberately NOT first-run-only (contrast the effort
+    // seed below): pre-knob versions couldn't express this setting, so on an
+    // upgrade an absent key means "never had the capability", not "chose the
+    // CLI default". Once seeded it persists and behaves like any configured
+    // value — edited via configure_council, env HARNESS_TOOL_CONCURRENCY
+    // still winning at boot when the key is somehow absent.
+    orchestrator.updateRuntime({ harnessToolConcurrency: SEED_HARNESS_TOOL_CONCURRENCY });
+    saveState({ harnessToolConcurrency: SEED_HARNESS_TOOL_CONCURRENCY });
   }
   if (isReasoningEffort(st.reasoningEffort)) {
     orchestrator.updateRuntime({ reasoningEffort: st.reasoningEffort });
@@ -620,6 +644,8 @@ const PARAM_ALIASES: Record<string, string> = {
   memberefforts: 'member_efforts', membereffort: 'member_efforts',
   permodeleffort: 'member_efforts', modelefforts: 'member_efforts',
   effort: 'reasoning_effort', reasoning: 'reasoning_effort',
+  toolconcurrency: 'harness_tool_concurrency', tool_concurrency: 'harness_tool_concurrency',
+  harnesstoolconcurrency: 'harness_tool_concurrency', maxtooluseconcurrency: 'harness_tool_concurrency',
   thinking: 'reasoning_effort', effortlevel: 'reasoning_effort',
 };
 
@@ -757,6 +783,19 @@ const ConfigureCouncilInput = z.object({
         'own default depth — note that is distinct from "none", which actively asks for no ' +
         'reasoning. Omit to leave the default unchanged; ask_council\'s own reasoning_effort ' +
         'overrides this for a single call.',
+    ),
+  harness_tool_concurrency: z
+    .number()
+    .int()
+    .min(1)
+    .max(64)
+    .optional()
+    .describe(
+      'Parallel tool executions allowed INSIDE one claude-cli member call ' +
+        '(CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY on the spawned CLI; its own default is 10 and an ' +
+        'inherited parent-session throttle would otherwise leak in). Seeded to 16 on ' +
+        'install/upgrade; persisted. claude-cli members only — codex members spawn no child ' +
+        'agents and grok has no equivalent, so it does not apply to them.',
     ),
 }).strict();
 
@@ -990,6 +1029,14 @@ const TOOLS = [
             'setting works across a mixed council. Pass "auto" to clear it back to each model\'s ' +
             'own default depth (distinct from "none", which actively asks for no reasoning). ' +
             'ask_council\'s own reasoning_effort overrides this for a single call.',
+        },
+        harness_tool_concurrency: {
+          type: 'number',
+          description:
+            'Parallel tool executions inside one claude-cli member call (1-64; sets ' +
+            'CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY on the spawn, overriding any inherited ' +
+            'parent-session throttle). Seeded to 16 on install/upgrade; persisted. ' +
+            'claude-cli members only.',
         },
         max_deconflict_rounds: {
           type: 'number',
@@ -1539,6 +1586,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
               : (input.reasoning_effort as ReasoningEffort),
           });
         }
+        if (input.harness_tool_concurrency !== undefined) {
+          orchestrator.updateRuntime({ harnessToolConcurrency: input.harness_tool_concurrency });
+        }
 
         orchestrator.updateConfig(update);
         // Only a call that actually expresses MEMBERSHIP intent (touches
@@ -1582,6 +1632,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         }
         if (input.web_access !== undefined) {
           persistPatch.webAccess = orchestrator.getRuntime().webAccess;
+        }
+        if (input.harness_tool_concurrency !== undefined) {
+          persistPatch.harnessToolConcurrency = orchestrator.getRuntime().harnessToolConcurrency;
         }
         if (Object.keys(persistPatch).length > 0) {
           saveState(persistPatch);
@@ -1849,6 +1902,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                   runtime: {
                     maxTokens: runtime.maxTokens,
                     reasoningEffort: runtime.reasoningEffort ?? null,
+                    harnessToolConcurrency: runtime.harnessToolConcurrency ?? null,
                     webAccess: runtime.webAccess ?? false,
                     cloudConcurrency: runtime.cloudConcurrency,
                     localConcurrency: runtime.localConcurrency,
@@ -1870,9 +1924,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     JUDGE_MODEL: 'Judge model (default: auto)',
                     RESPONSE_MODE: 'individual | categorized | deconflicted | pooled | dialectic',
                     MAX_DECONFLICT_ROUNDS: 'Max deconfliction rounds (default: 3)',
-                    CLAUDE_TIER: 'Claude plan: free | pro | max5x | max20x (drives Claude concurrency + membership)',
-                    CHATGPT_TIER: 'ChatGPT plan: free | plus | pro5x | pro20x (drives Codex concurrency + membership)',
-                    OLLAMA_TIER: 'Ollama plan: free | pro | max (free = local only; pro/max = cloud + 3/10 concurrency)',
+                    CLAUDE_TIER: 'Claude plan: free | pro | max5x | max20x (cloud access + 4/8/12 parallel Claude calls — starting points; Anthropic publishes usage multipliers, not a session cap)',
+                    CHATGPT_TIER: 'ChatGPT plan: free | plus | pro5x | pro20x (6/8/12 parallel Codex calls — Plus matches the Codex CLI default of 6; OpenAI publishes no per-plan concurrency)',
+                    OLLAMA_TIER: 'Ollama plan: free | pro | max (free = local only; pro/max = cloud + 3/10 concurrency — PUBLISHED hard caps, queue-then-reject upstream)',
                     GROK_TIER: 'Grok (X.AI subscription CLI) plan: free | supergrok | premiumplus | heavy (default free — opt in explicitly)',
                     CLAUDE_CLI: 'true → add a subscription-backed Claude member via the local `claude` CLI (no API key/billing)',
                     CLAUDE_CLI_MODELS: 'Comma-separated model aliases for the CLI member (default: opus,sonnet)',
@@ -1886,6 +1940,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     MAX_TOKENS: 'Max output tokens per completion (default: 32768), clamped per-model to fit context',
                     WEB_ACCESS: 'true → council members search the web by default instead of answering from training data. Off by default; see ask_council\'s web_access.',
                     REASONING_EFFORT: `Default reasoning depth for members and judge: ${EFFORT_ORDER.join(' | ')}. Unset = each model's own default. Clamped per-backend; overridable per call via ask_council's reasoning_effort.`,
+                    HARNESS_TOOL_CONCURRENCY: 'Parallel tool executions inside one claude-cli member call (default: seeded 16). Overrides any throttle inherited from the parent session.',
                     CLOUD_CONCURRENCY: 'Optional override: caps ALL cloud pools (overrides per-tier limits). Unset = tiers drive it.',
                     LOCAL_CONCURRENCY: 'Max concurrent local requests (default: 1; 0 = unlimited)',
                     COMPLETION_RETRIES: 'Attempts per completion before giving up on empty/error (default: 3)',

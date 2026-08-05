@@ -15,11 +15,22 @@ import { PoolKey } from './types.js';
 export interface TierInfo {
   cloud: boolean;
   concurrency?: number;
+  /** Published usage multiplier this tier buys (display only), e.g. "20x Pro". */
+  multiplier?: string;
 }
 export interface ProviderInfo {
   cliType?: string;
   tiers: Record<string, TierInfo>;
   models?: string[];
+  /**
+   * Where the concurrency numbers come from. Only Ollama publishes hard
+   * per-plan caps (Free 1 / Pro 3 / Max 10 cloud slots — queue then reject,
+   * not client-raisable). Claude and ChatGPT publish usage MULTIPLIERS over a
+   * shared, dynamically-throttled pool and no simultaneous-session count, so
+   * their entries are engineering starting points scaled with the tier
+   * multiplier — safe to raise until 429s/quota-burn say otherwise.
+   */
+  concurrencyBasis?: string;
 }
 export interface Subscriptions {
   version: string;
@@ -35,15 +46,18 @@ export interface Subscriptions {
 
 /** Embedded fallback — mirror of config/subscriptions.json. */
 const EMBEDDED: Subscriptions = {
-  version: '2026-07-20',
+  version: '2026-08-05',
   providers: {
     chatgpt: {
       cliType: 'codex-cli',
       tiers: {
         free: { cloud: false },
+        // Plus = the Codex CLI's own default child-agent count (6, chosen
+        // upstream partly to avoid 429s); Pro tiers scale up with the 5x/20x
+        // usage multipliers — OpenAI publishes no per-plan concurrency.
         plus: { cloud: true, concurrency: 6 },
-        pro5x: { cloud: true, concurrency: 6 },
-        pro20x: { cloud: true, concurrency: 6 },
+        pro5x: { cloud: true, concurrency: 8 },
+        pro20x: { cloud: true, concurrency: 12 },
       },
       models: ['gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.6-terra'],
     },
@@ -51,9 +65,12 @@ const EMBEDDED: Subscriptions = {
       cliType: 'claude-cli',
       tiers: {
         free: { cloud: false },
-        pro: { cloud: true, concurrency: 2 },
-        max5x: { cloud: true, concurrency: 4 },
-        max20x: { cloud: true, concurrency: 8 },
+        // Anthropic publishes usage multipliers (Pro >=5x Free, Max 5x/20x
+        // Pro) over a shared throttled pool, not a session count — these are
+        // starting points scaled with the multiplier.
+        pro: { cloud: true, concurrency: 4 },
+        max5x: { cloud: true, concurrency: 8 },
+        max20x: { cloud: true, concurrency: 12 },
       },
       models: ['opus', 'sonnet', 'haiku'],
     },
@@ -70,6 +87,10 @@ const EMBEDDED: Subscriptions = {
     ollama: {
       tiers: {
         free: { cloud: false },
+        // PUBLISHED hard caps (ollama.com/pricing): Free 1 / Pro 3 / Max 10
+        // concurrent cloud slots — above the cap requests queue then reject,
+        // and the cap cannot be raised client-side. Free stays local-only
+        // here: its single slot would fully serialize a cloud council.
         pro: { cloud: true, concurrency: 3 },
         max: { cloud: true, concurrency: 10 },
       },

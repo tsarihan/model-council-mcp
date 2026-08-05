@@ -105,6 +105,19 @@ export interface RuntimeConfig {
    */
   reasoningEffort?: ReasoningEffort;
   /**
+   * Parallel tool executions ALLOWED INSIDE one claude-cli member call
+   * (CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY on the spawned CLI). The CLI's own
+   * default is 10, and — worse — a member inherits whatever the PARENT
+   * session exported: a user who set the var low in ~/.claude/settings.json
+   * to fight 429s (Anthropic's own documented advice) would silently
+   * serialize every council member's web research. Setting it explicitly on
+   * each spawn makes member behavior deterministic. claude-cli only: codex
+   * members spawn no child agents (and `agents.max_threads` is REJECTED at
+   * config load on codex versions with multi-agent V2 active, which would
+   * kill the whole call); grok has no equivalent.
+   */
+  harnessToolConcurrency?: number;
+  /**
    * Grant council members live web search for this ask, so they research
    * rather than answer from training data. Off by default: it costs latency
    * and quota, and it pulls UNTRUSTED text off the internet into member

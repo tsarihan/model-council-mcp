@@ -84,13 +84,15 @@ Categorize these responses. Return ONLY valid JSON with this exact schema (no ma
       "topic": "<conflict topic>",
       "positions": [
         { "models": ["<model label>", ...], "position": "<their stance>" }
-      ]
+      ],
+      "assessment": "<OPTIONAL — see rules>"
     }
   ]
 }
 
 Rules:
 - "conflicting" only for genuine contradictions — not just different wording.
+- "assessment": include it ONLY when the positions differ in verifiable backing — one side cites a source/URL for its figure and the other does not, or their cited sources actually disagree. State which position appears better supported and WHY (name the backing). If the sides are equally backed, or the responses give you nothing to weigh, OMIT the field entirely — never fabricate a tiebreak or pick on plausibility alone.
 - "complementary" for different-but-compatible angles.
 - Use the exact model labels provided above.
 - Empty arrays [] are valid if there are no items in that category.`;
@@ -104,6 +106,7 @@ interface RawCategorizationJSON {
   conflicting?: Array<{
     topic?: string;
     positions?: Array<{ models?: string[]; position?: string }>;
+    assessment?: string;
   }>;
 }
 
@@ -120,6 +123,7 @@ const CATEGORIZATION_SCHEMA: Record<string, unknown> = {
       positions: { type: 'array', items: { type: 'object', properties: {
         models: { type: 'array', items: { type: 'string' } }, position: { type: 'string' },
       }, required: ['models', 'position'] } },
+      assessment: { type: 'string' },
     }, required: ['topic', 'positions'] } },
   },
   required: ['commonAgreement', 'complementary', 'conflicting'],
@@ -265,6 +269,11 @@ export async function categorize(
         models: Array.isArray(p?.models) ? p.models : [],
         position: String(p?.position ?? ''),
       })) as ConflictPosition[],
+      // Optional evidence-weighing; only carried when the judge supplied a
+      // non-empty string (an empty/omitted one means "equally backed").
+      ...(typeof c?.assessment === 'string' && c.assessment.trim()
+        ? { assessment: c.assessment.trim() }
+        : {}),
     };
   });
 

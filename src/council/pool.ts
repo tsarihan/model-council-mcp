@@ -46,7 +46,7 @@ Produce a NEUTRAL pooled digest of the DISTINCT answers. Rules:
 - Identify each distinct option that appears across the responses. If the question asks for a list or ranking, treat every listed item as a separate option and IGNORE its rank/order.
 - Merge duplicates: when several responses give the same option (the same city, language, state, tool, etc.), combine them into ONE entry whose rationale synthesises all the reasons offered for it.
 - Each rationale must be neutral and self-contained. Do NOT state how many models chose an option, do NOT signal popularity, do NOT rank or order by preference.
-- In "models", list the labels of the responses that included that option. This is for record-keeping only and will NOT be shown back to the members.
+- In "models", list ONLY the labels of responses that actually CHOSE or recommended that option as their answer (or ranked it first). A response that merely mentioned it, listed it among alternatives, or argued against it does NOT belong in "models" — attribution means advocacy, not mention. A response that declined to pick belongs in no option's "models" at all. This is for record-keeping only and will NOT be shown back to the members.
 
 Return ONLY valid JSON (no markdown), with this schema:
 {

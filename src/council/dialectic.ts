@@ -109,7 +109,7 @@ ${defenseBlock}
 
 For EACH option above, extract:
 - "pros": the strongest arguments IN FAVOUR (from its proponents and defenders), merged and deduplicated.
-- "cons": the strongest ADVERSE arguments (raised by members arguing a different option is better), merged and deduplicated.
+- "cons": the strongest ADVERSE arguments (raised by members arguing a different option is better), merged and deduplicated. Every entry in an option's "cons" must be a claim ABOUT THAT OPTION being worse or weaker — never a statement praising a different option, and never a sentence lifted from a critique of some OTHER option ("Its strength is..." about option B is not a con of option A). Rephrase into a self-contained criticism of this option or leave it out.
 Keep it balanced — where the texts support it, every option should carry both pros and cons. Use short, self-contained argument phrases.
 Use each option's answer text EXACTLY as written in the list above — do not rephrase, expand, abbreviate, or reformat it.
 

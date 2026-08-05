@@ -20,6 +20,7 @@ import {
 import {
   learnedTimeoutFloorMs, LEARNED_TIMEOUT_HEADROOM, LEARNED_TIMEOUT_CEILING_MS,
 } from '../dist/probe.js';
+import { collectSources } from '../dist/council/sources.js';
 import {
   ANTHROPIC_MIN_THINKING_BUDGET, CLAUDE_CLI_EFFORTS, CODEX_CLI_EFFORTS, EFFORT_ORDER,
   GROK_CLI_EFFORTS, OLLAMA_EFFORTS, OPENAI_EFFORTS, clampEffort, effortToThinkingBudget,
@@ -3081,6 +3082,34 @@ console.log('▶ learned per-member timeouts: slow is not broken');
     else process.env.MODEL_COUNCIL_STATE = prevState;
     rmSync(stDir, { recursive: true, force: true });
   }
+}
+
+console.log('▶ consolidated sources: corroboration made visible');
+{
+  const r = (label, response) => ({ modelId: { provider: 'ollama', model: 'x' }, label, response, latencyMs: 1 });
+  const out = collectSources([[
+    r('a', 'See [AP](https://apnews.com/article/1) and https://apnews.com/article/1.'),
+    r('b', 'Per <https://apnews.com/article/1>, plus https://example.com/only-b),'),
+    r('c', 'https://apnews.com/article/1'),
+  ]]);
+  // The same URL cited three ways — markdown link, bare with trailing period,
+  // angle-bracket wrapped — must merge into ONE entry with all three citers:
+  // corroboration is the point of the list, and normalization is what makes
+  // "3 of 4 members cite AP" a fact instead of four near-duplicate strings.
+  const ap = out.find(s => s.url === 'https://apnews.com/article/1');
+  check('one URL cited in three formats merges to one entry',
+    !!ap && out.filter(s => s.url.startsWith('https://apnews.com')).length === 1,
+    JSON.stringify(out));
+  check('every citing member is credited exactly once', ap?.citedBy.join(',') === 'a,b,c', JSON.stringify(ap));
+  check('most-corroborated source sorts first', out[0]?.url === 'https://apnews.com/article/1');
+  check('a trailing markdown ")" is not swallowed into the URL',
+    out.some(s => s.url === 'https://example.com/only-b'), JSON.stringify(out));
+  // Wikipedia-style URLs legitimately contain parens — the closer must survive.
+  const wiki = collectSources([[r('a', 'see https://en.wikipedia.org/wiki/Foo_(bar))')]]);
+  check('balanced parens inside a URL are kept, the unbalanced closer dropped',
+    wiki[0]?.url === 'https://en.wikipedia.org/wiki/Foo_(bar)', JSON.stringify(wiki));
+  check('errored responses contribute no sources',
+    collectSources([[{ ...r('a', 'https://x.test/1'), error: 'boom' }]]).length === 0);
 }
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);

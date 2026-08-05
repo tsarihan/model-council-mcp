@@ -97,6 +97,9 @@ function categorizationFor(call) {
             { models: ['ollama:small-a'], position: 'exponential backoff' },
             { models: ['ollama:small-b'], position: 'fixed interval retry' },
           ],
+          // Optional evidence-weighing the judge may include when one side is
+          // better backed — asserted end-to-end so the field survives parsing.
+          assessment: 'small-a cites the AWS architecture blog for backoff; small-b cites nothing.',
         },
         {
           topic: 'caching approach',

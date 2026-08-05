@@ -224,6 +224,31 @@ export interface WebRouting {
    * tool-call markup, so a genuine failure surfaces as a member error.
    */
   toolDialectWarnings?: { label: string; risk: string }[];
+  /**
+   * Every URL cited across the member answers, deduplicated, with the members
+   * that cited it. Built so a researched answer can be audited without diffing
+   * four member blocks by eye — and so corroboration is visible: a claim whose
+   * source three members independently cite stands differently from one member
+   * quoting one page. Extraction is textual (markdown links + bare URLs), so it
+   * reflects what members SAY they used.
+   */
+  sources?: { url: string; citedBy: string[] }[];
+}
+
+/**
+ * What an ask actually spent, member-side: completion counts and wall-clock
+ * per member, summed across every round the mode ran. Judge calls are not
+ * included (their latency is not individually tracked). Exists because an
+ * expensive mode at high effort with web access is easy to fire and was
+ * previously invisible until the quota ran out — this makes the cost of THIS
+ * ask legible, which is also the only honest way to estimate the next one.
+ */
+export interface UsageReport {
+  /** Member completions that returned (successes and errors both count — both spent time). */
+  completions: number;
+  /** Sum of member completion latencies (ms). Wall-clock is lower — members run concurrently. */
+  totalLatencyMs: number;
+  byMember: { label: string; calls: number; totalMs: number }[];
 }
 
 export interface VisionRouting {
@@ -243,6 +268,14 @@ export interface IndividualResult {
   visionRouting?: VisionRouting;
   /** Present only when web_access was on — see WebRouting. */
   webRouting?: WebRouting;
+  /** Member-side spend for this ask — see UsageReport. */
+  usage?: UsageReport;
+  /**
+   * True when the judge is ALSO a council member, so its reconciliation
+   * includes its own answer. Legitimate and sometimes configured on purpose,
+   * but a reader weighing "common agreement" should know the referee played.
+   */
+  judgeIsMember?: boolean;
   /**
    * Labels of members whose completion was cut by the per-completion timeout,
    * attached by the orchestrator from the raw responses it has in hand — so a
@@ -270,6 +303,15 @@ export interface ConflictItem {
   positions: ConflictPosition[];
   resolved?: boolean;
   resolution?: string;
+  /**
+   * Judge's read on which position is better supported, present ONLY when the
+   * positions differ in verifiable backing (one cites sources the other
+   * doesn't, or their cited sources disagree). A conflict where one side
+   * quotes AP with a URL and the other quotes nothing is not a 50/50, and
+   * reporting it as one made the caller do the weighing the judge already had
+   * the evidence for. Never a fabricated tiebreak: equal backing = no field.
+   */
+  assessment?: string;
 }
 
 export interface CategorizedResult {
@@ -299,6 +341,14 @@ export interface CategorizedResult {
   visionRouting?: VisionRouting;
   /** Present only when web_access was on — see WebRouting. */
   webRouting?: WebRouting;
+  /** Member-side spend for this ask — see UsageReport. */
+  usage?: UsageReport;
+  /**
+   * True when the judge is ALSO a council member, so its reconciliation
+   * includes its own answer. Legitimate and sometimes configured on purpose,
+   * but a reader weighing "common agreement" should know the referee played.
+   */
+  judgeIsMember?: boolean;
   /**
    * Labels of members whose completion was cut by the per-completion timeout,
    * attached by the orchestrator from the raw responses it has in hand — so a
@@ -385,6 +435,14 @@ export interface DeconflictedResult {
   visionRouting?: VisionRouting;
   /** Present only when web_access was on — see WebRouting. */
   webRouting?: WebRouting;
+  /** Member-side spend for this ask — see UsageReport. */
+  usage?: UsageReport;
+  /**
+   * True when the judge is ALSO a council member, so its reconciliation
+   * includes its own answer. Legitimate and sometimes configured on purpose,
+   * but a reader weighing "common agreement" should know the referee played.
+   */
+  judgeIsMember?: boolean;
   /**
    * Labels of members whose completion was cut by the per-completion timeout,
    * attached by the orchestrator from the raw responses it has in hand — so a
@@ -445,6 +503,14 @@ export interface PooledResult {
   visionRouting?: VisionRouting;
   /** Present only when web_access was on — see WebRouting. */
   webRouting?: WebRouting;
+  /** Member-side spend for this ask — see UsageReport. */
+  usage?: UsageReport;
+  /**
+   * True when the judge is ALSO a council member, so its reconciliation
+   * includes its own answer. Legitimate and sometimes configured on purpose,
+   * but a reader weighing "common agreement" should know the referee played.
+   */
+  judgeIsMember?: boolean;
   /**
    * Labels of members whose completion was cut by the per-completion timeout,
    * attached by the orchestrator from the raw responses it has in hand — so a
@@ -494,6 +560,14 @@ export interface DialecticResult {
   visionRouting?: VisionRouting;
   /** Present only when web_access was on — see WebRouting. */
   webRouting?: WebRouting;
+  /** Member-side spend for this ask — see UsageReport. */
+  usage?: UsageReport;
+  /**
+   * True when the judge is ALSO a council member, so its reconciliation
+   * includes its own answer. Legitimate and sometimes configured on purpose,
+   * but a reader weighing "common agreement" should know the referee played.
+   */
+  judgeIsMember?: boolean;
   /**
    * Labels of members whose completion was cut by the per-completion timeout,
    * attached by the orchestrator from the raw responses it has in hand — so a

@@ -2235,8 +2235,8 @@ var require_resolve = __commonJS({
       }
       return count;
     }
-    function getFullPath(resolver, id = "", normalize) {
-      if (normalize !== false)
+    function getFullPath(resolver, id = "", normalize2) {
+      if (normalize2 !== false)
         id = normalizeId(id);
       const p2 = resolver.parse(id);
       return _getFullPath(resolver, p2);
@@ -3632,7 +3632,7 @@ var require_fast_uri = __commonJS({
     "use strict";
     var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
     var { SCHEMES, getSchemeHandler } = require_schemes();
-    function normalize(uri, options) {
+    function normalize2(uri, options) {
       if (typeof uri === "string") {
         uri = /** @type {T} */
         normalizeString(uri, options);
@@ -3899,7 +3899,7 @@ var require_fast_uri = __commonJS({
     }
     var fastUri = {
       SCHEMES,
-      normalize,
+      normalize: normalize2,
       resolve: resolve4,
       resolveComponent,
       equal,
@@ -7080,7 +7080,7 @@ var require_tr46 = __commonJS({
       TRANSITIONAL: 0,
       NONTRANSITIONAL: 1
     };
-    function normalize(str2) {
+    function normalize2(str2) {
       return str2.split("\0").map(function(s2) {
         return s2.normalize("NFC");
       }).join("\0");
@@ -7160,7 +7160,7 @@ var require_tr46 = __commonJS({
         processing_option = PROCESSING_OPTIONS.NONTRANSITIONAL;
       }
       var error2 = false;
-      if (normalize(label) !== label || label[3] === "-" && label[4] === "-" || label[0] === "-" || label[label.length - 1] === "-" || label.indexOf(".") !== -1 || label.search(combiningMarksRegex) === 0) {
+      if (normalize2(label) !== label || label[3] === "-" && label[4] === "-" || label[0] === "-" || label[label.length - 1] === "-" || label.indexOf(".") !== -1 || label.search(combiningMarksRegex) === 0) {
         error2 = true;
       }
       var len = countSymbols(label);
@@ -7178,7 +7178,7 @@ var require_tr46 = __commonJS({
     }
     function processing(domain_name, useSTD3, processing_option) {
       var result = mapChars(domain_name, useSTD3, processing_option);
-      result.string = normalize(result.string);
+      result.string = normalize2(result.string);
       var labels = result.string.split(".");
       for (var i2 = 0; i2 < labels.length; ++i2) {
         try {
@@ -36639,13 +36639,15 @@ Categorize these responses. Return ONLY valid JSON with this exact schema (no ma
       "topic": "<conflict topic>",
       "positions": [
         { "models": ["<model label>", ...], "position": "<their stance>" }
-      ]
+      ],
+      "assessment": "<OPTIONAL \u2014 see rules>"
     }
   ]
 }
 
 Rules:
 - "conflicting" only for genuine contradictions \u2014 not just different wording.
+- "assessment": include it ONLY when the positions differ in verifiable backing \u2014 one side cites a source/URL for its figure and the other does not, or their cited sources actually disagree. State which position appears better supported and WHY (name the backing). If the sides are equally backed, or the responses give you nothing to weigh, OMIT the field entirely \u2014 never fabricate a tiebreak or pick on plausibility alone.
 - "complementary" for different-but-compatible angles.
 - Use the exact model labels provided above.
 - Empty arrays [] are valid if there are no items in that category.`;
@@ -36664,7 +36666,8 @@ var CATEGORIZATION_SCHEMA = {
       positions: { type: "array", items: { type: "object", properties: {
         models: { type: "array", items: { type: "string" } },
         position: { type: "string" }
-      }, required: ["models", "position"] } }
+      }, required: ["models", "position"] } },
+      assessment: { type: "string" }
     }, required: ["topic", "positions"] } }
   },
   required: ["commonAgreement", "complementary", "conflicting"]
@@ -36741,7 +36744,10 @@ async function categorize(question, responses, judgeModelId, judgeProvider, cc, 
       positions: (Array.isArray(c2?.positions) ? c2.positions : []).map((p2) => ({
         models: Array.isArray(p2?.models) ? p2.models : [],
         position: String(p2?.position ?? "")
-      }))
+      })),
+      // Optional evidence-weighing; only carried when the judge supplied a
+      // non-empty string (an empty/omitted one means "equally backed").
+      ...typeof c2?.assessment === "string" && c2.assessment.trim() ? { assessment: c2.assessment.trim() } : {}
     };
   });
   return {
@@ -37198,7 +37204,7 @@ Produce a NEUTRAL pooled digest of the DISTINCT answers. Rules:
 - Identify each distinct option that appears across the responses. If the question asks for a list or ranking, treat every listed item as a separate option and IGNORE its rank/order.
 - Merge duplicates: when several responses give the same option (the same city, language, state, tool, etc.), combine them into ONE entry whose rationale synthesises all the reasons offered for it.
 - Each rationale must be neutral and self-contained. Do NOT state how many models chose an option, do NOT signal popularity, do NOT rank or order by preference.
-- In "models", list the labels of the responses that included that option. This is for record-keeping only and will NOT be shown back to the members.
+- In "models", list ONLY the labels of responses that actually CHOSE or recommended that option as their answer (or ranked it first). A response that merely mentioned it, listed it among alternatives, or argued against it does NOT belong in "models" \u2014 attribution means advocacy, not mention. A response that declined to pick belongs in no option's "models" at all. This is for record-keeping only and will NOT be shown back to the members.
 
 Return ONLY valid JSON (no markdown), with this schema:
 {
@@ -37385,7 +37391,7 @@ ${defenseBlock}
 
 For EACH option above, extract:
 - "pros": the strongest arguments IN FAVOUR (from its proponents and defenders), merged and deduplicated.
-- "cons": the strongest ADVERSE arguments (raised by members arguing a different option is better), merged and deduplicated.
+- "cons": the strongest ADVERSE arguments (raised by members arguing a different option is better), merged and deduplicated. Every entry in an option's "cons" must be a claim ABOUT THAT OPTION being worse or weaker \u2014 never a statement praising a different option, and never a sentence lifted from a critique of some OTHER option ("Its strength is..." about option B is not a con of option A). Rephrase into a self-contained criticism of this option or leave it out.
 Keep it balanced \u2014 where the texts support it, every option should carry both pros and cons. Use short, self-contained argument phrases.
 Use each option's answer text EXACTLY as written in the list above \u2014 do not rephrase, expand, abbreviate, or reformat it.
 
@@ -37729,6 +37735,34 @@ function rememberedHarness(id) {
   return isFresh(entry, Date.now()) ? entry : null;
 }
 
+// src/council/sources.ts
+var URL_RE = /https?:\/\/[^\s<>"'\]]+/g;
+var MAX_SOURCES = 100;
+function normalize(raw) {
+  let u2 = raw.replace(/^&lt;|&gt;$/g, "").replace(/[.,;:!?]+$/, "");
+  while (u2.endsWith(")") && (u2.match(/\(/g)?.length ?? 0) < (u2.match(/\)/g)?.length ?? 0)) {
+    u2 = u2.slice(0, -1);
+  }
+  return u2;
+}
+function collectSources(responseArrays) {
+  const byUrl = /* @__PURE__ */ new Map();
+  for (const arr of responseArrays) {
+    if (!arr) continue;
+    for (const r2 of arr) {
+      if (!r2?.response || r2.error) continue;
+      for (const m2 of r2.response.match(URL_RE) ?? []) {
+        const url = normalize(m2);
+        if (!url || url.length > 500) continue;
+        let set = byUrl.get(url);
+        if (!set) byUrl.set(url, set = /* @__PURE__ */ new Set());
+        set.add(r2.label);
+      }
+    }
+  }
+  return [...byUrl.entries()].map(([url, cited]) => ({ url, citedBy: [...cited].sort() })).sort((a2, b2) => b2.citedBy.length - a2.citedBy.length || a2.url.localeCompare(b2.url)).slice(0, MAX_SOURCES);
+}
+
 // src/council/orchestrator.ts
 function isEmbeddingModel(m2) {
   if (m2.family && /^(bert|nomic-bert)$/i.test(m2.family)) return true;
@@ -37765,23 +37799,30 @@ function selectJudge(judgeModelId, memberIds, allModels, erroredLabels = /* @__P
 var TIMEOUT_LABEL_RE = /\btimed out\b|\btimeout\b/i;
 function attachTimedOut(result, initialResponses) {
   const labels = /* @__PURE__ */ new Set();
+  const spend = /* @__PURE__ */ new Map();
+  const walked = [];
   const collect = (arr) => {
     if (!Array.isArray(arr)) return;
+    walked.push(arr);
     for (const r3 of arr) {
       if (r3 && typeof r3 === "object" && typeof r3.label === "string") {
         const rr2 = r3;
         if (rr2.error && TIMEOUT_LABEL_RE.test(String(rr2.error))) labels.add(rr2.label);
+        const ms = typeof rr2.latencyMs === "number" && Number.isFinite(rr2.latencyMs) ? rr2.latencyMs : 0;
+        const e2 = spend.get(rr2.label) ?? { calls: 0, totalMs: 0 };
+        e2.calls += 1;
+        e2.totalMs += ms;
+        spend.set(rr2.label, e2);
       }
     }
   };
   collect(initialResponses);
   const r2 = result;
-  collect(r2.responses);
-  collect(r2.rawResponses);
+  collect(r2.responses !== initialResponses ? r2.responses : void 0);
+  collect(r2.rawResponses !== initialResponses ? r2.rawResponses : void 0);
   collect(r2.reconsidered);
   collect(r2.defenses);
   collect(r2.selections);
-  collect(r2.initialResponses);
   if (Array.isArray(r2.rounds)) {
     for (const rd of r2.rounds) if (rd && typeof rd === "object") collect(rd.responses);
   }
@@ -37789,8 +37830,23 @@ function attachTimedOut(result, initialResponses) {
   if (Array.isArray(existing)) {
     for (const l2 of existing) if (typeof l2 === "string") labels.add(l2);
   }
-  if (labels.size === 0) return result;
-  return { ...result, timedOutMembers: [...labels] };
+  const byMember = [...spend.entries()].map(([label, v2]) => ({ label, calls: v2.calls, totalMs: v2.totalMs })).sort((a2, b2) => b2.totalMs - a2.totalMs);
+  const usage = {
+    completions: byMember.reduce((n2, m2) => n2 + m2.calls, 0),
+    totalLatencyMs: byMember.reduce((n2, m2) => n2 + m2.totalMs, 0),
+    byMember
+  };
+  const judgeModel = typeof r2.judgeModel === "string" ? r2.judgeModel : void 0;
+  const judgeIsMember = !!judgeModel && initialResponses.some((x2) => x2.label === judgeModel);
+  const webRouting = r2.webRouting;
+  const sources = webRouting ? collectSources(walked) : void 0;
+  return {
+    ...result,
+    ...labels.size ? { timedOutMembers: [...labels] } : {},
+    usage,
+    ...judgeIsMember ? { judgeIsMember: true } : {},
+    ...webRouting && sources?.length ? { webRouting: { ...webRouting, sources } } : {}
+  };
 }
 function canResearch(type) {
   return type === "claude-cli" || type === "codex-cli" || type === "grok-cli";
@@ -37974,7 +38030,8 @@ var CouncilOrchestrator = class {
         } else if (canResearch(m2.provider.config.type)) {
           webRouting.researched.push(label);
           const measured = proven?.risk;
-          const risk = measured ?? toolDialectRisk(m2.modelId.model);
+          const learned = rememberedHarness(routedFrom.get(label) ?? m2.modelId);
+          const risk = measured ?? (learned?.tools === "ok" ? void 0 : toolDialectRisk(m2.modelId.model));
           if (risk) {
             webRouting.toolDialectWarnings = webRouting.toolDialectWarnings ?? [];
             webRouting.toolDialectWarnings.push({ label, risk });
@@ -38044,7 +38101,7 @@ var CouncilOrchestrator = class {
     );
     for (const r2 of responses) {
       if (r2.error || !r2.response?.trim()) continue;
-      const original = routedFrom.get(r2.label);
+      const original = routedFrom.get(r2.label) ?? (r2.modelId.provider === "claude-cli" || r2.modelId.provider === "codex-cli" ? r2.modelId : void 0);
       if (!original) continue;
       rememberRoundSuccess(original, r2.modelId.provider, !!runtime.webAccess, r2.latencyMs, heavy);
     }

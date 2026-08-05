@@ -148,6 +148,17 @@ async function main() {
     check('1 complementary item', cat.complementary?.length === 1, `got ${cat.complementary?.length}`);
     check('2 conflicts', cat.conflicting?.length === 2, `got ${cat.conflicting?.length}`);
     check('conflicts have ids', cat.conflicting?.every(c => c.id?.startsWith('conflict-')));
+    check('categorized: judge evidence-weighing (assessment) survives parsing into the conflict',
+      cat.conflicting?.some(c => /cites the AWS architecture blog/.test(c.assessment ?? '')),
+      JSON.stringify(cat.conflicting?.map(c => c.assessment)));
+    // The judge (big-judge) is itself a council member here — the result must
+    // say so, since its "commonAgreement" then includes its own answer.
+    check('categorized: judgeIsMember is flagged when the judge also answered as a member',
+      cat.judgeIsMember === true, JSON.stringify({ judge: cat.judgeModel, flag: cat.judgeIsMember }));
+    check('categorized: usage reports member spend (3 members, 1 completion each)',
+      cat.usage?.completions === 3 && cat.usage?.byMember?.length === 3 &&
+        cat.usage.byMember.every(m => m.totalMs >= 0),
+      JSON.stringify(cat.usage));
     check('judge is big-judge (auto = largest)', cat.judgeModel === 'ollama:big-judge', `got ${cat.judgeModel}`);
     check('raw responses included', cat.rawResponses?.length === 3);
 
@@ -1067,6 +1078,24 @@ async function main() {
       JSON.stringify(web.webRouting));
     check('web_access: no webRouting block at all when web access is off',
       cli.webRouting === undefined, JSON.stringify(cli.webRouting));
+
+    // Consolidated citations: both members' answers (mock echoes the prompt)
+    // contain the URL, so it must appear once, credited to both.
+    const webSrc = parseToolResult(await cliClient.callTool({
+      name: 'ask_council',
+      arguments: { question: 'see https://example.com/evidence for background', mode: 'individual', web_access: true },
+    }));
+    const srcEntry = (webSrc.webRouting?.sources ?? []).find(x => x.url === 'https://example.com/evidence');
+    check('web_access: cited URLs are consolidated with who cited them',
+      !!srcEntry && srcEntry.citedBy.length === 2, JSON.stringify(webSrc.webRouting?.sources));
+
+    // Directly-configured harness members must LEARN from their own successful
+    // rounds — previously only re-routed members did, so a direct member kept
+    // any seeded warning forever no matter how many rounds it aced.
+    const cliState = JSON.parse(readFileSync(join(tmpdir(), `mc-e2e-cli-${process.pid}.json`), 'utf8'));
+    check('web_access: a directly-configured claude-cli member is learned from its own round',
+      (cliState.harnessCapability ?? {})['claude-cli:opus']?.tools === 'ok',
+      JSON.stringify(cliState.harnessCapability));
 
     const effortHigh = parseToolResult(await cliClient.callTool({
       name: 'ask_council', arguments: { question: 'hello world', mode: 'individual', reasoning_effort: 'high' },
@@ -2058,6 +2087,18 @@ async function main() {
       wr.webRouting?.researched?.includes('claude-cli/claude-cli-ollama:small-a') &&
         wr.webRouting?.fromMemory?.length === 0,
       JSON.stringify(wr.webRouting));
+    // A model whose NAME matches a seeded family caveat (glm-*) but which the
+    // probe just MEASURED as tool-capable must not wear the warning — measured
+    // beats seeded, and a warning that never clears trains people to ignore it.
+    await wrClient.callTool({ name: 'configure_council', arguments: { models: ['ollama:glm-test'], response_mode: 'individual' } });
+    const glmRun = parseToolResult(await wrClient.callTool({
+      name: 'ask_council', arguments: { question: 'hi', mode: 'individual', web_access: true },
+    }));
+    check('a seeded family warning is suppressed once the model is measured tool-capable',
+      (glmRun.webRouting?.toolDialectWarnings ?? []).length === 0 &&
+        glmRun.webRouting?.researched?.length === 1,
+      JSON.stringify(glmRun.webRouting));
+
     // ── capability memory: probed once, then reused ───────────────────────
     // The probe writes what it MEASURED to state.json, keyed like
     // visionCapability, so the cost is paid once per model rather than per ask

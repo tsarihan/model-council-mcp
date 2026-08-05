@@ -15,6 +15,7 @@ import {
   ReasoningEffort,
   ResponseMode,
   RuntimeConfig,
+  UsageReport,
   VisionRouting,
   WebRouting,
 } from '../types.js';
@@ -29,6 +30,7 @@ import { checkVisionPooled, Member, ProgressReporter, queryMembers, withPhase } 
 import { loadState, saveState, VisionCacheEntry, VISION_CACHE_TTL_MS } from '../state.js';
 import { HarnessKind, harnessLadder, toolDialectRisk } from '../harness.js';
 import { learnedTimeoutFloorMs, probeHarness, rememberRoundSuccess, rememberedHarness, routedId } from '../probe.js';
+import { collectSources } from './sources.js';
 
 // ─── Model classification ──────────────────────────────────────────────────────
 
@@ -108,29 +110,65 @@ const TIMEOUT_LABEL_RE = /\btimed out\b|\btimeout\b/i;
  */
 function attachTimedOut<T extends object>(result: T, initialResponses: RawResponse[]): T {
   const labels = new Set<string>();
+  // Per-member spend, gathered from the SAME arrays the timeout scan walks —
+  // one walk answers both "who was cut off" and "what did this ask cost".
+  const spend = new Map<string, { calls: number; totalMs: number }>();
+  const walked: RawResponse[][] = [];
   const collect = (arr: unknown) => {
     if (!Array.isArray(arr)) return;
+    walked.push(arr as RawResponse[]);
     for (const r of arr) {
       if (r && typeof r === 'object' && typeof (r as { label?: unknown }).label === 'string') {
-        const rr = r as { label: string; error?: unknown };
+        const rr = r as { label: string; error?: unknown; latencyMs?: unknown };
         if (rr.error && TIMEOUT_LABEL_RE.test(String(rr.error))) labels.add(rr.label);
+        const ms = typeof rr.latencyMs === 'number' && Number.isFinite(rr.latencyMs) ? rr.latencyMs : 0;
+        const e = spend.get(rr.label) ?? { calls: 0, totalMs: 0 };
+        e.calls += 1; e.totalMs += ms;
+        spend.set(rr.label, e);
       }
     }
   };
   collect(initialResponses);
   const r = result as Record<string, unknown>;
-  collect(r.responses);
-  collect(r.rawResponses);
+  // `initialResponses` on the result is the SAME array already collected above
+  // (verbose mode re-attaches it) — walking it again would double every
+  // member's spend, so it is deliberately absent from this list.
+  collect(r.responses !== (initialResponses as unknown) ? r.responses : undefined);
+  collect(r.rawResponses !== (initialResponses as unknown) ? r.rawResponses : undefined);
   collect(r.reconsidered);
   collect(r.defenses);
   collect(r.selections);
-  collect(r.initialResponses);
   if (Array.isArray(r.rounds)) for (const rd of r.rounds) if (rd && typeof rd === 'object') collect((rd as Record<string, unknown>).responses);
   // Merge labels a mode function attached itself (e.g. deconflict from rounds).
   const existing = (result as { timedOutMembers?: unknown }).timedOutMembers;
   if (Array.isArray(existing)) for (const l of existing) if (typeof l === 'string') labels.add(l);
-  if (labels.size === 0) return result;
-  return { ...result, timedOutMembers: [...labels] } as T;
+
+  const byMember = [...spend.entries()]
+    .map(([label, v]) => ({ label, calls: v.calls, totalMs: v.totalMs }))
+    .sort((a, b) => b.totalMs - a.totalMs);
+  const usage: UsageReport = {
+    completions: byMember.reduce((n, m) => n + m.calls, 0),
+    totalLatencyMs: byMember.reduce((n, m) => n + m.totalMs, 0),
+    byMember,
+  };
+
+  // Judge independence: a judge that is ALSO a member reconciled its own
+  // answer. Fine when configured deliberately, but the reader of
+  // "commonAgreement" should know the referee played.
+  const judgeModel = typeof r.judgeModel === 'string' ? r.judgeModel : undefined;
+  const judgeIsMember = !!judgeModel && initialResponses.some(x => x.label === judgeModel);
+
+  // Consolidated citations, only meaningful when members actually researched.
+  const webRouting = r.webRouting as WebRouting | undefined;
+  const sources = webRouting ? collectSources(walked) : undefined;
+
+  return {
+    ...result,
+    ...(labels.size ? { timedOutMembers: [...labels] } : {}),
+    usage,
+    ...(judgeIsMember ? { judgeIsMember: true } : {}),
+    ...(webRouting && sources?.length ? { webRouting: { ...webRouting, sources } } : {}),
+  } as T;
 }
 
 /**
@@ -454,7 +492,13 @@ export class CouncilOrchestrator {
           // A MEASURED result outranks the shipped hint — it named this
           // machine's actual behaviour, not a general caveat about the family.
           const measured = proven?.risk;
-          const risk = measured ?? toolDialectRisk(m.modelId.model);
+          // A model MEASURED as tool-capable — by a probe or by a prior
+          // successful researched round — must not keep wearing its family's
+          // seeded caveat. The hint exists to warn about the unknown; once the
+          // answer is known, repeating it every run just teaches the caller
+          // to ignore warnings.
+          const learned = rememberedHarness(routedFrom.get(label) ?? m.modelId);
+          const risk = measured ?? (learned?.tools === 'ok' ? undefined : toolDialectRisk(m.modelId.model));
           if (risk) {
             webRouting.toolDialectWarnings = webRouting.toolDialectWarnings ?? [];
             webRouting.toolDialectWarnings.push({ label, risk });
@@ -633,7 +677,14 @@ export class CouncilOrchestrator {
     // (quota, timeout, a bad prompt) that say nothing about capability.
     for (const r of responses) {
       if (r.error || !r.response?.trim()) continue;
-      const original = routedFrom.get(r.label);
+      // Members configured DIRECTLY on a harness (claude-cli/codex-cli ids in
+      // the council) were previously never learned from — routedFrom only
+      // holds re-routed members — so a directly-configured glm/deepseek kept
+      // its seeded "probe before trusting" warning forever, however many
+      // rounds it had just researched flawlessly. Their own id is the memory
+      // key; grok-cli is excluded only because it is not a HarnessKind.
+      const original = routedFrom.get(r.label)
+        ?? ((r.modelId.provider === 'claude-cli' || r.modelId.provider === 'codex-cli') ? r.modelId : undefined);
       if (!original) continue;
       rememberRoundSuccess(original, r.modelId.provider as HarnessKind, !!runtime.webAccess, r.latencyMs, heavy);
     }

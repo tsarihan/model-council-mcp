@@ -337,6 +337,25 @@ async function main() {
     check('config persisted: rounds', gcfg.council?.maxDeconflictRounds === 5, `got ${gcfg.council?.maxDeconflictRounds}`);
     check('providers reported', Array.isArray(gcfg.providers) && gcfg.providers.length >= 1);
 
+    // ── serverVersion: which BUILD answered ───────────────────────────────────
+    // A reload does not restart a running MCP server, so several sessions can be
+    // served by different builds off one state.json. This must be answerable in
+    // one call, and it must be read from package.json rather than hard-coded —
+    // a hard-coded copy is one more thing that can drift from the version
+    // everything else reports. The e2e runs against the real bundle from an
+    // arbitrary cwd, which is exactly the resolution case that could break.
+    const pkgVersion = JSON.parse(
+      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+    ).version;
+    check('get_council_config reports serverVersion', typeof gcfg.serverVersion === 'string' && gcfg.serverVersion.length > 0,
+      String(gcfg.serverVersion));
+    check('serverVersion is the real package.json version, not a stale literal',
+      gcfg.serverVersion === pkgVersion, `${gcfg.serverVersion} vs ${pkgVersion}`);
+    check('serverVersion resolved (not the unknown fallback)', gcfg.serverVersion !== 'unknown', String(gcfg.serverVersion));
+    const cstat = parseToolResult(await client.callTool({ name: 'council_status', arguments: {} }));
+    check('council_status reports the same serverVersion', cstat.serverVersion === pkgVersion,
+      `${cstat.serverVersion} vs ${pkgVersion}`);
+
     // ── Test: malformed judge_model is rejected, not silently downgraded ───────
     // Set a real, explicit judge first...
     await client.callTool({

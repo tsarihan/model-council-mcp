@@ -3415,6 +3415,74 @@ console.log('▶ per-completion timeout ceiling: one bound, every door');
     `${pj.userConfig.request_timeout_ms.max}/${pj.userConfig.repo_request_timeout_ms.max}`);
 }
 
+console.log('▶ serverVersion: the running build identifies itself');
+{
+  const { SERVER_VERSION, UNKNOWN_VERSION } = await import('../dist/version.js');
+  const { readFileSync: rfs, writeFileSync: wfs, mkdtempSync: mkd, mkdirSync: mkdir } = await import('node:fs');
+  const { tmpdir: td } = await import('node:os');
+  const { join: j } = await import('node:path');
+
+  const pkg = JSON.parse(rfs(new URL('../package.json', import.meta.url), 'utf8')).version;
+  check('SERVER_VERSION matches package.json', SERVER_VERSION === pkg, `${SERVER_VERSION} vs ${pkg}`);
+  check('SERVER_VERSION resolved rather than falling back', SERVER_VERSION !== UNKNOWN_VERSION, SERVER_VERSION);
+  check('SERVER_VERSION is a non-empty string', typeof SERVER_VERSION === 'string' && SERVER_VERSION.trim().length > 0);
+
+  // The fallback must be a REAL string, never '' / undefined — a caller printing
+  // the version should never render a blank where a build identifier belongs.
+  check('UNKNOWN_VERSION is a printable sentinel', UNKNOWN_VERSION === 'unknown');
+
+  // A diagnostic must not be able to break the server it reports on. Re-run the
+  // resolver's logic against hostile package.json shapes; every one must fall
+  // through to the next candidate instead of throwing or reporting garbage.
+  // (The real module resolves at import, so exercise the same rules here.)
+  const pick = (v) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+  for (const [label, val] of [
+    ['missing version key', undefined],
+    ['numeric version', 0.299],
+    ['null version', null],
+    ['empty string', ''],
+    ['whitespace only', '   '],
+    ['object', { major: 0 }],
+  ]) {
+    check(`a package.json with a ${label} is rejected, not reported`, pick(val) === undefined, JSON.stringify(val));
+  }
+  check('a normal version string is accepted and trimmed', pick('  1.2.3 ') === '1.2.3');
+
+  // ── The MODULE-RELATIVE hop, proven on its own ──────────────────────────
+  // In this repo the cwd fallback resolves to the same package.json, so an
+  // end-to-end check cannot tell a working bundle-relative path from a broken
+  // one masked by cwd. Installed, the server's cwd is arbitrary and only the
+  // module-relative hop can work — so it gets its own fixture, with cwd pointed
+  // somewhere that has NO package.json at all.
+  const { candidatePaths, readVersionFrom } = await import('../dist/version.js');
+  const root = mkd(j(td(), 'mc-plugin-'));
+  mkdir(j(root, 'bundle'));
+  wfs(j(root, 'package.json'), JSON.stringify({ name: 'x', version: '9.9.9' }));
+  const emptyCwd = mkd(j(td(), 'mc-nocwd-'));
+  check('resolves from bundle/ one hop up, with an unrelated cwd',
+    readVersionFrom(candidatePaths(j(root, 'bundle'), emptyCwd)) === '9.9.9');
+  check('resolves the same way from dist/',
+    readVersionFrom(candidatePaths(j(root, 'dist'), emptyCwd)) === '9.9.9');
+  check('a co-located package.json also resolves',
+    readVersionFrom(candidatePaths(root, emptyCwd)) === '9.9.9');
+  check('no module dir and a bare cwd falls back to unknown, not a crash',
+    readVersionFrom(candidatePaths(undefined, emptyCwd)) === UNKNOWN_VERSION);
+
+  // Corrupt/garbage files must fall THROUGH to the next candidate, not throw
+  // and not report nonsense — a diagnostic cannot be allowed to kill the server.
+  const bad = mkd(j(td(), 'mc-badpkg-'));
+  mkdir(j(bad, 'bundle'));
+  wfs(j(bad, 'package.json'), '{ this is not json');
+  check('corrupt package.json yields unknown rather than throwing',
+    readVersionFrom(candidatePaths(j(bad, 'bundle'), emptyCwd)) === UNKNOWN_VERSION);
+  wfs(j(bad, 'package.json'), JSON.stringify({ version: 42 }));
+  check('non-string version falls through rather than reporting 42',
+    readVersionFrom(candidatePaths(j(bad, 'bundle'), emptyCwd)) === UNKNOWN_VERSION);
+  // ...and a later good candidate still wins after an earlier bad one.
+  check('a bad first candidate does not block a good later one',
+    readVersionFrom([j(bad, 'package.json'), j(root, 'package.json')]) === '9.9.9');
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
 console.log('ALL PASSED ✅');

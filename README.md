@@ -664,11 +664,22 @@ Fetch a background run by `job_id` (status `running` → `done`/`error`, with th
 
 ### `get_council_config`
 
-Returns current council settings plus all configured provider connections and the full env-var reference.
+Returns current council settings plus all configured provider connections and the full env-var reference. The first field is **`serverVersion`** — the build actually answering this call.
 
 ### `council_status`
 
-The welcome/status readout (works in **every** client and install method). Returns the detected environment (local Ollama models, Ollama-cloud reachability, whether the Claude/Codex CLIs are installed **and logged in**), the current council members, resolved subscription tiers, per-provider concurrency, a quota warning, and hints for anything not usable. Read-only.
+The welcome/status readout (works in **every** client and install method). Returns the detected environment (local Ollama models, Ollama-cloud reachability, whether the Claude/Codex CLIs are installed **and logged in**), the current council members, resolved subscription tiers, per-provider concurrency, a quota warning, and hints for anything not usable. Also reports **`serverVersion`** first. Read-only.
+
+> **Why `serverVersion` is worth checking.** `/reload-plugins` — including
+> `--force` — does not restart an already-running plugin MCP server process, so
+> after `/plugin update` the session may still be talking to the previous build,
+> and several sessions on one machine can be served by different builds while
+> sharing a single `state.json`. `serverVersion` answers "which build is this?"
+> in one call, instead of inferring it from behaviour. It is read from
+> `package.json` at load, so it cannot drift from the version everything else
+> reports; if that file is unreadable it reads `unknown` rather than failing the
+> call.
+
 
 ### `setup_council`
 

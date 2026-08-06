@@ -31,6 +31,7 @@ import {
 import { z } from 'zod';
 
 import { KNOWN_PROVIDERS, MAX_COMPLETION_TIMEOUT_MS, MIN_COMPLETION_TIMEOUT_MS, clampCompletionTimeout, loadConfig, modelIdLabel, parseModelId, redactUrlUserinfo } from './config.js';
+import { SERVER_VERSION } from './version.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { CouncilOrchestrator } from './council/orchestrator.js';
 import { ProgressReporter } from './council/query.js';
@@ -2034,6 +2035,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
               type: 'text',
               text: JSON.stringify(
                 {
+                  // FIRST field deliberately: the build that produced everything
+                  // below it. A reload does not restart a running server, so two
+                  // sessions can read different values from one state.json —
+                  // knowing which build answered is a precondition for trusting
+                  // the rest of this payload, not a footnote to it.
+                  serverVersion: SERVER_VERSION,
                   council: {
                     members: effectiveMembers,
                     membershipSource,
@@ -2151,6 +2158,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
               type: 'text',
               text: JSON.stringify(
                 {
+                  // See get_council_config: reported first because `/plugin
+                  // update` + `/reload-plugins` can leave THIS process on the
+                  // previous build, and `reloadPending` below only covers tier
+                  // drift — it cannot see that the server itself is stale.
+                  serverVersion: SERVER_VERSION,
                   tiers,
                   detected: report,
                   council: { members, count: members.length },

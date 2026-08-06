@@ -32327,6 +32327,43 @@ function loadConfig() {
   };
 }
 
+// src/version.ts
+var import_node_fs5 = require("node:fs");
+var import_node_path4 = require("node:path");
+var import_node_url3 = require("node:url");
+var import_meta3 = {};
+function moduleDir3() {
+  try {
+    if (typeof __dirname !== "undefined") return __dirname;
+  } catch {
+  }
+  try {
+    if (typeof import_meta3 !== "undefined" && import_meta3.url) {
+      return (0, import_node_path4.dirname)((0, import_node_url3.fileURLToPath)(import_meta3.url));
+    }
+  } catch {
+  }
+  return void 0;
+}
+var UNKNOWN_VERSION = "unknown";
+function candidatePaths2(dir, cwd) {
+  const out = [];
+  if (dir) out.push((0, import_node_path4.join)(dir, "..", "package.json"), (0, import_node_path4.join)(dir, "package.json"));
+  out.push((0, import_node_path4.join)(cwd, "package.json"));
+  return out;
+}
+function readVersionFrom(paths) {
+  for (const p2 of paths) {
+    try {
+      const v2 = JSON.parse((0, import_node_fs5.readFileSync)(p2, "utf8")).version;
+      if (typeof v2 === "string" && v2.trim()) return v2.trim();
+    } catch {
+    }
+  }
+  return UNKNOWN_VERSION;
+}
+var SERVER_VERSION = readVersionFrom(candidatePaths2(moduleDir3(), process.cwd()));
+
 // src/providers/ollama.ts
 function toOllamaMessages(messages) {
   return messages.map((m2) => ({
@@ -32571,7 +32608,7 @@ function setShims2(shims, options = { auto: false }) {
 var nf2 = __toESM(require_lib2(), 1);
 var import_agentkeepalive2 = __toESM(require_agentkeepalive(), 1);
 var import_abort_controller2 = __toESM(require_abort_controller(), 1);
-var import_node_fs5 = require("node:fs");
+var import_node_fs6 = require("node:fs");
 var import_node_stream2 = require("node:stream");
 
 // node_modules/@anthropic-ai/sdk/_shims/MultipartBody.mjs
@@ -32625,7 +32662,7 @@ function getRuntime2() {
     getMultipartRequestOptions: getMultipartRequestOptions4,
     getDefaultAgent: (url) => url.startsWith("https") ? defaultHttpsAgent2 : defaultHttpAgent2,
     fileFromPath: fileFromPath5,
-    isFsReadStream: (value) => value instanceof import_node_fs5.ReadStream
+    isFsReadStream: (value) => value instanceof import_node_fs6.ReadStream
   };
 }
 
@@ -35612,9 +35649,9 @@ Respond with valid JSON only.`.trim() : systemParts || void 0;
 
 // src/providers/claude-cli.ts
 var import_node_child_process = require("node:child_process");
-var import_node_fs6 = require("node:fs");
+var import_node_fs7 = require("node:fs");
 var import_node_os2 = require("node:os");
-var import_node_path4 = require("node:path");
+var import_node_path5 = require("node:path");
 var DEFAULT_MODELS = ["opus", "sonnet"];
 var DEFAULT_TIMEOUT_MS = 3e5;
 var MIME_EXT = {
@@ -35763,10 +35800,10 @@ var ClaudeCliProvider = class {
     let imagePaths = [];
     try {
       if (images.length > 0) {
-        imageDir = (0, import_node_fs6.mkdtempSync)((0, import_node_path4.join)((0, import_node_os2.tmpdir)(), "claude-council-img-"));
+        imageDir = (0, import_node_fs7.mkdtempSync)((0, import_node_path5.join)((0, import_node_os2.tmpdir)(), "claude-council-img-"));
         imagePaths = images.map((img, i2) => {
-          const path = (0, import_node_path4.join)(imageDir, `image-${i2}.${MIME_EXT[img.mimeType]}`);
-          (0, import_node_fs6.writeFileSync)(path, Buffer.from(img.base64, "base64"));
+          const path = (0, import_node_path5.join)(imageDir, `image-${i2}.${MIME_EXT[img.mimeType]}`);
+          (0, import_node_fs7.writeFileSync)(path, Buffer.from(img.base64, "base64"));
           return path;
         });
       }
@@ -35827,7 +35864,7 @@ var ClaudeCliProvider = class {
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       let scratchCwd;
       if (addDirs.length === 0) {
-        scratchCwd = (0, import_node_fs6.mkdtempSync)((0, import_node_path4.join)((0, import_node_os2.tmpdir)(), "claude-council-cwd-"));
+        scratchCwd = (0, import_node_fs7.mkdtempSync)((0, import_node_path5.join)((0, import_node_os2.tmpdir)(), "claude-council-cwd-"));
       }
       try {
         var { code, stdout, stderr } = await this.run(
@@ -35840,7 +35877,7 @@ var ClaudeCliProvider = class {
       } finally {
         if (scratchCwd) {
           try {
-            (0, import_node_fs6.rmSync)(scratchCwd, { recursive: true, force: true });
+            (0, import_node_fs7.rmSync)(scratchCwd, { recursive: true, force: true });
           } catch {
           }
         }
@@ -35873,7 +35910,7 @@ var ClaudeCliProvider = class {
     } finally {
       if (imageDir) {
         try {
-          (0, import_node_fs6.rmSync)(imageDir, { recursive: true, force: true });
+          (0, import_node_fs7.rmSync)(imageDir, { recursive: true, force: true });
         } catch {
         }
       }
@@ -35926,14 +35963,14 @@ var ClaudeCliProvider = class {
 
 // src/providers/codex-cli.ts
 var import_node_child_process2 = require("node:child_process");
-var import_node_fs7 = require("node:fs");
+var import_node_fs8 = require("node:fs");
 var import_node_os3 = require("node:os");
-var import_node_path5 = require("node:path");
+var import_node_path6 = require("node:path");
 var DEFAULT_MODELS2 = ["default"];
 function isInsideTmpdir(p2) {
   try {
-    const real = (0, import_node_fs7.realpathSync)(p2);
-    const tmp = (0, import_node_fs7.realpathSync)((0, import_node_os3.tmpdir)());
+    const real = (0, import_node_fs8.realpathSync)(p2);
+    const tmp = (0, import_node_fs8.realpathSync)((0, import_node_os3.tmpdir)());
     return real === tmp || real.startsWith(tmp.endsWith("/") ? tmp : tmp + "/");
   } catch {
     return true;
@@ -36048,8 +36085,8 @@ var CodexCliProvider = class {
     ].filter(Boolean).join("\n\n");
     let dir;
     try {
-      dir = (0, import_node_fs7.mkdtempSync)((0, import_node_path5.join)((0, import_node_os3.tmpdir)(), "codex-council-"));
-      const outFile = (0, import_node_path5.join)(dir, "out.txt");
+      dir = (0, import_node_fs8.mkdtempSync)((0, import_node_path6.join)((0, import_node_os3.tmpdir)(), "codex-council-"));
+      const outFile = (0, import_node_path6.join)(dir, "out.txt");
       const args = [
         "exec",
         "--sandbox",
@@ -36094,8 +36131,8 @@ var CodexCliProvider = class {
       }
       const images = messages.find((m2) => m2.role === "user" && m2.images?.length)?.images ?? [];
       images.forEach((img, i2) => {
-        const path = (0, import_node_path5.join)(dir, `image-${i2}.${MIME_EXT2[img.mimeType]}`);
-        (0, import_node_fs7.writeFileSync)(path, Buffer.from(img.base64, "base64"));
+        const path = (0, import_node_path6.join)(dir, `image-${i2}.${MIME_EXT2[img.mimeType]}`);
+        (0, import_node_fs8.writeFileSync)(path, Buffer.from(img.base64, "base64"));
         args.push("-i", path);
       });
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS2;
@@ -36106,7 +36143,7 @@ var CodexCliProvider = class {
       }
       let out = "";
       try {
-        out = (0, import_node_fs7.readFileSync)(outFile, "utf8");
+        out = (0, import_node_fs8.readFileSync)(outFile, "utf8");
       } catch {
         out = "";
       }
@@ -36121,7 +36158,7 @@ var CodexCliProvider = class {
     } finally {
       if (dir) {
         try {
-          (0, import_node_fs7.rmSync)(dir, { recursive: true, force: true });
+          (0, import_node_fs8.rmSync)(dir, { recursive: true, force: true });
         } catch {
         }
       }
@@ -36179,9 +36216,9 @@ var CodexCliProvider = class {
 
 // src/providers/grok-cli.ts
 var import_node_child_process3 = require("node:child_process");
-var import_node_fs8 = require("node:fs");
+var import_node_fs9 = require("node:fs");
 var import_node_os4 = require("node:os");
-var import_node_path6 = require("node:path");
+var import_node_path7 = require("node:path");
 var DEFAULT_MODELS3 = ["grok-4.5"];
 var DEFAULT_TIMEOUT_MS3 = 3e5;
 function killTree3(child) {
@@ -36281,12 +36318,12 @@ var GrokCliProvider = class {
     let promptDir;
     let runDir;
     try {
-      runDir = (0, import_node_fs8.mkdtempSync)((0, import_node_path6.join)((0, import_node_os4.tmpdir)(), "grok-council-cwd-"));
+      runDir = (0, import_node_fs9.mkdtempSync)((0, import_node_path7.join)((0, import_node_os4.tmpdir)(), "grok-council-cwd-"));
       let promptArgs;
       if (images.length === 0) {
-        promptDir = (0, import_node_fs8.mkdtempSync)((0, import_node_path6.join)((0, import_node_os4.tmpdir)(), "grok-council-prompt-"));
-        const promptFile = (0, import_node_path6.join)(promptDir, "prompt.txt");
-        (0, import_node_fs8.writeFileSync)(promptFile, convo, "utf8");
+        promptDir = (0, import_node_fs9.mkdtempSync)((0, import_node_path7.join)((0, import_node_os4.tmpdir)(), "grok-council-prompt-"));
+        const promptFile = (0, import_node_path7.join)(promptDir, "prompt.txt");
+        (0, import_node_fs9.writeFileSync)(promptFile, convo, "utf8");
         promptArgs = ["--prompt-file", promptFile];
       } else {
         const blocks = [
@@ -36373,13 +36410,13 @@ var GrokCliProvider = class {
     } finally {
       if (runDir) {
         try {
-          (0, import_node_fs8.rmSync)(runDir, { recursive: true, force: true });
+          (0, import_node_fs9.rmSync)(runDir, { recursive: true, force: true });
         } catch {
         }
       }
       if (promptDir) {
         try {
-          (0, import_node_fs8.rmSync)(promptDir, { recursive: true, force: true });
+          (0, import_node_fs9.rmSync)(promptDir, { recursive: true, force: true });
         } catch {
         }
       }
@@ -36498,15 +36535,15 @@ var ProviderRegistry = class {
 };
 
 // src/council/query.ts
-var import_node_fs9 = require("node:fs");
-var import_node_path7 = require("node:path");
+var import_node_fs10 = require("node:fs");
+var import_node_path8 = require("node:path");
 function memberScratchDir(runtime, label) {
   const st2 = runtime.scratchState;
   if (!st2) return void 0;
   const existing = st2.dirs.get(label);
   if (existing) return existing;
   try {
-    const dir = (0, import_node_fs9.mkdtempSync)((0, import_node_path7.join)(st2.root, `${label.replace(/[^\w.-]+/g, "_")}-`));
+    const dir = (0, import_node_fs10.mkdtempSync)((0, import_node_path8.join)(st2.root, `${label.replace(/[^\w.-]+/g, "_")}-`));
     st2.dirs.set(label, dir);
     return dir;
   } catch {
@@ -38404,9 +38441,9 @@ var CouncilOrchestrator = class {
 
 // src/detect.ts
 var import_node_child_process4 = require("node:child_process");
-var import_node_fs10 = require("node:fs");
+var import_node_fs11 = require("node:fs");
 var import_node_os5 = require("node:os");
-var import_node_path8 = require("node:path");
+var import_node_path9 = require("node:path");
 var isCloudModel = (m2) => m2.endsWith(":cloud") || m2.endsWith("-cloud");
 function runCli(command, args, opts = { timeoutMs: 8e3 }) {
   return new Promise((resolve5) => {
@@ -38522,7 +38559,7 @@ async function detectClaude(tiers, subs) {
   if (!tierAllowsCloud("claude", tiers.claude, subs)) {
     return { installed: true, usable: false };
   }
-  const probeDir = (0, import_node_fs10.mkdtempSync)((0, import_node_path8.join)((0, import_node_os5.tmpdir)(), "claude-detect-cwd-"));
+  const probeDir = (0, import_node_fs11.mkdtempSync)((0, import_node_path9.join)((0, import_node_os5.tmpdir)(), "claude-detect-cwd-"));
   let probe;
   try {
     probe = await runCli(
@@ -38544,7 +38581,7 @@ async function detectClaude(tiers, subs) {
     );
   } finally {
     try {
-      (0, import_node_fs10.rmSync)(probeDir, { recursive: true, force: true });
+      (0, import_node_fs11.rmSync)(probeDir, { recursive: true, force: true });
     } catch {
     }
   }
@@ -38568,7 +38605,7 @@ async function detectGrok(tiers, subs) {
   if (process.env.GROK_CLI_UNSAFE_ACCEPT_RCE !== "true" || !quotaOptIn) {
     return { installed: true, usable: false };
   }
-  const probeDir = (0, import_node_fs10.mkdtempSync)((0, import_node_path8.join)((0, import_node_os5.tmpdir)(), "grok-detect-cwd-"));
+  const probeDir = (0, import_node_fs11.mkdtempSync)((0, import_node_path9.join)((0, import_node_os5.tmpdir)(), "grok-detect-cwd-"));
   let probe;
   try {
     probe = await runCli(
@@ -38587,7 +38624,7 @@ async function detectGrok(tiers, subs) {
     );
   } finally {
     try {
-      (0, import_node_fs10.rmSync)(probeDir, { recursive: true, force: true });
+      (0, import_node_fs11.rmSync)(probeDir, { recursive: true, force: true });
     } catch {
     }
   }
@@ -38659,13 +38696,13 @@ function quotaWarning(report, tiers, subs) {
 // src/context.ts
 var import_promises = require("node:fs/promises");
 var import_node_crypto = require("node:crypto");
-var import_node_path10 = require("node:path");
+var import_node_path11 = require("node:path");
 
 // src/git.ts
 var import_node_child_process5 = require("node:child_process");
 var import_node_util = require("node:util");
-var import_node_fs11 = require("node:fs");
-var import_node_path9 = require("node:path");
+var import_node_fs12 = require("node:fs");
+var import_node_path10 = require("node:path");
 var import_node_os6 = require("node:os");
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process5.execFile);
 var MAX_DIFF_BYTES = 512 * 1024;
@@ -38734,7 +38771,7 @@ function diffArgsForRef(ref) {
 }
 function tryRealpath(path) {
   try {
-    return (0, import_node_fs11.realpathSync)(path);
+    return (0, import_node_fs12.realpathSync)(path);
   } catch {
     return path;
   }
@@ -38744,9 +38781,9 @@ function samePath(a2, b2) {
   return caseInsensitive ? a2.toLowerCase() === b2.toLowerCase() : a2 === b2;
 }
 async function assertGitRepo(repoPath) {
-  const resolved = (0, import_node_path9.resolve)(repoPath);
+  const resolved = (0, import_node_path10.resolve)(repoPath);
   const canonical = tryRealpath(resolved);
-  if (samePath(canonical, tryRealpath((0, import_node_path9.resolve)((0, import_node_os6.homedir)())))) {
+  if (samePath(canonical, tryRealpath((0, import_node_path10.resolve)((0, import_node_os6.homedir)())))) {
     throw new Error(
       `"${repoPath}" resolves to your home directory \u2014 refusing to grant it as a repo root even though it is a valid git work tree. Point at a narrower project directory instead.`
     );
@@ -38778,7 +38815,7 @@ async function buildGitDiff(input) {
       `git_ref "${ref}" looks like a git option, not a revision/range \u2014 refusing it. Use "uncommitted" | "staged" | "unstaged", or a revision/range like "main..HEAD".`
     );
   }
-  const repoPath = await assertGitRepo((0, import_node_path9.resolve)(input.repo?.trim() || process.cwd()));
+  const repoPath = await assertGitRepo((0, import_node_path10.resolve)(input.repo?.trim() || process.cwd()));
   const filterEnv = await filterNeutralizeEnv(repoPath);
   const args = [...GLOBAL_SAFETY_ARGS, ...diffArgsForRef(ref)];
   const attrSource = await emptyTreeHash(repoPath);
@@ -38845,8 +38882,8 @@ ${diff}`);
   let total = 0;
   for (const raw of files) {
     if (typeof raw !== "string" || !raw.trim()) continue;
-    const path = (0, import_node_path10.resolve)(raw);
-    if (IMAGE_EXTENSIONS.has((0, import_node_path10.extname)(path).toLowerCase())) {
+    const path = (0, import_node_path11.resolve)(raw);
+    if (IMAGE_EXTENSIONS.has((0, import_node_path11.extname)(path).toLowerCase())) {
       throw new Error(
         `${raw} looks like an image \u2014 "files" reads text and would send garbled data. Use the "images" parameter instead.`
       );
@@ -38911,9 +38948,9 @@ ${question}`,
 }
 
 // src/report.ts
-var import_node_fs12 = require("node:fs");
+var import_node_fs13 = require("node:fs");
 var import_node_os7 = require("node:os");
-var import_node_path11 = require("node:path");
+var import_node_path12 = require("node:path");
 var ALLOWED_EXTENSIONS = /* @__PURE__ */ new Set([".md", ".markdown", ".txt", ".json"]);
 var RENDERED_KEYS = /* @__PURE__ */ new Set([
   "question",
@@ -39010,26 +39047,26 @@ _not inlined (binary or over the ${Math.round(INLINE_FILE_CAP / 1024)} KB inline
 function resolveOutputPath(raw) {
   const trimmed = raw.trim();
   if (!trimmed) throw new Error("output_file is empty.");
-  const expanded = trimmed === "~" || trimmed.startsWith("~/") ? (0, import_node_path11.resolve)((0, import_node_os7.homedir)(), trimmed.slice(2)) : trimmed;
-  if (!(0, import_node_path11.isAbsolute)(expanded)) {
+  const expanded = trimmed === "~" || trimmed.startsWith("~/") ? (0, import_node_path12.resolve)((0, import_node_os7.homedir)(), trimmed.slice(2)) : trimmed;
+  if (!(0, import_node_path12.isAbsolute)(expanded)) {
     throw new Error(
       `output_file must be an absolute path (got "${raw}") \u2014 the council server's working directory is not your shell's, so a relative path would land somewhere surprising.`
     );
   }
-  const ext = (0, import_node_path11.extname)(expanded).toLowerCase();
+  const ext = (0, import_node_path12.extname)(expanded).toLowerCase();
   if (!ALLOWED_EXTENSIONS.has(ext)) {
     throw new Error(
       `output_file must end in .md, .markdown, .txt, or .json (got "${ext || "no extension"}") \u2014 results are documents, and the allowlist keeps a mistyped path from overwriting something that is not one.`
     );
   }
-  return (0, import_node_path11.resolve)(expanded);
+  return (0, import_node_path12.resolve)(expanded);
 }
 function writeCouncilOutput(raw, result) {
   const path = resolveOutputPath(raw);
-  const format = (0, import_node_path11.extname)(path).toLowerCase() === ".json" ? "json" : "markdown";
+  const format = (0, import_node_path12.extname)(path).toLowerCase() === ".json" ? "json" : "markdown";
   const body = format === "json" ? JSON.stringify(result, null, 2) + "\n" : renderCouncilReport(result, /* @__PURE__ */ new Date(), readMemberFileBodies(result));
-  (0, import_node_fs12.mkdirSync)((0, import_node_path11.dirname)(path), { recursive: true });
-  (0, import_node_fs12.writeFileSync)(path, body, "utf8");
+  (0, import_node_fs13.mkdirSync)((0, import_node_path12.dirname)(path), { recursive: true });
+  (0, import_node_fs13.writeFileSync)(path, body, "utf8");
   return { path, bytes: Buffer.byteLength(body, "utf8"), format };
 }
 function readMemberFileBodies(result) {
@@ -39040,7 +39077,7 @@ function readMemberFileBodies(result) {
   return files.map((f2) => {
     if (f2.bytes > INLINE_FILE_CAP || f2.bytes > budget) return { ...f2 };
     try {
-      const buf = (0, import_node_fs12.readFileSync)(f2.path);
+      const buf = (0, import_node_fs13.readFileSync)(f2.path);
       if (buf.includes(0)) return { ...f2 };
       budget -= buf.length;
       return { ...f2, text: buf.toString("utf8") };
@@ -39052,7 +39089,7 @@ function readMemberFileBodies(result) {
 
 // src/images.ts
 var import_promises2 = require("node:fs/promises");
-var import_node_path12 = require("node:path");
+var import_node_path13 = require("node:path");
 var MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 var MAX_TOTAL_IMAGE_BYTES = 24 * 1024 * 1024;
 var MAX_IMAGES = 6;
@@ -39072,8 +39109,8 @@ async function loadImages(paths) {
   let total = 0;
   for (const raw of paths) {
     if (typeof raw !== "string" || !raw.trim()) continue;
-    const path = (0, import_node_path12.resolve)(raw);
-    const ext = (0, import_node_path12.extname)(path).toLowerCase();
+    const path = (0, import_node_path13.resolve)(raw);
+    const ext = (0, import_node_path13.extname)(path).toLowerCase();
     const mimeType = EXT_TO_MIME[ext];
     if (!mimeType) {
       throw new Error(
@@ -39113,8 +39150,8 @@ async function loadImages(paths) {
 
 // src/jobs.ts
 var import_node_crypto2 = require("node:crypto");
-var import_node_fs13 = require("node:fs");
-var import_node_path13 = require("node:path");
+var import_node_fs14 = require("node:fs");
+var import_node_path14 = require("node:path");
 var MAX_JOBS = 50;
 var QUESTION_PREVIEW = 200;
 var MAX_PERSISTED = 20;
@@ -39137,10 +39174,10 @@ var JobStore = class {
   constructor() {
     try {
       const dir = jobsDir();
-      const files = (0, import_node_fs13.readdirSync)(dir).filter((f2) => f2.endsWith(".json"));
+      const files = (0, import_node_fs14.readdirSync)(dir).filter((f2) => f2.endsWith(".json"));
       for (const f2 of files) {
         try {
-          const job = JSON.parse((0, import_node_fs13.readFileSync)((0, import_node_path13.join)(dir, f2), "utf8"));
+          const job = JSON.parse((0, import_node_fs14.readFileSync)((0, import_node_path14.join)(dir, f2), "utf8"));
           if (!job || typeof job.id !== "string") continue;
           if (job.status === "running" && !pidAlive(job.pid)) {
             job.status = "error";
@@ -39160,7 +39197,7 @@ var JobStore = class {
   persist(job) {
     try {
       const dir = jobsDir();
-      (0, import_node_fs13.mkdirSync)(dir, { recursive: true });
+      (0, import_node_fs14.mkdirSync)(dir, { recursive: true });
       let payload = job;
       if (job.result !== void 0) {
         const size = Buffer.byteLength(JSON.stringify(job.result), "utf8");
@@ -39168,10 +39205,10 @@ var JobStore = class {
           payload = { ...job, result: void 0, error: job.error ?? `result too large to persist across reloads (${size} bytes) \u2014 fetch it before reloading` };
         }
       }
-      const path = (0, import_node_path13.join)(dir, `${job.id}.json`);
+      const path = (0, import_node_path14.join)(dir, `${job.id}.json`);
       const tmp = `${path}.${process.pid}.tmp`;
-      (0, import_node_fs13.writeFileSync)(tmp, JSON.stringify(payload), { mode: 384 });
-      (0, import_node_fs13.renameSync)(tmp, path);
+      (0, import_node_fs14.writeFileSync)(tmp, JSON.stringify(payload), { mode: 384 });
+      (0, import_node_fs14.renameSync)(tmp, path);
       this.prunePersisted();
     } catch {
     }
@@ -39187,13 +39224,13 @@ var JobStore = class {
   prunePersisted() {
     try {
       const dir = jobsDir();
-      const files = (0, import_node_fs13.readdirSync)(dir).filter((f2) => f2.endsWith(".json"));
+      const files = (0, import_node_fs14.readdirSync)(dir).filter((f2) => f2.endsWith(".json"));
       if (files.length <= MAX_PERSISTED) return;
       const rank = (j2) => !j2 ? 0 : j2.status === "error" ? 1 : j2.status === "done" ? 2 : pidAlive(j2.pid) ? 3 : 1;
       const dated = files.map((f2) => {
         let j2 = null;
         try {
-          j2 = JSON.parse((0, import_node_fs13.readFileSync)((0, import_node_path13.join)(dir, f2), "utf8"));
+          j2 = JSON.parse((0, import_node_fs14.readFileSync)((0, import_node_path14.join)(dir, f2), "utf8"));
         } catch {
         }
         return { f: f2, at: (j2?.status === "done" ? j2.finishedAt : void 0) ?? j2?.startedAt ?? 0, rank: rank(j2) };
@@ -39203,7 +39240,7 @@ var JobStore = class {
       for (const victim of evictable) {
         if (excess <= 0) break;
         try {
-          (0, import_node_fs13.rmSync)((0, import_node_path13.join)(dir, victim.f), { force: true });
+          (0, import_node_fs14.rmSync)((0, import_node_path14.join)(dir, victim.f), { force: true });
           excess--;
         } catch {
         }
@@ -39253,7 +39290,7 @@ var JobStore = class {
     const job = this.jobs.get(id);
     if (job && job.status === "running" && job.pid !== void 0 && job.pid !== process.pid) {
       try {
-        const fresh = JSON.parse((0, import_node_fs13.readFileSync)((0, import_node_path13.join)(jobsDir(), `${id}.json`), "utf8"));
+        const fresh = JSON.parse((0, import_node_fs14.readFileSync)((0, import_node_path14.join)(jobsDir(), `${id}.json`), "utf8"));
         if (fresh && fresh.id === id) {
           this.jobs.set(id, fresh);
           return fresh;
@@ -39289,26 +39326,26 @@ var JobStore = class {
 
 // src/index.ts
 var import_node_crypto3 = require("node:crypto");
-var import_node_fs14 = require("node:fs");
+var import_node_fs15 = require("node:fs");
 var import_node_os8 = require("node:os");
-var import_node_path14 = require("node:path");
-var import_meta3 = {};
+var import_node_path15 = require("node:path");
+var import_meta4 = {};
 var MC_VERSION = (() => {
   const readV = (p2) => {
     try {
-      const v2 = JSON.parse((0, import_node_fs14.readFileSync)(p2, "utf8")).version;
+      const v2 = JSON.parse((0, import_node_fs15.readFileSync)(p2, "utf8")).version;
       return typeof v2 === "string" ? v2 : null;
     } catch {
       return null;
     }
   };
   try {
-    const v2 = readV(new URL("../package.json", import_meta3.url));
+    const v2 = readV(new URL("../package.json", import_meta4.url));
     if (v2) return v2;
   } catch {
   }
   if (process.argv[1]) {
-    const v2 = readV((0, import_node_path14.join)((0, import_node_path14.dirname)(process.argv[1]), "..", "package.json"));
+    const v2 = readV((0, import_node_path15.join)((0, import_node_path15.dirname)(process.argv[1]), "..", "package.json"));
     if (v2) return v2;
   }
   return "0.0.0";
@@ -39369,7 +39406,7 @@ var SEED_HARNESS_TOOL_CONCURRENCY = 16;
 var isFirstRun = !stateFileExists();
 var lastStateMtimeMs = 0;
 try {
-  lastStateMtimeMs = (0, import_node_fs14.statSync)(statePath()).mtimeMs;
+  lastStateMtimeMs = (0, import_node_fs15.statSync)(statePath()).mtimeMs;
 } catch {
 }
 {
@@ -39396,17 +39433,17 @@ try {
     orchestrator.updateRuntime({ harnessToolConcurrency: SEED_HARNESS_TOOL_CONCURRENCY });
     saveState({ harnessToolConcurrency: SEED_HARNESS_TOOL_CONCURRENCY });
   }
-  if (typeof st2.outputFileLocation === "string" && (0, import_node_path14.isAbsolute)(st2.outputFileLocation)) {
+  if (typeof st2.outputFileLocation === "string" && (0, import_node_path15.isAbsolute)(st2.outputFileLocation)) {
     orchestrator.updateRuntime({ outputFileLocation: st2.outputFileLocation });
   }
   try {
     const base = orchestrator.getRuntime().outputFileLocation ?? (0, import_node_os8.tmpdir)();
-    for (const e2 of (0, import_node_fs14.readdirSync)(base)) {
+    for (const e2 of (0, import_node_fs15.readdirSync)(base)) {
       const name = String(e2);
       if (!name.startsWith("mc-scratch-")) continue;
-      const p2 = (0, import_node_path14.join)(base, name);
+      const p2 = (0, import_node_path15.join)(base, name);
       try {
-        if (Date.now() - (0, import_node_fs14.statSync)(p2).mtimeMs > 7 * 24 * 60 * 60 * 1e3) (0, import_node_fs14.rmSync)(p2, { recursive: true, force: true });
+        if (Date.now() - (0, import_node_fs15.statSync)(p2).mtimeMs > 7 * 24 * 60 * 60 * 1e3) (0, import_node_fs15.rmSync)(p2, { recursive: true, force: true });
       } catch {
       }
     }
@@ -39480,7 +39517,7 @@ function withTimeoutNotice(result) {
 }
 async function runCouncil(input, onProgress) {
   try {
-    const mtime = (0, import_node_fs14.statSync)(statePath()).mtimeMs;
+    const mtime = (0, import_node_fs15.statSync)(statePath()).mtimeMs;
     if (mtime > lastStateMtimeMs) {
       lastStateMtimeMs = mtime;
       const envMembers = process.env.COUNCIL_MODELS?.trim();
@@ -39535,8 +39572,8 @@ async function runCouncil(input, onProgress) {
   if (wantMemberFiles) {
     try {
       const base = rt2.outputFileLocation ?? (0, import_node_os8.tmpdir)();
-      (0, import_node_fs14.mkdirSync)(base, { recursive: true });
-      scratchState = { root: (0, import_node_fs14.mkdtempSync)((0, import_node_path14.join)(base, "mc-scratch-")), dirs: /* @__PURE__ */ new Map() };
+      (0, import_node_fs15.mkdirSync)(base, { recursive: true });
+      scratchState = { root: (0, import_node_fs15.mkdtempSync)((0, import_node_path15.join)(base, "mc-scratch-")), dirs: /* @__PURE__ */ new Map() };
     } catch {
     }
   }
@@ -39562,9 +39599,9 @@ async function runCouncil(input, onProgress) {
     const files = [];
     for (const [member, dir] of scratchState.dirs) {
       try {
-        for (const rel of (0, import_node_fs14.readdirSync)(dir, { recursive: true })) {
-          const p2 = (0, import_node_path14.join)(dir, String(rel));
-          const st2 = (0, import_node_fs14.statSync)(p2);
+        for (const rel of (0, import_node_fs15.readdirSync)(dir, { recursive: true })) {
+          const p2 = (0, import_node_path15.join)(dir, String(rel));
+          const st2 = (0, import_node_fs15.statSync)(p2);
           if (st2.isFile()) files.push({ member, path: p2, bytes: st2.size });
         }
       } catch {
@@ -39575,7 +39612,7 @@ async function runCouncil(input, onProgress) {
       finished = { ...fresh, memberFiles: { root: scratchState.root, files } };
     } else {
       try {
-        (0, import_node_fs14.rmSync)(scratchState.root, { recursive: true, force: true });
+        (0, import_node_fs15.rmSync)(scratchState.root, { recursive: true, force: true });
       } catch {
       }
     }
@@ -40283,8 +40320,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         }
         if (input.output_file_location !== void 0) {
           const raw = input.output_file_location.trim();
-          const expanded = raw === "~" || raw.startsWith("~/") ? (0, import_node_path14.join)((0, import_node_os8.homedir)(), raw.slice(2)) : raw;
-          if (!(0, import_node_path14.isAbsolute)(expanded)) {
+          const expanded = raw === "~" || raw.startsWith("~/") ? (0, import_node_path15.join)((0, import_node_os8.homedir)(), raw.slice(2)) : raw;
+          if (!(0, import_node_path15.isAbsolute)(expanded)) {
             throw new Error(`output_file_location must be an absolute path (got "${raw}").`);
           }
           orchestrator.updateRuntime({ outputFileLocation: expanded });
@@ -40512,6 +40549,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
               type: "text",
               text: JSON.stringify(
                 {
+                  // FIRST field deliberately: the build that produced everything
+                  // below it. A reload does not restart a running server, so two
+                  // sessions can read different values from one state.json —
+                  // knowing which build answered is a precondition for trusting
+                  // the rest of this payload, not a footnote to it.
+                  serverVersion: SERVER_VERSION,
                   council: {
                     members: effectiveMembers,
                     membershipSource,
@@ -40616,6 +40659,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
               type: "text",
               text: JSON.stringify(
                 {
+                  // See get_council_config: reported first because `/plugin
+                  // update` + `/reload-plugins` can leave THIS process on the
+                  // previous build, and `reloadPending` below only covers tier
+                  // drift — it cannot see that the server itself is stale.
+                  serverVersion: SERVER_VERSION,
                   tiers,
                   detected: report,
                   council: { members, count: members.length },

@@ -32072,6 +32072,17 @@ function strictParseInt(raw) {
   const n2 = parseInt(trimmed, 10);
   return Number.isFinite(n2) ? n2 : void 0;
 }
+var MAX_COMPLETION_TIMEOUT_MS = 36e5;
+var MIN_COMPLETION_TIMEOUT_MS = 1e3;
+function clampCompletionTimeout(ms, label, onClamp) {
+  const floored = Math.floor(ms);
+  if (floored >= MIN_COMPLETION_TIMEOUT_MS && floored <= MAX_COMPLETION_TIMEOUT_MS) return floored;
+  const clamped = Math.min(MAX_COMPLETION_TIMEOUT_MS, Math.max(MIN_COMPLETION_TIMEOUT_MS, floored));
+  onClamp?.(
+    `${label}=${floored}ms is outside the supported range ${MIN_COMPLETION_TIMEOUT_MS}-${MAX_COMPLETION_TIMEOUT_MS}ms (per COMPLETION, not per run) \u2014 using ${clamped}ms.`
+  );
+  return clamped;
+}
 function envInt(name, fallback) {
   return strictParseInt(envClean(name)) ?? fallback;
 }
@@ -32287,10 +32298,18 @@ function loadConfig() {
     // (local_concurrency=1), so a single completion on a busy box can take a
     // while, and a too-tight cap cuts member answers mid-generation. Raise via
     // REQUEST_TIMEOUT_MS (or set_council_timeouts).
-    requestTimeoutMs: Math.max(1e3, envInt("REQUEST_TIMEOUT_MS", 3e5)),
+    requestTimeoutMs: clampCompletionTimeout(
+      envInt("REQUEST_TIMEOUT_MS", 3e5),
+      "REQUEST_TIMEOUT_MS",
+      (w2) => warnings.push(w2)
+    ),
     // 10 min default when full_repo_access is set: the CLI member Read/Grep/
     // Globs the repo tree, materially longer than a flat text completion.
-    repoRequestTimeoutMs: Math.max(1e3, envInt("REPO_REQUEST_TIMEOUT_MS", 6e5)),
+    repoRequestTimeoutMs: clampCompletionTimeout(
+      envInt("REPO_REQUEST_TIMEOUT_MS", 6e5),
+      "REPO_REQUEST_TIMEOUT_MS",
+      (w2) => warnings.push(w2)
+    ),
     verbose: envBool("DECONFLICT_VERBOSE", false)
   };
   return {
@@ -39358,8 +39377,14 @@ try {
   const t2 = st2.timeouts;
   if (t2 && (typeof t2.run === "number" || typeof t2.repo === "number")) {
     const patch = {};
-    if (typeof t2.run === "number" && Number.isFinite(t2.run)) patch.requestTimeoutMs = Math.max(1e3, Math.floor(t2.run));
-    if (typeof t2.repo === "number" && Number.isFinite(t2.repo)) patch.repoRequestTimeoutMs = Math.max(1e3, Math.floor(t2.repo));
+    const warn = (m2) => process.stderr.write(`[model-council] warning: state.json ${m2}
+`);
+    if (typeof t2.run === "number" && Number.isFinite(t2.run)) {
+      patch.requestTimeoutMs = clampCompletionTimeout(t2.run, "timeouts.run", warn);
+    }
+    if (typeof t2.repo === "number" && Number.isFinite(t2.repo)) {
+      patch.repoRequestTimeoutMs = clampCompletionTimeout(t2.repo, "timeouts.repo", warn);
+    }
     if (Object.keys(patch).length) orchestrator.updateRuntime(patch);
   }
   if (typeof st2.webAccess === "boolean") {
@@ -40117,21 +40142,21 @@ var TOOLS = [
   {
     name: "set_council_timeouts",
     annotations: { title: "Set per-completion timeouts (repo + text)", readOnlyHint: false },
-    description: "Set the per-completion wall-clock timeouts (ms) for council calls, persisted across reloads and overriding the REQUEST_TIMEOUT_MS / REPO_REQUEST_TIMEOUT_MS env defaults. `run_timeout_ms` applies to text-only ask_council calls; `repo_timeout_ms` applies when full_repo_access is set (repo-reading completions run longer). Omit either to leave it unchanged. Raise these when a member answer is cut mid-generation (the result then carries a `timeoutNotice`). Returns the now-effective values. A reload is NOT required \u2014 takes effect on the next ask_council.",
+    description: "Set the per-completion wall-clock timeouts (ms) for council calls, persisted across reloads and overriding the REQUEST_TIMEOUT_MS / REPO_REQUEST_TIMEOUT_MS env defaults. `run_timeout_ms` applies to text-only ask_council calls; `repo_timeout_ms` applies when full_repo_access is set (repo-reading completions run longer). Omit either to leave it unchanged. Raise these when a member answer is cut mid-generation (the result then carries a `timeoutNotice`). Returns the now-effective values. A reload is NOT required \u2014 takes effect on the next ask_council. Each value bounds ONE completion, up to 3600000ms (60 min); it does NOT bound the run, which is members x rounds + judge calls and legitimately runs longer.",
     inputSchema: {
       type: "object",
       properties: {
         run_timeout_ms: {
           type: "number",
-          minimum: 1e3,
-          maximum: 18e5,
-          description: "Per-completion timeout (ms) for text-only calls (no full_repo_access). Default 300000 (5 min)."
+          minimum: MIN_COMPLETION_TIMEOUT_MS,
+          maximum: MAX_COMPLETION_TIMEOUT_MS,
+          description: `Per-completion timeout (ms) for text-only calls (no full_repo_access). Default 300000 (5 min), max ${MAX_COMPLETION_TIMEOUT_MS} (60 min).`
         },
         repo_timeout_ms: {
           type: "number",
-          minimum: 1e3,
-          maximum: 18e5,
-          description: "Per-completion timeout (ms) for calls with full_repo_access. Default 600000 (10 min)."
+          minimum: MIN_COMPLETION_TIMEOUT_MS,
+          maximum: MAX_COMPLETION_TIMEOUT_MS,
+          description: `Per-completion timeout (ms) for calls with full_repo_access. Default 600000 (10 min), max ${MAX_COMPLETION_TIMEOUT_MS} (60 min).`
         }
       }
     }
@@ -40547,8 +40572,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     CLOUD_CONCURRENCY: "Optional override: caps ALL cloud pools (overrides per-tier limits). Unset = tiers drive it.",
                     LOCAL_CONCURRENCY: "Max concurrent local requests (default: 1; 0 = unlimited)",
                     COMPLETION_RETRIES: "Attempts per completion before giving up on empty/error (default: 3)",
-                    REQUEST_TIMEOUT_MS: "Per-completion wall-clock timeout in ms for text-only calls (default: 300000 = 5 min). Raise for slow local models. Honoured verbatim by every provider, including claude-cli/codex-cli/grok-cli (no 300s floor).",
-                    REPO_REQUEST_TIMEOUT_MS: "Per-completion timeout in ms when full_repo_access is set (default: 600000 = 10 min) \u2014 repo-reading completions run longer. Honoured verbatim by every provider.",
+                    REQUEST_TIMEOUT_MS: "Per-completion wall-clock timeout in ms for text-only calls (default: 300000 = 5 min, max 3600000 = 60 min). Raise for slow local models. Honoured verbatim by every provider, including claude-cli/codex-cli/grok-cli (no 300s floor).",
+                    REPO_REQUEST_TIMEOUT_MS: "Per-completion timeout in ms when full_repo_access is set (default: 600000 = 10 min, max 3600000 = 60 min) \u2014 repo-reading completions run longer. Honoured verbatim by every provider.",
                     SET_COUNCIL_TIMEOUTS: "MCP tool to change the above two at runtime (persisted); see set_council_timeouts.",
                     DECONFLICT_VERBOSE: "true \u2192 deconflicted results include per-round detail by default"
                   }
@@ -40668,8 +40693,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       case "set_council_timeouts": {
         const input = parseToolInput(
           external_exports.object({
-            run_timeout_ms: external_exports.number().int().min(1e3).max(18e5).optional(),
-            repo_timeout_ms: external_exports.number().int().min(1e3).max(18e5).optional()
+            run_timeout_ms: external_exports.number().int().min(MIN_COMPLETION_TIMEOUT_MS).max(MAX_COMPLETION_TIMEOUT_MS).optional(),
+            repo_timeout_ms: external_exports.number().int().min(MIN_COMPLETION_TIMEOUT_MS).max(MAX_COMPLETION_TIMEOUT_MS).optional()
           }).strict(),
           args,
           "set_council_timeouts"

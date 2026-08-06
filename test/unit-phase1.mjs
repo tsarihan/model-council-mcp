@@ -3346,6 +3346,75 @@ console.log('▶ CLI failure legibility: the reason a member died must reach the
   }
 }
 
+console.log('▶ per-completion timeout ceiling: one bound, every door');
+{
+  const { clampCompletionTimeout, MAX_COMPLETION_TIMEOUT_MS, MIN_COMPLETION_TIMEOUT_MS } =
+    await import('../dist/config.js');
+  const { readFileSync: rfs } = await import('node:fs');
+
+  check('the ceiling is 60 min (raised from 30, which was under the observed 26-min success)',
+    MAX_COMPLETION_TIMEOUT_MS === 3_600_000, String(MAX_COMPLETION_TIMEOUT_MS));
+
+  // In-range values pass through untouched — the clamp must not perturb a
+  // setting the user is entitled to.
+  for (const v of [MIN_COMPLETION_TIMEOUT_MS, 300000, 1800000, MAX_COMPLETION_TIMEOUT_MS]) {
+    check(`in-range ${v}ms is honoured verbatim`, clampCompletionTimeout(v, 'x') === v);
+  }
+
+  // Out-of-range is clamped AND reported. Silence here is the actual bug being
+  // fixed: a user who set 2h and quietly got 1h has no way to learn that.
+  let msg;
+  check('above the ceiling clamps down', clampCompletionTimeout(7_200_000, 'REQUEST_TIMEOUT_MS', m => { msg = m; }) === MAX_COMPLETION_TIMEOUT_MS);
+  check('clamping is REPORTED, naming the setting and both numbers',
+    /REQUEST_TIMEOUT_MS/.test(msg) && /7200000/.test(msg) && /3600000/.test(msg), msg);
+  check('the report says per COMPLETION, not per run (the cap is widely misread)',
+    /per COMPLETION, not per run/.test(msg), msg);
+  let low;
+  check('below the floor clamps up', clampCompletionTimeout(0, 'timeouts.run', m => { low = m; }) === MIN_COMPLETION_TIMEOUT_MS);
+  check('a sub-floor value is reported too', /timeouts\.run/.test(low ?? ''), low);
+  check('clamping without a reporter does not throw', clampCompletionTimeout(9_999_999, 'x') === MAX_COMPLETION_TIMEOUT_MS);
+
+  // ── All FOUR doors must agree. Each was independently capable of setting a
+  // per-completion timeout, and before this only the MCP tool was bounded.
+  const idx = rfs(new URL('../dist/index.js', import.meta.url), 'utf8');
+  check('door 1 (set_council_timeouts zod+schema) carries no stale 1800000 literal',
+    !/1800000/.test(idx), (idx.match(/.{40}1800000.{40}/) ?? [''])[0]);
+  // Door 2 is EXECUTED, not pattern-matched: set the env var out of range and
+  // load a real config. A source-text assertion would pass on code that
+  // computes the clamp and drops it on the floor.
+  {
+    const { loadConfig } = await import('../dist/config.js');
+    const saveRun = process.env.REQUEST_TIMEOUT_MS, saveRepo = process.env.REPO_REQUEST_TIMEOUT_MS;
+    try {
+      process.env.REQUEST_TIMEOUT_MS = '7200000';   // 2h — over
+      process.env.REPO_REQUEST_TIMEOUT_MS = '900';  // 0.9s — under
+      const c = loadConfig();
+      check('door 2 (env, EXECUTED): an over-ceiling REQUEST_TIMEOUT_MS is clamped',
+        c.runtime.requestTimeoutMs === MAX_COMPLETION_TIMEOUT_MS, String(c.council.requestTimeoutMs));
+      check('door 2 (env, EXECUTED): a sub-floor REPO_REQUEST_TIMEOUT_MS is clamped',
+        c.runtime.repoRequestTimeoutMs === MIN_COMPLETION_TIMEOUT_MS, String(c.council.repoRequestTimeoutMs));
+      check('door 2 (env, EXECUTED): both clamps surface as boot warnings',
+        c.warnings.filter(w => /REQUEST_TIMEOUT_MS.*outside the supported range/.test(w)).length === 2,
+        JSON.stringify(c.warnings.filter(w => /TIMEOUT/.test(w))));
+      process.env.REQUEST_TIMEOUT_MS = '1500000';   // 25 min — in range
+      const ok = loadConfig();
+      check('door 2 (env, EXECUTED): an in-range value passes through with no warning',
+        ok.runtime.requestTimeoutMs === 1500000 &&
+        !ok.warnings.some(w => /^REQUEST_TIMEOUT_MS.*outside/.test(w)), String(ok.runtime.requestTimeoutMs));
+    } finally {
+      saveRun === undefined ? delete process.env.REQUEST_TIMEOUT_MS : (process.env.REQUEST_TIMEOUT_MS = saveRun);
+      saveRepo === undefined ? delete process.env.REPO_REQUEST_TIMEOUT_MS : (process.env.REPO_REQUEST_TIMEOUT_MS = saveRepo);
+    }
+  }
+  check('door 3 (persisted state.json timeouts) goes through the clamp',
+    /clampCompletionTimeout\(t\.run/.test(idx) && /clampCompletionTimeout\(t\.repo/.test(idx));
+  const pj = JSON.parse(rfs(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8'));
+  check('door 4 (plugin user_config UI) allows the same ceiling',
+    pj.userConfig.request_timeout_ms.max === MAX_COMPLETION_TIMEOUT_MS &&
+    pj.userConfig.repo_request_timeout_ms.max === MAX_COMPLETION_TIMEOUT_MS,
+    `${pj.userConfig.request_timeout_ms.max}/${pj.userConfig.repo_request_timeout_ms.max}`);
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
 console.log('ALL PASSED ✅');

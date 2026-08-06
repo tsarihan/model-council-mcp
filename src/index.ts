@@ -30,7 +30,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 
-import { KNOWN_PROVIDERS, loadConfig, modelIdLabel, parseModelId, redactUrlUserinfo } from './config.js';
+import { KNOWN_PROVIDERS, MAX_COMPLETION_TIMEOUT_MS, MIN_COMPLETION_TIMEOUT_MS, clampCompletionTimeout, loadConfig, modelIdLabel, parseModelId, redactUrlUserinfo } from './config.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { CouncilOrchestrator } from './council/orchestrator.js';
 import { ProgressReporter } from './council/query.js';
@@ -197,8 +197,17 @@ try { lastStateMtimeMs = statSync(statePath()).mtimeMs; } catch { /* no file yet
   const t = st.timeouts;
   if (t && (typeof t.run === 'number' || typeof t.repo === 'number')) {
     const patch: { requestTimeoutMs?: number; repoRequestTimeoutMs?: number } = {};
-    if (typeof t.run === 'number' && Number.isFinite(t.run)) patch.requestTimeoutMs = Math.max(1000, Math.floor(t.run));
-    if (typeof t.repo === 'number' && Number.isFinite(t.repo)) patch.repoRequestTimeoutMs = Math.max(1000, Math.floor(t.repo));
+    // Clamped to the SAME ceiling as the tool and the env vars. A persisted
+    // value can predate a lowered ceiling, or be hand-edited into state.json,
+    // and an unbounded state path would quietly reintroduce the door the tool
+    // closes. Out-of-range is reported on stderr, never applied silently.
+    const warn = (m: string) => process.stderr.write(`[model-council] warning: state.json ${m}\n`);
+    if (typeof t.run === 'number' && Number.isFinite(t.run)) {
+      patch.requestTimeoutMs = clampCompletionTimeout(t.run, 'timeouts.run', warn);
+    }
+    if (typeof t.repo === 'number' && Number.isFinite(t.repo)) {
+      patch.repoRequestTimeoutMs = clampCompletionTimeout(t.repo, 'timeouts.repo', warn);
+    }
     if (Object.keys(patch).length) orchestrator.updateRuntime(patch);
   }
   // Same treatment for a persisted configure_council reasoning_effort: it lives
@@ -1492,21 +1501,23 @@ const TOOLS = [
       'either to leave it unchanged. Raise these when a member answer is cut ' +
       'mid-generation (the result then carries a `timeoutNotice`). Returns the ' +
       'now-effective values. A reload is NOT required — takes effect on the ' +
-      'next ask_council.',
+      'next ask_council. Each value bounds ONE completion, up to 3600000ms ' +
+      '(60 min); it does NOT bound the run, which is members x rounds + judge ' +
+      'calls and legitimately runs longer.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         run_timeout_ms: {
           type: 'number',
-          minimum: 1000,
-          maximum: 1800000,
-          description: 'Per-completion timeout (ms) for text-only calls (no full_repo_access). Default 300000 (5 min).',
+          minimum: MIN_COMPLETION_TIMEOUT_MS,
+          maximum: MAX_COMPLETION_TIMEOUT_MS,
+          description: `Per-completion timeout (ms) for text-only calls (no full_repo_access). Default 300000 (5 min), max ${MAX_COMPLETION_TIMEOUT_MS} (60 min).`,
         },
         repo_timeout_ms: {
           type: 'number',
-          minimum: 1000,
-          maximum: 1800000,
-          description: 'Per-completion timeout (ms) for calls with full_repo_access. Default 600000 (10 min).',
+          minimum: MIN_COMPLETION_TIMEOUT_MS,
+          maximum: MAX_COMPLETION_TIMEOUT_MS,
+          description: `Per-completion timeout (ms) for calls with full_repo_access. Default 600000 (10 min), max ${MAX_COMPLETION_TIMEOUT_MS} (60 min).`,
         },
       },
     },
@@ -2085,8 +2096,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
                     CLOUD_CONCURRENCY: 'Optional override: caps ALL cloud pools (overrides per-tier limits). Unset = tiers drive it.',
                     LOCAL_CONCURRENCY: 'Max concurrent local requests (default: 1; 0 = unlimited)',
                     COMPLETION_RETRIES: 'Attempts per completion before giving up on empty/error (default: 3)',
-                    REQUEST_TIMEOUT_MS: 'Per-completion wall-clock timeout in ms for text-only calls (default: 300000 = 5 min). Raise for slow local models. Honoured verbatim by every provider, including claude-cli/codex-cli/grok-cli (no 300s floor).',
-                    REPO_REQUEST_TIMEOUT_MS: 'Per-completion timeout in ms when full_repo_access is set (default: 600000 = 10 min) — repo-reading completions run longer. Honoured verbatim by every provider.',
+                    REQUEST_TIMEOUT_MS: 'Per-completion wall-clock timeout in ms for text-only calls (default: 300000 = 5 min, max 3600000 = 60 min). Raise for slow local models. Honoured verbatim by every provider, including claude-cli/codex-cli/grok-cli (no 300s floor).',
+                    REPO_REQUEST_TIMEOUT_MS: 'Per-completion timeout in ms when full_repo_access is set (default: 600000 = 10 min, max 3600000 = 60 min) — repo-reading completions run longer. Honoured verbatim by every provider.',
                     SET_COUNCIL_TIMEOUTS: 'MCP tool to change the above two at runtime (persisted); see set_council_timeouts.',
                     DECONFLICT_VERBOSE: 'true → deconflicted results include per-round detail by default',
                   },
@@ -2263,8 +2274,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       case 'set_council_timeouts': {
         const input = parseToolInput(
           z.object({
-            run_timeout_ms: z.number().int().min(1000).max(1800000).optional(),
-            repo_timeout_ms: z.number().int().min(1000).max(1800000).optional(),
+            run_timeout_ms: z.number().int().min(MIN_COMPLETION_TIMEOUT_MS).max(MAX_COMPLETION_TIMEOUT_MS).optional(),
+            repo_timeout_ms: z.number().int().min(MIN_COMPLETION_TIMEOUT_MS).max(MAX_COMPLETION_TIMEOUT_MS).optional(),
           }).strict(),
           args,
           'set_council_timeouts',

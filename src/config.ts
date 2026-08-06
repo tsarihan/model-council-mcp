@@ -213,6 +213,51 @@ function strictParseInt(raw: string | undefined): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+/**
+ * Ceiling for a PER-COMPLETION timeout (one member call), shared by all three
+ * doors that can set one: the `set_council_timeouts` tool, the
+ * REQUEST_TIMEOUT_MS / REPO_REQUEST_TIMEOUT_MS env vars, and a `timeouts` block
+ * persisted in state.json. It previously bound only the TOOL, so the same
+ * setting was capped at 30 min through one door and unbounded through the other
+ * two — which is not a cap, it is a cap that fails to apply.
+ *
+ * 60 min, raised from 30. The old ceiling was under the evidence: a member's
+ * learned `slowestOkHeavyMs` (the slowest call that actually SUCCEEDED) had
+ * already reached 26 min on real repo reviews, leaving ~13% headroom before a
+ * legitimate answer would be truncated into a timeoutNotice.
+ *
+ * NOTE this bounds ONE completion, never the run. An ask_council is members x
+ * rounds + judge calls, so total wall-clock legitimately exceeds this and is
+ * deliberately not capped here.
+ */
+export const MAX_COMPLETION_TIMEOUT_MS = 3_600_000;
+
+/** Floor for the same — below this, nothing finishes and the setting is a mistake. */
+export const MIN_COMPLETION_TIMEOUT_MS = 1_000;
+
+/**
+ * Clamp a per-completion timeout into [MIN, MAX], reporting rather than
+ * silently swallowing an out-of-range value: a user who asked for 2 hours and
+ * quietly got 1 would have no way to tell their setting had been overruled.
+ * `onClamp` receives a ready-to-print explanation (a boot warning, or a tool
+ * error message).
+ */
+export function clampCompletionTimeout(
+  ms: number,
+  label: string,
+  onClamp?: (message: string) => void,
+): number {
+  const floored = Math.floor(ms);
+  if (floored >= MIN_COMPLETION_TIMEOUT_MS && floored <= MAX_COMPLETION_TIMEOUT_MS) return floored;
+  const clamped = Math.min(MAX_COMPLETION_TIMEOUT_MS, Math.max(MIN_COMPLETION_TIMEOUT_MS, floored));
+  onClamp?.(
+    `${label}=${floored}ms is outside the supported range ` +
+    `${MIN_COMPLETION_TIMEOUT_MS}-${MAX_COMPLETION_TIMEOUT_MS}ms (per COMPLETION, not per run) — ` +
+    `using ${clamped}ms.`,
+  );
+  return clamped;
+}
+
 export function envInt(name: string, fallback: number): number {
   return strictParseInt(envClean(name)) ?? fallback;
 }
@@ -593,10 +638,14 @@ export function loadConfig(): AppConfig {
     // (local_concurrency=1), so a single completion on a busy box can take a
     // while, and a too-tight cap cuts member answers mid-generation. Raise via
     // REQUEST_TIMEOUT_MS (or set_council_timeouts).
-    requestTimeoutMs: Math.max(1000, envInt('REQUEST_TIMEOUT_MS', 300000)),
+    requestTimeoutMs: clampCompletionTimeout(
+      envInt('REQUEST_TIMEOUT_MS', 300000), 'REQUEST_TIMEOUT_MS', w => warnings.push(w),
+    ),
     // 10 min default when full_repo_access is set: the CLI member Read/Grep/
     // Globs the repo tree, materially longer than a flat text completion.
-    repoRequestTimeoutMs: Math.max(1000, envInt('REPO_REQUEST_TIMEOUT_MS', 600000)),
+    repoRequestTimeoutMs: clampCompletionTimeout(
+      envInt('REPO_REQUEST_TIMEOUT_MS', 600000), 'REPO_REQUEST_TIMEOUT_MS', w => warnings.push(w),
+    ),
     verbose: envBool('DECONFLICT_VERBOSE', false),
   };
 

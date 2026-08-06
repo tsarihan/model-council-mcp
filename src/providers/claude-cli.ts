@@ -89,7 +89,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CappedBuffer, ChatImage, ChatMessage, CompletionOptions, Provider, neutralizeFileMentions } from './base.js';
+import { CappedBuffer, ChatImage, ChatMessage, CompletionOptions, Provider, cliFailureDetail, neutralizeFileMentions } from './base.js';
 import { CLAUDE_CLI_EFFORTS, clampEffort } from './effort.js';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
 import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
@@ -192,6 +192,33 @@ export function buildChildEnv(
     delete env.ANTHROPIC_BASE_URL;
   }
   return env;
+}
+
+/**
+ * Failure detail out of claude-cli's `--output-format json` envelope, which is
+ * emitted on STDOUT even when the process exits non-zero (verified live,
+ * claude 2.1.222 — see the exit-code branch in complete()). `result` carries
+ * the human-readable cause ("API Error: 402 …"); `api_error_status` carries the
+ * HTTP status and is prefixed only when the text doesn't already state one, so
+ * the words the quota classifier keys on survive into the thrown message.
+ *
+ * Returns '' for anything unparseable — the caller then falls back to
+ * cliFailureDetail over both raw streams.
+ */
+export function jsonFailureDetail(stdout: string | undefined): string {
+  try {
+    const p = JSON.parse((stdout ?? '').trim()) as Record<string, unknown>;
+    const text = (typeof p.result === 'string' && p.result.trim())
+      || (typeof p.error === 'string' && p.error.trim())
+      || (typeof p.terminal_reason === 'string' && p.terminal_reason.trim())
+      || '';
+    if (!text) return '';
+    const status = typeof p.api_error_status === 'number' ? p.api_error_status : undefined;
+    const prefix = status !== undefined && !new RegExp(`\\b${status}\\b`).test(text) ? `HTTP ${status}: ` : '';
+    return (prefix + text).slice(0, 500);
+  } catch {
+    return '';
+  }
 }
 
 /** SIGKILL the child's whole process group (detached), falling back to the child alone. */
@@ -488,8 +515,17 @@ export class ClaudeCliProvider implements Provider {
         }
       }
       if (code !== 0) {
+        // VERIFIED LIVE (claude 2.1.222, --output-format json): a failing call
+        // exits NON-ZERO with EMPTY stderr and puts the whole story on stdout —
+        // {"is_error":true,"api_error_status":402,"result":"API Error: 402 …"}.
+        // Reading only stderr here reported "(no stderr)" and threw the real
+        // reason away, so an Ollama-harness member whose extra-usage balance
+        // was empty failed in 3s with no explanation and was retried anyway
+        // (the quota classifier can only match words that reach the message).
+        // The JSON body is preferred when parseable; cliFailureDetail covers
+        // the plain-text and stderr-only shapes.
         throw new Error(
-          `claude CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || '(no stderr)'}`,
+          `claude CLI exited with code ${code}: ${jsonFailureDetail(stdout) || cliFailureDetail(stdout, stderr) || '(no output)'}`,
         );
       }
 

@@ -3256,6 +3256,96 @@ console.log('▶ codex scratch guard: a repo inside the tmpdir keeps the sandbox
   check('an unresolvable path refuses the write grant (fails safe)', isInsideTmpdir(j(td(), 'mc-unit-definitely-missing-xyz')));
 }
 
+console.log('▶ CLI failure legibility: the reason a member died must reach the error message');
+{
+  const { cliFailureDetail, isQuotaError } = await import('../dist/providers/base.js');
+  const { jsonFailureDetail } = await import('../dist/providers/claude-cli.js');
+
+  // ── VERBATIM live captures (codex 0.146.1 / claude 2.1.222, 2026-08-05).
+  // Both of these were reported to the user as unexplained failures, and both
+  // defeated isQuotaError, causing three retries against an exhausted plan.
+  const CODEX_STDERR = [
+    'OpenAI Codex v0.146.1',
+    '--------',
+    'workdir: /private/tmp',
+    'model: gpt-5.6-sol',
+    'provider: openai',
+    'approval: never',
+    'sandbox: read-only',
+    'reasoning effort: none',
+    'reasoning summaries: none',
+    'session id: 019fd55a-3b36-7321-a4c9-eb2a6449784c',
+    '--------',
+    'user',
+    'Reading prompt from stdin...',
+    // The prompt echo is the whole reason the head of stderr is worthless: a
+    // real council prompt (repo review + preamble + context) runs to thousands
+    // of characters, so the failure line lands far past any head-slice window.
+    // Sized from the actual NIST/EU compliance runs that produced this bug.
+    `Review the error handling and failed retries across the repo. ${'Additional reviewer context line. '.repeat(200)}`,
+    '',
+    "ERROR: You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Aug 9th, 2026 9:12 PM.",
+    "ERROR: You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Aug 9th, 2026 9:12 PM.",
+  ].join('\n');
+  const CLAUDE_JSON_STDOUT = JSON.stringify({
+    is_error: true, num_turns: 1, terminal_reason: 'api_error', api_error_status: 402,
+    result: 'API Error: 402 this model uses extra usage only (not included plan usage) and your extra usage balance is empty, add extra usage or turn on auto reload at https://ollama.com/settings',
+    type: 'result',
+  });
+
+  const cx = cliFailureDetail('', CODEX_STDERR);
+  // MUTATION EVIDENCE: revert to the old `stderr.slice(0, 500)` and this fails —
+  // the first 500 chars of that stderr are banner + prompt echo, which is
+  // literally how the user was told "exited with code 1: Reading prompt from stdin…".
+  check('codex: the usage-limit line is what surfaces, not the banner', cx.includes("hit your usage limit"), cx);
+  check('codex: the banner/prompt echo is NOT quoted as the failure',
+    !/Reading prompt from stdin|OpenAI Codex v|session id:/.test(cx), cx);
+  check('codex: the duplicated ERROR line is emitted once', cx.split('usage limit').length - 1 === 1, cx);
+  check('codex: a real refusal now classifies as permanent exhaustion',
+    isQuotaError(new Error(`codex CLI exited with code 1: ${cx}`)));
+
+  const cl = jsonFailureDetail(CLAUDE_JSON_STDOUT);
+  // MUTATION EVIDENCE: the old code read stderr only — which is EMPTY here —
+  // and produced "claude CLI exited with code 1: (no stderr)".
+  check('claude json: the 402 body is recovered from stdout', cl.includes('extra usage balance is empty'), cl);
+  check('claude json: an Ollama extra-usage refusal classifies as exhaustion',
+    isQuotaError(new Error(`claude CLI exited with code 1: ${cl}`)));
+  check('claude json: an already-stated status is not double-prefixed', !cl.startsWith('HTTP 402'), cl);
+  check('claude json: unparseable stdout yields no detail (caller falls back)',
+    jsonFailureDetail('<html>502 Bad Gateway</html>') === '' && jsonFailureDetail(undefined) === '');
+
+  // The transient guard must survive: "try again at <date>" is exhaustion with a
+  // published end date, but "please try again later" over a per-minute metric is not.
+  check('a named future reset time does not make exhaustion look transient',
+    isQuotaError(new Error('You have hit your usage limit, try again at Aug 9th, 2026 9:12 PM')));
+  check('per-minute quota throttling is still transient (retries must survive)',
+    !isQuotaError(new Error('Quota exceeded for quota metric per minute. Please try again later.')));
+
+  // Fallback shape: no marker lines at all → tail of stderr, never the head.
+  const noMarker = `${'head noise\n'.repeat(80)}the process died here`;
+  check('with no ERROR marker, the TAIL of stderr is reported', cliFailureDetail('', noMarker).endsWith('the process died here'));
+  check('with neither stream saying anything, detail is empty', cliFailureDetail('', '') === '');
+
+  // END-TO-END CONSEQUENCE, executed rather than asserted-about: these are the
+  // exact two messages the providers now throw. Both must cost ONE attempt, not
+  // three — the wasted retries against an exhausted plan were the operational
+  // cost of the bug, on top of the unreadable report.
+  const { completeWithRetry } = await import('../dist/council/query.js');
+  for (const [who, thrownMsg] of [
+    ['codex ChatGPT usage limit', `codex CLI exited with code 1: ${cx}`],
+    ['ollama extra-usage 402', `claude CLI exited with code 1: ${cl}`],
+  ]) {
+    let calls = 0;
+    const p = { config: { type: 'ollama' }, serverId: 'ollama', listModels: async () => [], ping: async () => true,
+      complete: async () => { calls++; throw new Error(thrownMsg); } };
+    let err;
+    try { await completeWithRetry(p, 'm', [{ role: 'user', content: 'hi' }], {}, 3); } catch (e) { err = e; }
+    check(`${who}: attempted exactly ONCE, not retried`, calls === 1, `calls=${calls}`);
+    check(`${who}: reported as a quota refusal, with the reason intact`,
+      err?.name === 'QuotaExceededError' && /usage limit|balance is empty/i.test(err.message), err?.message?.slice(0, 80));
+  }
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
 console.log('ALL PASSED ✅');

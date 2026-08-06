@@ -249,12 +249,35 @@ export class QuotaExceededError extends Error {
  * so the message patterns still classify it correctly as permanent.
  */
 const QUOTA_EXHAUSTED_PATTERNS = [
-  /\busage limit\b/i,                 // grok "reached your free Grok Build usage limit", claude CLI
   /\bquota\b/i,                       // OpenAI insufficient_quota / "exceeded your current quota"
-  /\bcredit balance is too low\b/i,   // Anthropic billing
-  /\bout of credits?\b/i,
   /\bbilling\b.*\b(hard limit|required)\b/i,
   /\bplan limit\b|\bupgrade to\b.*\b(continue|higher)\b/i,
+];
+
+/**
+ * Exhaustion wordings that are UNAMBIGUOUS — they name a spent balance or a
+ * consumed allowance, not a momentary throttle — so they are classified
+ * permanent WITHOUT first passing the transient-wording guard below.
+ *
+ * VERIFIED LIVE (2026-08-05), and both were misclassified before this list
+ * existed, costing three pointless retries per member per round:
+ *   - codex 0.146.1 / ChatGPT Plus: "You've hit your usage limit. Upgrade to
+ *     Pro … or try again at Aug 9th, 2026 9:12 PM." The reset is FOUR DAYS
+ *     out, but the literal words "try again" tripped the transient guard, so
+ *     the hardest possible exhaustion read as "slow down and retry".
+ *   - Ollama cloud (via claude-cli harness): "API Error: 402 this model uses
+ *     extra usage only (not included plan usage) and your extra usage balance
+ *     is empty …" — no "quota", no "usage limit", no "credits", so it matched
+ *     nothing at all and came back as a generic member error.
+ * A named future reset time is the OPPOSITE of transient: it is exhaustion
+ * with a published end date. It must never be read as backoff advice.
+ */
+const QUOTA_EXHAUSTED_UNAMBIGUOUS = [
+  /\busage limit\b/i,                 // grok "free Grok Build usage limit", claude CLI, codex
+  /\bcredit balance is too low\b/i,   // Anthropic billing
+  /\bout of credits?\b/i,
+  /\bbalance is empty\b/i,            // Ollama extra-usage 402
+  /\bextra usage only\b/i,            // Ollama: model excluded from plan usage
 ];
 
 /**
@@ -269,6 +292,10 @@ export function isQuotaError(err: unknown): boolean {
   if (err instanceof QuotaExceededError) return true;
   const e = err as { status?: number; message?: string };
   const msg = String(e.message ?? err);
+  // Unambiguous exhaustion wins outright — checked BEFORE the transient guard,
+  // because real refusals routinely carry "try again at <date>" alongside a
+  // spent balance and the guard would otherwise veto them (see the list's docs).
+  if (QUOTA_EXHAUSTED_UNAMBIGUOUS.some(re => re.test(msg))) return true;
   // Several APIs (Google/Gemini among them) use the word "quota" for a
   // PER-MINUTE throttle — "Quota exceeded for quota metric … per minute, retry
   // after 30s". That is transient, so an unrestricted /\bquota\b/ classified it
@@ -289,6 +316,62 @@ export function isRateLimitError(err: unknown): boolean {
   const e = err as { status?: number; message?: string };
   if (e.status === 429) return true;
   return /\brate[ _-]?limit|\btoo many requests\b|(?<!\d)429(?!\d)/i.test(String(e.message ?? err));
+}
+
+/**
+ * Line-start error markers. Anchored deliberately: a council prompt is echoed
+ * verbatim into codex's stderr, and an unanchored /error/i would happily quote
+ * the QUESTION back as the failure ("…review the error handling in…").
+ */
+const CLI_ERROR_LINE = /^\s*(?:\[?(?:ERROR|FATAL|error)\]?\b[:\s]|API Error\b|Error:)/;
+
+/**
+ * Best explanation of why a CLI subprocess failed, given both its streams.
+ *
+ * WHY THIS EXISTS (all four facts verified live 2026-08-05, and each one alone
+ * was enough to make a real refusal unreadable):
+ *   1. codex 0.146.1 writes its SESSION BANNER and a full echo of the prompt to
+ *      STDERR, and the actual failure last. Taking `stderr.slice(0, 500)` — as
+ *      both CLI providers did — therefore reported the banner. A user out of
+ *      ChatGPT quota was told "codex CLI exited with code 1: Reading prompt
+ *      from stdin…", which names nothing that happened.
+ *   2. claude 2.1.222 under `--output-format json` fails with EMPTY stderr and
+ *      puts everything on STDOUT: `{"is_error":true,"api_error_status":402,
+ *      "result":"API Error: 402 …"}`. Reading only stderr yielded "(no stderr)".
+ *   3. Errors are TERMINAL output, so the tail is the informative end, not the head.
+ *   4. codex prints its ERROR line twice; duplicates waste the character budget.
+ *
+ * This also decides whether isQuotaError() ever sees the words it classifies on
+ * — a refusal that never reaches the message is retried three times and then
+ * reported as an unexplained failure.
+ */
+export function cliFailureDetail(
+  stdout: string | undefined,
+  stderr: string | undefined,
+  limit = 500,
+): string {
+  const marked: string[] = [];
+  const seen = new Set<string>();
+  // stderr first, then stdout: when both carry markers, the subprocess's own
+  // diagnostic channel is the more specific one.
+  for (const stream of [stderr, stdout]) {
+    for (const line of (stream ?? '').split('\n')) {
+      const t = line.trim();
+      if (!t || !CLI_ERROR_LINE.test(t) || seen.has(t)) continue;
+      seen.add(t);
+      marked.push(t);
+    }
+  }
+  if (marked.length) return truncateTail(marked.join(' | '), limit);
+  // No marker anywhere: fall back to the TAIL of whichever stream spoke,
+  // preferring stderr. The head is the banner; the tail is the failure.
+  const tail = (stderr ?? '').trim() || (stdout ?? '').trim();
+  return tail ? truncateTail(tail, limit) : '';
+}
+
+/** Keep the LAST `limit` chars (errors end where they matter), marking elision. */
+function truncateTail(s: string, limit: number): string {
+  return s.length <= limit ? s : `…${s.slice(s.length - limit)}`;
 }
 
 /** Ceiling for a single CLI subprocess's accumulated stdout/stderr — see CappedBuffer. */

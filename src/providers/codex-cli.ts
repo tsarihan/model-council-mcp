@@ -47,7 +47,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CappedBuffer, ChatImage, ChatMessage, CompletionOptions, Provider , neutralizeFileMentions } from './base.js';
+import { CappedBuffer, ChatImage, ChatMessage, CompletionOptions, Provider , cliFailureDetail, neutralizeFileMentions } from './base.js';
 import { CODEX_CLI_EFFORTS, clampEffort } from './effort.js';
 import { ModelInfo, ProviderType, ServerConfig } from '../types.js';
 import { CHALLENGE_PROMPT, verifyVisionChallenge } from '../vision-challenge.js';
@@ -334,11 +334,15 @@ export class CodexCliProvider implements Provider {
       // a caller with a genuinely low REQUEST_TIMEOUT_MS now correctly has
       // that honoured here too, consistent with API providers.
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-      const { code, stderr } = await this.run(args, prompt, timeoutMs);
+      const { code, stdout, stderr } = await this.run(args, prompt, timeoutMs);
       if (code !== 0) {
-        throw new Error(
-          `codex CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || '(no stderr)'}`,
-        );
+        // codex banners + echoes the whole prompt to stderr BEFORE failing, so
+        // the head of stderr describes the request, never the failure — see
+        // cliFailureDetail. Getting this wrong hid a real ChatGPT usage-limit
+        // refusal behind "Reading prompt from stdin…" and defeated the quota
+        // classifier, which then retried an exhausted plan three times.
+        const detail = cliFailureDetail(stdout, stderr);
+        throw new Error(`codex CLI exited with code ${code}: ${detail || '(no output)'}`);
       }
       let out = '';
       try {
@@ -350,7 +354,7 @@ export class CodexCliProvider implements Provider {
       if (!trimmed) {
         // Exit 0 but no final message written — surface the CLI's own stderr
         // diagnostic instead of a bare "empty response after retries".
-        const detail = stderr.trim().slice(0, 300);
+        const detail = cliFailureDetail(stdout, stderr, 300);
         throw new Error(
           `codex CLI produced no final message${detail ? `: ${detail}` : ' (empty output)'}`,
         );

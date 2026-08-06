@@ -31397,25 +31397,51 @@ var QuotaExceededError = class extends Error {
   }
 };
 var QUOTA_EXHAUSTED_PATTERNS = [
-  /\busage limit\b/i,
-  // grok "reached your free Grok Build usage limit", claude CLI
   /\bquota\b/i,
   // OpenAI insufficient_quota / "exceeded your current quota"
+  /\bbilling\b.*\b(hard limit|required)\b/i,
+  /\bplan limit\b|\bupgrade to\b.*\b(continue|higher)\b/i
+];
+var QUOTA_EXHAUSTED_UNAMBIGUOUS = [
+  /\busage limit\b/i,
+  // grok "free Grok Build usage limit", claude CLI, codex
   /\bcredit balance is too low\b/i,
   // Anthropic billing
   /\bout of credits?\b/i,
-  /\bbilling\b.*\b(hard limit|required)\b/i,
-  /\bplan limit\b|\bupgrade to\b.*\b(continue|higher)\b/i
+  /\bbalance is empty\b/i,
+  // Ollama extra-usage 402
+  /\bextra usage only\b/i
+  // Ollama: model excluded from plan usage
 ];
 function isQuotaError(err) {
   if (!err) return false;
   if (err instanceof QuotaExceededError) return true;
   const e2 = err;
   const msg = String(e2.message ?? err);
+  if (QUOTA_EXHAUSTED_UNAMBIGUOUS.some((re2) => re2.test(msg))) return true;
   if (/\bper[- ]?(minute|second|hour|day)\b|\bretry after\b|\btry again\b|\btemporarily\b|\bslow down\b/i.test(msg)) {
     return false;
   }
   return QUOTA_EXHAUSTED_PATTERNS.some((re2) => re2.test(msg));
+}
+var CLI_ERROR_LINE = /^\s*(?:\[?(?:ERROR|FATAL|error)\]?\b[:\s]|API Error\b|Error:)/;
+function cliFailureDetail(stdout, stderr, limit2 = 500) {
+  const marked = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const stream of [stderr, stdout]) {
+    for (const line of (stream ?? "").split("\n")) {
+      const t2 = line.trim();
+      if (!t2 || !CLI_ERROR_LINE.test(t2) || seen.has(t2)) continue;
+      seen.add(t2);
+      marked.push(t2);
+    }
+  }
+  if (marked.length) return truncateTail(marked.join(" | "), limit2);
+  const tail = (stderr ?? "").trim() || (stdout ?? "").trim();
+  return tail ? truncateTail(tail, limit2) : "";
+}
+function truncateTail(s2, limit2) {
+  return s2.length <= limit2 ? s2 : `\u2026${s2.slice(s2.length - limit2)}`;
 }
 var MAX_CLI_OUTPUT_BYTES = 8 * 1024 * 1024;
 var CappedBuffer = class {
@@ -35615,6 +35641,18 @@ function buildChildEnv(baseEnv, anthropicBaseUrl, toolConcurrency) {
   }
   return env;
 }
+function jsonFailureDetail(stdout) {
+  try {
+    const p2 = JSON.parse((stdout ?? "").trim());
+    const text = typeof p2.result === "string" && p2.result.trim() || typeof p2.error === "string" && p2.error.trim() || typeof p2.terminal_reason === "string" && p2.terminal_reason.trim() || "";
+    if (!text) return "";
+    const status = typeof p2.api_error_status === "number" ? p2.api_error_status : void 0;
+    const prefix = status !== void 0 && !new RegExp(`\\b${status}\\b`).test(text) ? `HTTP ${status}: ` : "";
+    return (prefix + text).slice(0, 500);
+  } catch {
+    return "";
+  }
+}
 function killTree(child) {
   try {
     if (child.pid) process.kill(-child.pid, "SIGKILL");
@@ -35790,7 +35828,7 @@ var ClaudeCliProvider = class {
       }
       if (code !== 0) {
         throw new Error(
-          `claude CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || "(no stderr)"}`
+          `claude CLI exited with code ${code}: ${jsonFailureDetail(stdout) || cliFailureDetail(stdout, stderr) || "(no output)"}`
         );
       }
       let parsed;
@@ -36042,11 +36080,10 @@ var CodexCliProvider = class {
         args.push("-i", path);
       });
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS2;
-      const { code, stderr } = await this.run(args, prompt, timeoutMs);
+      const { code, stdout, stderr } = await this.run(args, prompt, timeoutMs);
       if (code !== 0) {
-        throw new Error(
-          `codex CLI exited with code ${code}: ${stderr.trim().slice(0, 500) || "(no stderr)"}`
-        );
+        const detail = cliFailureDetail(stdout, stderr);
+        throw new Error(`codex CLI exited with code ${code}: ${detail || "(no output)"}`);
       }
       let out = "";
       try {
@@ -36056,7 +36093,7 @@ var CodexCliProvider = class {
       }
       const trimmed = out.trim();
       if (!trimmed) {
-        const detail = stderr.trim().slice(0, 300);
+        const detail = cliFailureDetail(stdout, stderr, 300);
         throw new Error(
           `codex CLI produced no final message${detail ? `: ${detail}` : " (empty output)"}`
         );

@@ -764,6 +764,8 @@ They solve different problems. `claude-council` gives Claude Code the opinions o
 
 **Can it review a file, a diff, a whole repo, or run without blocking?** Yes — `ask_council` takes `context` / `files` / `git_ref` (auto-attaches a local `git diff`) / `full_repo_access` (WARNING: grants `claude-cli`/`codex-cli` members read-only access to the whole repo — see its section above), and `ask_council_async` + `get_council_result` run a council in the background and fetch the result when ready.
 
+**A member failed — how do I tell quota from a real error?** The error text tells you, verbatim from the CLI. A member whose plan is exhausted is reported as a quota refusal carrying the provider's own wording (`You've hit your usage limit ... try again at <date>`, or Ollama's `402 ... your extra usage balance is empty`), and it is attempted **once** — retrying an exhausted plan only burns wall-clock. This matters because the two CLIs hide their failures in opposite places: `codex` prints a banner and a full echo of the prompt to stderr *before* the real error, and `claude --output-format json` exits non-zero with **empty stderr**, putting the cause on stdout. Both are read now, so an out-of-quota member says so instead of failing unexplained. A quota-failed member is a partial outage, so the result is also marked `judgeDegraded` rather than reported as clean convergence over a silently shrunken council.
+
 **What does "judge" mean?** Categorized / deconflicted / pooled / dialectic modes use one member as the judge that groups, re-questions, or distils the others. It's auto-selected as the largest member; override with `judge_model`.
 
 ---

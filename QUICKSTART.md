@@ -102,8 +102,10 @@ configure_council(models=[
 ask_council(question="…", mode="pooled")
 ```
 
-> Slow local models (large MLX/GGUF)? Raise `request_timeout_ms` (default 120000 ms).
-> CLI providers keep a 300 s floor regardless.
+> Slow local models (large MLX/GGUF)? Raise `request_timeout_ms` (default
+> 300000 ms / 5 minutes, max 3600000 / 60 minutes). CLI providers honor an
+> explicit timeout verbatim. It bounds ONE answer, not the whole ask — a council
+> run is members × rounds plus the judge, and is not capped.
 
 ---
 
@@ -324,7 +326,7 @@ Handy tools & commands:
 | Want to… | Set |
 |---|---|
 | Point Ollama at a remote host | `ollama_address` |
-| Give slow local models more time | `request_timeout_ms` (ms; default 120000) |
+| Give slow local models more time | `request_timeout_ms` (ms; default 300000, max 3600000) |
 | Review a file / add background | `ask_council(files=[…], context="…")` |
 | Review a diff (repo review) | `ask_council(git_ref="uncommitted")` |
 | Review the whole repo (⚠️ real permission grant) | `ask_council(full_repo_access=true)` |
